@@ -1,80 +1,180 @@
 # Tizen TV Builder
 
-A small, evidence-driven toolkit and coding agent for Samsung retail-TV Web applications.
-Designed to investigate **2015 through current model groups**, not promise every TV works.
-Useful for Plex, Immich and other media clients without coupling them to one backend.
+Build a Samsung TV app without relearning the same lessons every time.
 
-**Status:** initial toolkit; offline tests cover validation/command contracts. The lessons include
-observed development on one 2017 TV. This repository's commands have not yet completed a new
-retail-TV acceptance run. Native screenshots/recording are not promised.
+This is a small toolkit for the things that slow you down: old browser engines,
+certificates, packaging, deployment and debugging. It comes with a coding agent
+that knows the workflow and the mistakes we have already found.
 
-## Start here
+Use it for a Plex client, an Immich app or your own project. It is not another
+media client. It does not promise that one app will work on every TV from 2015
+to today. We keep [the model-year table](docs/compatibility.md), what was actually
+tested, and what is still unknown.
 
-You need Python 3.10+, the supported Tizen Studio/TV Extension for your host and target,
-and a Samsung developer certificate profile. This repository does not install them.
-SDK wrappers require a POSIX host (macOS/Linux). Timeout or cancellation (Ctrl-C/SIGTERM)
-stops only their owned process group and reaps the launcher. On Windows, use Samsung's CLI directly;
-manifest validation and HTTP inspector discovery do not launch SDK processes.
+## Install the plugin
+
+You need a current **GitHub Copilot CLI**. The plugin uses the documented
+[Agent Plugins 1.0 format](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating):
+a portable skill, plus a Copilot-specific agent.
+
+Recommended: install the **0.1.0 release** through its marketplace:
 
 ```sh
+copilot plugin marketplace add dragoshont/tizen-tv-builder#v0.1.0
+copilot plugin install tizen-tv-builder@tizen-tv-tools
+copilot plugin list
+copilot skill list
+```
+
+This repository is currently **private**. You need repository access and working
+GitHub authentication. The marketplace is pinned to the release tag. It installs this plugin, not Python,
+Tizen Studio, a Samsung certificate or a TV app.
+No hooks, MCP servers or background services are bundled.
+
+For a fixed version, download the release instead:
+
+```sh
+mkdir tizen-builder-0.1.0
+cd tizen-builder-0.1.0
+gh release download v0.1.0 --repo dragoshont/tizen-tv-builder \
+  --pattern 'tizen-tv-builder-0.1.0.zip' --pattern SHA256SUMS --pattern release.json
+shasum -a 256 -c SHA256SUMS
+unzip tizen-tv-builder-0.1.0.zip
+copilot plugin marketplace add ./tizen-tv-builder
+copilot plugin install tizen-tv-builder@tizen-tv-tools
+copilot plugin list
+```
+
+On Linux, `sha256sum -c SHA256SUMS` is the equivalent checksum command.
+Checksums catch mismatches; they are not an independent publisher signature.
+`release.json` records the source commit and every packaged file's checksum.
+The extracted release becomes a local marketplace, so keep that directory.
+Local-marketplace plugins load from it; do not edit it if you want a fixed version.
+Use a fresh session or the host's supported reload/restart to discover new components.
+
+Do not add both marketplace sources at once: they use the same marketplace name.
+For a new release, uninstall only this plugin, remove `tizen-tv-tools`, then add the
+new release tag/directory and install it again. Do not update all your other plugins.
+Direct `copilot plugin install OWNER/REPO` works in the tested CLI but is deprecated;
+the marketplace path is the recommended one.
+
+## Use it in your app
+
+In Copilot, select **tizen-tv-builder** from `/agent`, or keep your current agent
+and invoke the **tizen-tv-builder** skill. Start with something concrete:
+
+> Use tizen-tv-builder. Check this app for a 2017 Samsung TV running Tizen 3.0.
+> Read the code, run the host checks and make a short plan. Do not touch the TV.
+
+The skill finds the installed toolkit and reads its lessons. It uses your app's
+source, not the bundled hello example. It should tell you what passed, what failed
+and what needs a real TV. Installing the agent does not grant it device access.
+
+Already working in another session? Load the skill there. You do not need another
+supervisor or a new project just to use these tools.
+
+## Use the tools yourself
+
+The plugin includes the Python tools, docs and a small hello app. Run the commands
+below from an extracted release or a repository checkout. To get a checkout:
+
+```sh
+gh repo clone dragoshont/tizen-tv-builder
+cd tizen-tv-builder
+python3 tools/tizen.py --version
 python3 tools/tizen.py doctor
 python3 tools/tizen.py validate examples/hello-tv
 python3 tools/tizen.py build examples/hello-tv
-python3 -m unittest discover -s tests -v
 ```
 
-`build` uses Samsung's CLI with temporary output. It is unsigned and does not contact the TV.
-`package` stages only manifest, HTML, JS, CSS and common image/font assets; certificate files,
-private configuration, generated packages and symlinks are rejected/excluded. Keep personal
-data outside the source tree: file extensions do not make a source file safe.
+You need **Python 3.10+**. SDK commands need an already-installed Tizen Studio
+with Web CLI and the Samsung TV Extension. Get them from
+[Samsung's SDK instructions](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html),
+with the computer owner's permission. `doctor` checks local tools; it does not
+connect to a TV. Set `TIZEN_SDK_ROOT` or pass `--tizen PATH` / `--sdb PATH` if needed.
+
+`build` is an unsigned source build in a temporary directory. It does not create
+a deployable signed package or prove that the app works on a TV. SDK wrappers
+are **macOS/Linux only**: timeout, Ctrl-C or SIGTERM stops their owned process
+group, not a shared SDB server. On Windows, use Samsung's CLI directly;
+manifest validation and HTTP inspector discovery do not launch SDK processes.
+
+## First install on a TV
+
+First identify the exact model, region, firmware and year. Enable Developer Mode
+using [Samsung's device instructions](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html).
+Connect with Device Manager; this toolkit does not connect for you.
+
+Create a **Samsung TV** certificate profile in Certificate Manager: author
+certificate, distributor certificate, and the target TV's DUID. Then use Device
+Manager's **Permit to install applications** for that TV. Follow
+[Samsung's certificate guide](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html).
+Keep certificates, passwords and DUIDs private.
+
+With permission for the exact TV and these operations:
 
 ```sh
-python3 tools/tizen.py package examples/hello-tv --profile YOUR_PROFILE --output /private/path/hello.wgt
-python3 tools/tizen.py install /private/path/hello.wgt --serial TV_ADDRESS:26101 --authorized
-python3 tools/tizen.py run --app PlxHelloTv.Hello --serial TV_ADDRESS:26101 --authorized
+python3 tools/tizen.py package /path/to/app --profile YOUR_PROFILE --output /private/path/app.wgt
+python3 tools/tizen.py install /private/path/app.wgt --serial TV_IPV4:26101 --authorized
+python3 tools/tizen.py run --app PACKAGEID0.Application --serial TV_IPV4:26101 --authorized
 ```
 
-Before first installation, use Samsung Certificate Manager to create a **Samsung TV** profile
-(author and distributor certificates), add the target DUID, then permit installation using
-Device Manager or `tizen install-permit -s TARGET`. `install` does not automatically grant
-certificate access. It does not create a lock: the caller must hold exclusive device ownership.
-`--authorized` is an explicit acknowledgment, not a mechanism that proves owner consent.
+Replace the placeholders. Package IDs must be ten letters/digits; use the app ID
+from `config.xml`. Only one worker should own that Samsung TV. `--authorized`
+acknowledges permission; it is not a lock and cannot prove consent.
 
-Set `TIZEN_SDK_ROOT` if the SDK is not at `~/tizen-studio`; alternatively use `--tizen PATH`
-and `--sdb PATH`. No commands invoke a shell or request root.
+Packaging stages common web assets and excludes known private/generated paths.
+It is **not a secret scanner**. A token in a JS file is still a token. Review what
+you ship. A requested signing profile is not cryptographic signature verification,
+Samsung provenance verification or Store approval.
 
-## Web Inspector
+## Debug without promising a recording
 
 ```sh
-python3 tools/tizen.py debug --app PlxHelloTv.Hello --serial TV_ADDRESS:26101 --authorized --legacy-timeout 0
-# Read the debug port returned by the TV, then:
-python3 tools/tizen.py forward --port DEBUG_PORT --serial TV_ADDRESS:26101 --authorized
+python3 tools/tizen.py debug --app PACKAGEID0.Application --serial TV_IPV4:26101 --authorized
+# For the observed legacy 2017 workaround, add --legacy-timeout 0.
+# Read the returned port, then:
+python3 tools/tizen.py forward --port DEBUG_PORT --serial TV_IPV4:26101 --authorized
 python3 tools/tizen.py inspect --port DEBUG_PORT
-# When finished, remove only your own forward:
-python3 tools/tizen.py unforward --port DEBUG_PORT --serial TV_ADDRESS:26101 --authorized
+# In your cleanup/finally block, remove only the forward you created:
+python3 tools/tizen.py unforward --port DEBUG_PORT --serial TV_IPV4:26101 --authorized
 ```
 
-The debug response is displayed because its returned port is required; it never lists installed
-apps or credentials. `inspect` is loopback HTTP discovery with a deadline/body limit and prints
-only browser/protocol, target count and page types, not titles/URLs/DOM or tokens.
-Each discovery request has a five-second total deadline covering connection, request,
-status line, headers and body (at most ten seconds for the two endpoints). Slow trickled
-bytes do not reset it; connections/responses are closed on failure.
+`inspect` reads loopback HTTP metadata only. Each of its two requests has a total
+five-second deadline and a one-MiB body limit. It reports engine/protocol and
+target types, not page titles, URLs, DOM or account data. It is not a WebSocket
+client or an image-capture tool.
 
-On the observed 2017 TV, extra debug argument `0` worked; screenshots timed out and
-screencasting was explicitly unavailable. Do not confuse an inspector connection with image
-capture. See [lessons](docs/lessons.md) and [compatibility](docs/compatibility.md).
+On the studied 2017 TV, `Page.captureScreenshot` timed out and screencasting
+reported false. Newer investigation reports native **paint-layer snapshots**;
+those are not panel/compositor/video-plane captures or a recording. Read
+[the dated capture lesson](docs/lessons.md) before generalizing.
 
-## Agent
+## What we know, and what we do not
 
-The portable agent prompt is [.agents/agents/tizen-tv-builder.md](.agents/agents/tizen-tv-builder.md).
-Copy or register it using your coding harness's documented custom-agent mechanism, keeping its
-repository docs available. There is no universal agent installer claimed here. The matching
-[skill](.agents/skills/tizen-tv/SKILL.md) describes the development loop.
+- [Compatibility](docs/compatibility.md): annual engines, capability boundaries and TV acceptance.
+- [Lessons](docs/lessons.md): signing, host issues, inspector, media, networking and UI mistakes.
+- [Experience review](docs/experience-review.md): what we captured, what is implemented and what is still missing.
+- [Changelog](CHANGELOG.md): version changes. No version number means all TVs are supported.
 
-For a shareable demo, record an isolated desktop browser using original synthetic content and
-label it as a desktop demo. Native TV capture, DOM reconstruction and phone recordings are
-different artifacts. No Reddit upload or public support announcement happens automatically.
+Run the host suite with `python3 -m unittest discover -s tests -v`.
+We have exercised offline tests and a real unsigned SDK build. This toolkit has
+not completed its own retail-TV acceptance run. Emulator and desktop results are
+not TV results. Native binaries, root/firmware work, DRM bypass and automatic
+account writes are out of scope.
 
-MIT-licensed, independently written tools. No Samsung SDK or PlxNative GPL implementation is
-bundled. The source-backed findings acknowledge [PlxNative](https://github.com/dragoshont/plx-native).
+To build a release, update `plugin.json`, `.github/plugin/marketplace.json` and
+`CHANGELOG.md` together, run the suite, and commit a clean tree. Then run:
+
+```sh
+python3 tools/release.py --output /absolute/existing/release-directory
+```
+
+The builder refuses a dirty tree, unknown tracked files, symlinks and existing
+output files. It makes a deterministic ZIP, `release.json` and `SHA256SUMS`.
+The output directory must be outside the repository. Review those artifacts
+before tagging/publishing; the builder does not push or install anything.
+
+MIT, independently written. No Samsung SDK binaries or GPL client/inspector code
+are bundled. Factual lessons credit the
+[PlxNative investigation](https://github.com/dragoshont/plx-native).

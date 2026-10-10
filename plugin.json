@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tizen-tv-builder",
+  "version": "0.1.0",
+  "description": "Build Samsung TV web apps with the tools and lessons from real development. Know what works, what failed, and what still needs a TV test.",
+  "author": {
+    "name": "Dragos",
+    "url": "https://github.com/dragoshont"
+  },
+  "repository": "https://github.com/dragoshont/tizen-tv-builder",
+  "homepage": "https://github.com/dragoshont/tizen-tv-builder",
+  "license": "MIT",
+  "keywords": ["samsung", "tizen", "tv", "web-apps", "development"]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "tizen-tv-tools",
+  "owner": {
+    "name": "Dragos"
+  },
+  "metadata": {
+    "description": "Tools and lessons for building Samsung TV web apps.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "tizen-tv-builder",
+      "description": "Build Samsung TV web apps with an agent, a skill and safe local tools.",
+      "version": "0.1.0",
+      "source": ".",
+      "license": "MIT"
+    }
+  ]
+}

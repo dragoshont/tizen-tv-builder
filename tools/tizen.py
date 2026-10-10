@@ -226,6 +226,8 @@ def inspect(port):
 
 def parser():
     cli = argparse.ArgumentParser(description=__doc__)
+    version = json.loads((Path(__file__).resolve().parents[1] / "plugin.json").read_text())["version"]
+    cli.add_argument("--version", action="version", version="tizen-tv-builder " + version)
     cli.add_argument("--tizen")
     cli.add_argument("--sdb")
     sub = cli.add_subparsers(dest="command", required=True)

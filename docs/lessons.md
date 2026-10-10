@@ -35,9 +35,34 @@ did not. Runtime evaluation and Page.enable answered; Schema.getDomains was abse
 Page.captureScreenshot was recognized but never returned an image within bounded attempts.
 Page.canScreencast returned false, start accepted without frames and stop answered.
 
-Therefore: inspect live CSS/geometry/errors, but do not advertise native screenshots/recording
-on this target. Samsung documents debugging on TVs since 2015, not every DevTools protocol
-method. Debugging can change application lifecycle; no automatic reboot as cleanup.
+Therefore: inspect live CSS/geometry/errors, but do not advertise Page screenshots or
+screencast recording on this target. Samsung documents debugging on TVs since 2015,
+not every DevTools protocol method. Debugging can change application lifecycle;
+no automatic reboot as cleanup.
+
+### Capture update: keep the artifact types separate
+
+**Upstream device observation, 2026-10-11; parent reviewed, not rerun by this toolkit.**
+On the same Chrome 47 TV engine, the PlxNative investigation reports
+`LayerTree.makeSnapshot` / `LayerTree.replaySnapshot` returning native renderer-paint
+PNGs (1920x1080, 226x64 and 28x28). At the same time, Page screenshot requests timed out
+even after 90 seconds while geometry RPCs remained responsive, and
+`Page.canScreencast` returned false.
+
+This corrects a blanket "native image capture is impossible" conclusion. Paint-layer
+replay is real renderer output as reported by that study, **not** a panel/compositor
+capture, a video-plane capture, a DOM reconstruction or a TV recording. Visual
+completeness is not established. The parent inspected a privacy-masked 1920x1080
+preview showing the actual sign-in UI, with separate button/spinner content missing.
+Three native PNGs totaled 118,765 bytes; snapshot release and LayerTree disable
+were confirmed. The toolkit bundles no replay implementation and claims no
+successful native capture of its own.
+
+The parent also reports a one-shot retail SDB `printf` attempt returned `closed` with
+no marker. A framebuffer recipe requiring root and `enlightenment_info` was not run.
+Do not promote it as a retail solution. Keep implementation and sanitized evidence in
+the [committed upstream inspector study](https://github.com/dragoshont/plx-native/blob/e48a829b/docs/samsung-web-inspector.md);
+do not copy its GPL inspector into this MIT toolkit.
 
 ## Media and accounts
 
@@ -51,6 +76,9 @@ method. Debugging can change application lifecycle; no automatic reboot as clean
   recordings safe; label desktop footage honestly.
 - Plex Guest/managed profiles are real household users, not disposable tests. Use mocks for UI
   capture and explicit test records for protocol writes. Immich needs its own asset/auth contract.
+- Treat credential persistence as an explicit product choice. The studied client documented
+  unencrypted Web Storage for remember-me; leave it off on shared TVs, clear it on sign-out
+  and surface deletion failure. That is a client-specific limitation, not a claim about every app.
 
 ## UI quality and evidence
 

@@ -2,8 +2,8 @@
 
 Read README.md, docs/compatibility.md and docs/lessons.md first. This toolkit builds Samsung
 TV Web applications; it does not certify hardware support from successful host tests.
-Canonical agent: .agents/agents/tizen-tv-builder.md. Canonical skill:
-.agents/skills/tizen-tv/SKILL.md.
+Canonical agent: com.github.copilot/agents/tizen-tv-builder.agent.md. Canonical skill:
+skills/tizen-tv-builder/SKILL.md. plugin.json owns the release version.
 
 Use Python 3.10+ standard library. No SDK/tool installation without permission.
 Run `python3 -m unittest discover -s tests -v` before committing. Add a failing regression
