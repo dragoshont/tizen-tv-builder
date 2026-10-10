@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.wgt
+.build/
+.sign/
+.package/
+*.p12
+*.pfx
+*.pem
+*.key
+.env*
+private/
+receipts/
+node_modules/

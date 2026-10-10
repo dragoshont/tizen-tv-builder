@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hello TV</title>
+<style>body{background:#141414;color:#fafafa;font:28px sans-serif;padding:60px}button{font:inherit;padding:20px}button:focus{background:#fff;color:#111}pre{white-space:pre-wrap}</style>
+</head>
+<body><h1>Hello Samsung TV</h1><p>Local runtime probe. No account or network requests.</p>
+<button id="refresh">Refresh runtime facts</button><pre id="facts"></pre>
+<script>
+(function () {
+    "use strict";
+    function show() {
+        document.getElementById("facts").textContent = JSON.stringify({
+            userAgent: navigator.userAgent, width: window.innerWidth, height: window.innerHeight,
+            promise: typeof window.Promise === "function", fetch: typeof window.fetch === "function",
+            textDecoder: typeof window.TextDecoder === "function",
+            readableStream: typeof window.ReadableStream === "function",
+            webAssembly: typeof window.WebAssembly === "object"
+        }, null, 2);
+    }
+    document.getElementById("refresh").onclick = show;
+    document.getElementById("refresh").focus();
+    show();
+}());
+</script></body></html>
