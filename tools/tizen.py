@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -118,17 +120,69 @@ def redact(output):
 
 
 def execute(arguments, timeout=120):
-    result = subprocess.run(arguments, capture_output=True, text=True, timeout=timeout, check=False)
-    if result.returncode:
-        raise ValueError("SDK command failed: " + redact((result.stderr or result.stdout)[-2000:]))
-    return redact(result.stdout[-8000:])
+    if os.name != "posix":
+        raise ValueError("SDK execution requires POSIX process-group ownership; use Samsung's CLI directly on Windows")
+    with subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except BaseException as error:
+            # Only the session created by this invocation, never a shared SDB server.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            finally:
+                process.wait()
+            if isinstance(error, subprocess.TimeoutExpired):
+                raise ValueError("SDK command deadline exceeded; owned process group stopped") from None
+            raise
+        if process.returncode:
+            raise ValueError("SDK command failed: " + redact((stderr or stdout)[-2000:]))
+        return redact(stdout[-8000:])
+
+
+class _DeadlineSocket(socket.socket):
+    def __init__(self, connected, deadline):
+        super().__init__(fileno=connected.detach())
+        self.deadline = deadline
+
+    def _set_remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Inspector request deadline exceeded")
+        self.settimeout(remaining)
+
+    def recv_into(self, *args):
+        # Buffered HTTP status/header reads must also consume the same deadline.
+        self._set_remaining()
+        return super().recv_into(*args)
+
+    def sendall(self, *args):
+        self._set_remaining()
+        return super().sendall(*args)
+
+
+class _DeadlineConnection(http.client.HTTPConnection):
+    def __init__(self, host, port, deadline):
+        super().__init__(host, port, timeout=5)
+        self.deadline = deadline
+
+    def connect(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Inspector request deadline exceeded")
+        self.timeout = remaining
+        super().connect()
+        self.sock = _DeadlineSocket(self.sock, self.deadline)
 
 
 def inspect(port):
     data = {}
     for endpoint in ("version", "list"):
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         deadline = time.monotonic() + 5
+        connection = _DeadlineConnection("127.0.0.1", port, deadline)
+        response = None
         try:
             connection.request("GET", f"/json/{endpoint}")
             response = connection.getresponse()
@@ -139,8 +193,6 @@ def inspect(port):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise ValueError("Inspector full-body deadline exceeded")
-                if connection.sock:
-                    connection.sock.settimeout(remaining)
                 chunk = response.read1(65536)
                 if not chunk:
                     break
@@ -148,7 +200,11 @@ def inspect(port):
                 if len(raw) > 1024 * 1024:
                     raise ValueError("Inspector response exceeds one MiB")
             data[endpoint] = json.loads(raw)
+        except TimeoutError:
+            raise ValueError("Inspector request deadline exceeded") from None
         finally:
+            if response is not None:
+                response.close()
             connection.close()
     if not isinstance(data["version"], dict) or not isinstance(data["list"], list):
         raise ValueError("Inspector response shape is invalid")
@@ -265,12 +321,28 @@ def run(args):
     return {"sdk_response": output, "acceptance": "command result only; verify actual device behavior"}
 
 
+class _Cancelled(KeyboardInterrupt):
+    def __init__(self, signum):
+        super().__init__()
+        self.signum = signum
+
+
+def _cancel(signum, frame):
+    raise _Cancelled(signum)
+
+
 def main():
+    previous_sigterm = signal.signal(signal.SIGTERM, _cancel)
     try:
         print(json.dumps(run(parser().parse_args()), indent=2))
     except (ValueError, OSError, ET.ParseError, http.client.HTTPException, subprocess.TimeoutExpired) as error:
         print("ERROR: " + redact(str(error)), file=sys.stderr)
         return 1
+    except KeyboardInterrupt as error:
+        print("ERROR: cancelled", file=sys.stderr)
+        return 128 + getattr(error, "signum", signal.SIGINT)
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
     return 0
 
 

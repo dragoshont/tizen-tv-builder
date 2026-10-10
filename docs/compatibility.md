@@ -3,6 +3,35 @@
 Checked against Samsung's documentation and the PlxNative investigation on 2026-10-11.
 The target scope begins in 2015; untested years are **unknown**, not supported.
 
+## Annual engine baseline
+
+These are vendor-documented engine generations, not application support claims.
+Source: [Samsung Web engine specifications](https://developer.samsung.com/smarttv/develop/specifications/web-engine-specifications.html),
+retrieved 2026-10-11. Recheck the live table before choosing a target or SDK.
+
+| Model year | Tizen | Engine baseline | This toolkit's retail acceptance |
+|---|---|---|---|
+| 2015 | 2.3 | WebKit r152340 | Not tested |
+| 2016 | 2.4 | WebKit r152340 | Not tested |
+| 2017 | 3.0 | Chromium M47 | Not tested; separate study observed one set |
+| 2018 | 4.0 | Chromium M56 | Not tested |
+| 2019 | 5.0 | Chromium M63 | Not tested |
+| 2020 | 5.5 | Chromium M69 | Not tested |
+| 2021 | 6.0 | Chromium M76 | Not tested |
+| 2022 | 6.5 | Chromium M85 | Not tested |
+| 2023 | 7.0 | Chromium M94 | Not tested |
+| 2024 | 8.0 | Chromium M108 | Not tested |
+| 2025 | 9.0 | Chromium M120 | Not tested |
+| 2026 | 10.0 | Chromium M130 | Not tested |
+
+For every row, separately verify Samsung TV author/distributor signing, target DUID and
+installation permission, privileges/required_version, runtime APIs and product behavior.
+Engine generation alone proves none of those. Samsung's HTML uses shared, two-row cells
+for the 2015/2016 WebKit type and revision; flattened text can hide the 2015 values.
+No future-year or native-binary compatibility is implied.
+
+## Capability boundaries
+
 | Cohort | Established boundary | Acceptance still required |
 |---|---|---|
 | 2015-2016 | Samsung documents Web Inspector since 2015; legacy engines and API versions vary | Exact model/firmware, packaging, JavaScript runtime APIs, TLS, graphics, AVPlay, remote and lifecycle |
@@ -32,11 +61,12 @@ Store signing/review and branding are separate from developer installation.
 
 - [Samsung Web engine specifications](https://developer.samsung.com/smarttv/develop/specifications/web-engine-specifications.html)
 - [Samsung media specifications](https://developer.samsung.com/smarttv/develop/specifications/media-specifications.html)
+- [Samsung 2018 video specifications: MSE FHD limit and DTS exclusion](https://developer.samsung.com/smarttv/develop/specifications/media-specifications/2018-tv-video-specifications.html) (retrieved 2026-10-11)
 - [Samsung MSE](https://developer.samsung.com/smarttv/develop/guides/multimedia/media-streaming.html)
 - [Samsung AVPlay](https://developer.samsung.com/smarttv/develop/api-references/samsung-product-api-references/avplay-api.html)
 - [Samsung Web Inspector](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/web-inspector.html)
 - [Samsung certificates](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html)
 - [Samsung TV connection](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html)
 
-Recheck the live vendor tables before expanding support. This document deliberately does not
-freeze a guessed Chromium version for every future year.
+Recheck the live vendor tables before expanding support. The annual rows above are a dated
+vendor snapshot, not guesses for future years.

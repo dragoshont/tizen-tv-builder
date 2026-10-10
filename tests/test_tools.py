@@ -1,9 +1,16 @@
 import importlib.util
+import http.server
 import json
+import os
 from pathlib import Path
+import socketserver
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("tizen", ROOT / "tools/tizen.py")
@@ -14,6 +21,20 @@ spec.loader.exec_module(tizen)
 class ToolkitTests(unittest.TestCase):
     def args(self, *arguments):
         return tizen.parser().parse_args(arguments)
+
+    def assert_process_stopped(self, pid):
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            # An orphan killed on Linux may await init's reap; it cannot execute.
+            status = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                    capture_output=True, text=True, timeout=2).stdout.strip()
+            if not status or status.startswith("Z"):
+                return
+            time.sleep(0.02)
+        self.fail("SDK launcher left a running child")
 
     def test_manifest_and_identifier(self):
         self.assertEqual(tizen.validate(ROOT / "examples/hello-tv")["app"], "PlxHelloTv.Hello")
@@ -116,6 +137,7 @@ class ToolkitTests(unittest.TestCase):
             def read1(self, size):
                 data, self.data = self.data[:size], self.data[size:]
                 return data
+            def close(self): pass
         class Connection:
             sock = None
             def __init__(self, *args, **kwargs): self.reply = None
@@ -124,7 +146,7 @@ class ToolkitTests(unittest.TestCase):
                                    else [{"type": "page", "title": "private title", "url": "?token=secret"}])
             def getresponse(self): return self.reply
             def close(self): pass
-        with patch.object(tizen.http.client, "HTTPConnection", Connection):
+        with patch.object(tizen, "_DeadlineConnection", Connection):
             result = tizen.inspect(12345)
         self.assertEqual(result["target_count"], 1)
         self.assertNotIn("private", json.dumps(result))
@@ -136,9 +158,9 @@ class ToolkitTests(unittest.TestCase):
             sock = None
             def __init__(self, *args, **kwargs): pass
             def request(self, *args): pass
-            def getresponse(self): return type("Reply", (), {"status": 302})()
+            def getresponse(self): return type("Reply", (), {"status": 302, "close": lambda _: None})()
             def close(self): pass
-        with patch.object(tizen.http.client, "HTTPConnection", Connection), self.assertRaisesRegex(ValueError, "redirects"):
+        with patch.object(tizen, "_DeadlineConnection", Connection), self.assertRaisesRegex(ValueError, "redirects"):
             tizen.inspect(12345)
 
     def test_inspector_full_body_limits_and_connection_cleanup(self):
@@ -148,9 +170,10 @@ class ToolkitTests(unittest.TestCase):
             def __init__(self, *args, **kwargs): pass
             def request(self, *args): pass
             def getresponse(self):
-                return type("Reply", (), {"status": 200, "read1": lambda _, n: b"x" * 65536})()
+                return type("Reply", (), {"status": 200, "read1": lambda _, n: b"x" * 65536,
+                                         "close": lambda _: None})()
             def close(self): Connection.closed = True
-        with patch.object(tizen.http.client, "HTTPConnection", Connection):
+        with patch.object(tizen, "_DeadlineConnection", Connection):
             with self.assertRaisesRegex(ValueError, "one MiB"):
                 tizen.inspect(12345)
             self.assertTrue(Connection.closed)
@@ -159,16 +182,216 @@ class ToolkitTests(unittest.TestCase):
                 tizen.inspect(12345)
             self.assertTrue(Connection.closed)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX process ownership")
     def test_sdk_failure_is_redacted_and_timeout_visible(self):
-        reply = tizen.subprocess.CompletedProcess(["sdb"], 1, "", "token=secret 192.168.1.2 refused")
-        with patch.object(tizen.subprocess, "run", return_value=reply):
+        process = MagicMock()
+        process.__enter__.return_value = process
+        process.communicate.return_value = ("", "token=secret 192.168.1.2 refused")
+        process.returncode = 1
+        with patch.object(tizen.subprocess, "Popen", return_value=process):
             with self.assertRaises(ValueError) as error:
                 tizen.execute(["sdb", "version"])
             self.assertNotIn("secret", str(error.exception))
             self.assertIn("refused", str(error.exception))
-        with patch.object(tizen.subprocess, "run", side_effect=tizen.subprocess.TimeoutExpired(["sdb"], 5)):
-            with self.assertRaises(tizen.subprocess.TimeoutExpired):
+        process.communicate.side_effect = tizen.subprocess.TimeoutExpired(["sdb"], 5)
+        process.pid = 12345
+        with patch.object(tizen.subprocess, "Popen", return_value=process), patch.object(tizen.os, "killpg") as kill:
+            with self.assertRaisesRegex(ValueError, "deadline"):
                 tizen.execute(["sdb", "version"], 5)
+            kill.assert_called_once_with(12345, tizen.signal.SIGKILL)
+            process.wait.assert_called_once()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process ownership")
+    def test_sdk_cancellation_stops_group_and_reaps_launcher(self):
+        process = MagicMock()
+        process.__enter__.return_value = process
+        process.communicate.side_effect = KeyboardInterrupt()
+        process.pid = 12345
+        with patch.object(tizen.subprocess, "Popen", return_value=process) as launch, \
+                patch.object(tizen.os, "killpg") as kill:
+            with self.assertRaises(KeyboardInterrupt):
+                tizen.execute(["sdb", "version"], 5)
+        self.assertTrue(launch.call_args.kwargs["start_new_session"])
+        kill.assert_called_once_with(12345, tizen.signal.SIGKILL)
+        process.wait.assert_called_once()
+
+    def test_sdk_execution_refuses_unowned_platform_before_spawn(self):
+        with patch.object(tizen.os, "name", "nt"), patch.object(tizen.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(ValueError, "POSIX"):
+                tizen.execute(["sdb", "version"])
+            launch.assert_not_called()
+
+    def test_inspector_total_deadline_includes_trickled_status_and_headers(self):
+        class Server(socketserver.ThreadingTCPServer):
+            daemon_threads = True
+
+        class Trickle(socketserver.BaseRequestHandler):
+            prefix = b""
+
+            def handle(self):
+                self.request.recv(4096)
+                try:
+                    self.request.sendall(self.prefix)
+                    for _ in range(300):
+                        self.request.sendall(b"x")
+                        time.sleep(0.04)
+                except OSError:
+                    pass
+
+        for prefix in (b"HTTP/1.1 200 ", b"HTTP/1.1 200 OK\r\nX-Trickle: "):
+            with self.subTest(prefix=prefix):
+                Trickle.prefix = prefix
+                with Server(("127.0.0.1", 0), Trickle) as server:
+                    worker = threading.Thread(target=server.serve_forever, daemon=True)
+                    worker.start()
+                    try:
+                        started = time.monotonic()
+                        result = subprocess.run(
+                            [sys.executable, str(ROOT / "tools/tizen.py"), "inspect",
+                             "--port", str(server.server_address[1])],
+                            capture_output=True, text=True, timeout=6,
+                        )
+                        self.assertLess(time.monotonic() - started, 6)
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn("deadline", result.stderr)
+                    finally:
+                        server.shutdown()
+                        worker.join()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process ownership")
+    def test_sdk_timeout_stops_owned_descendant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "child.pid"
+            child = "import time; time.sleep(30)"
+            launcher = (
+                "import subprocess, sys, time; from pathlib import Path; "
+                "p = subprocess.Popen([sys.executable, '-c', sys.argv[2]]); "
+                "Path(sys.argv[1]).write_text(str(p.pid)); time.sleep(30)"
+            )
+            child_pid = None
+            unrelated = subprocess.Popen([sys.executable, "-c", child])
+            try:
+                with self.assertRaises((ValueError, subprocess.TimeoutExpired)):
+                    tizen.execute([sys.executable, "-c", launcher, str(marker), child], 0.5)
+                self.assertTrue(marker.exists(), "Fixture must spawn before deadline")
+                child_pid = int(marker.read_text())
+                self.assert_process_stopped(child_pid)
+                self.assertIsNone(unrelated.poll(), "Cleanup must not stop unrelated processes")
+            finally:
+                unrelated.kill()
+                unrelated.wait()
+                if child_pid is not None:
+                    try:
+                        os.kill(child_pid, 9)
+                    except ProcessLookupError:
+                        pass
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process ownership")
+    def test_cli_cancellation_stops_owned_descendant(self):
+        for signum in (tizen.signal.SIGINT, tizen.signal.SIGTERM):
+            with self.subTest(signum=signum), tempfile.TemporaryDirectory() as temporary:
+                marker = Path(temporary) / "child.pid"
+                sdk = Path(temporary) / "sdk"
+                sdk.write_text(
+                    "#!" + sys.executable + "\n"
+                    "import subprocess, sys, time\n"
+                    "from pathlib import Path\n"
+                    "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+                    f"Path({str(marker)!r}).write_text(str(p.pid))\n"
+                    "time.sleep(30)\n"
+                )
+                sdk.chmod(0o700)
+                caller = subprocess.Popen(
+                    [sys.executable, str(ROOT / "tools/tizen.py"),
+                     "--sdb", str(sdk), "--tizen", str(sdk), "doctor"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                child_pid = None
+                try:
+                    deadline = time.monotonic() + 3
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    self.assertTrue(marker.exists(), "Fixture must spawn before cancellation")
+                    child_pid = int(marker.read_text())
+                    caller.send_signal(signum)
+                    _, stderr = caller.communicate(timeout=3)
+                    self.assertEqual(caller.returncode, 128 + signum)
+                    self.assertIn("cancelled", stderr)
+                    self.assert_process_stopped(child_pid)
+                finally:
+                    if caller.poll() is None:
+                        caller.kill()
+                    caller.communicate()
+                    if child_pid is not None:
+                        try:
+                            os.kill(child_pid, 9)
+                        except ProcessLookupError:
+                            pass
+
+    def test_inspector_body_deadline_after_connection_close_header(self):
+        class Server(socketserver.ThreadingTCPServer):
+            daemon_threads = True
+
+        class Trickle(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.recv(4096)
+                try:
+                    self.request.sendall(
+                        b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 300\r\n\r\n"
+                    )
+                    for _ in range(300):
+                        self.request.sendall(b"x")
+                        time.sleep(0.04)
+                except OSError:
+                    pass
+
+        with Server(("127.0.0.1", 0), Trickle) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "tools/tizen.py"), "inspect",
+                     "--port", str(server.server_address[1])],
+                    capture_output=True, text=True, timeout=6,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("deadline", result.stderr)
+            finally:
+                server.shutdown()
+                worker.join()
+
+    def test_inspector_live_http_discovery_retains_safe_output(self):
+        paths = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                paths.append(self.path)
+                data = ({"Browser": "Chrome/47.0.2526.69", "Protocol-Version": "1.1"}
+                        if self.path == "/json/version"
+                        else [{"type": "page", "title": "private title", "url": "?token=fixture"}])
+                body = json.dumps(data).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                result = tizen.inspect(server.server_address[1])
+                self.assertEqual(paths, ["/json/version", "/json/list"])
+                self.assertEqual(result["browser"], "Chrome/47.0.2526.69")
+                self.assertEqual(result["types"], ["page"])
+                self.assertNotIn("private", json.dumps(result))
+                self.assertNotIn("fixture", json.dumps(result))
+            finally:
+                server.shutdown()
+                worker.join()
 
 
 if __name__ == "__main__":

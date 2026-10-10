@@ -12,6 +12,9 @@ retail-TV acceptance run. Native screenshots/recording are not promised.
 
 You need Python 3.10+, the supported Tizen Studio/TV Extension for your host and target,
 and a Samsung developer certificate profile. This repository does not install them.
+SDK wrappers require a POSIX host (macOS/Linux). Timeout or cancellation (Ctrl-C/SIGTERM)
+stops only their owned process group and reaps the launcher. On Windows, use Samsung's CLI directly;
+manifest validation and HTTP inspector discovery do not launch SDK processes.
 
 ```sh
 python3 tools/tizen.py doctor
@@ -54,6 +57,9 @@ python3 tools/tizen.py unforward --port DEBUG_PORT --serial TV_ADDRESS:26101 --a
 The debug response is displayed because its returned port is required; it never lists installed
 apps or credentials. `inspect` is loopback HTTP discovery with a deadline/body limit and prints
 only browser/protocol, target count and page types, not titles/URLs/DOM or tokens.
+Each discovery request has a five-second total deadline covering connection, request,
+status line, headers and body (at most ten seconds for the two endpoints). Slow trickled
+bytes do not reset it; connections/responses are closed on failure.
 
 On the observed 2017 TV, extra debug argument `0` worked; screenshots timed out and
 screencasting was explicitly unavailable. Do not confuse an inspector connection with image
