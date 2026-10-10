@@ -46,6 +46,11 @@ authentication token. There is no agent-callable mutation action.
 
 Opening starts only an authenticated, loopback-only local service. **No inspector
 connection or device lease is acquired until the human clicks Connect.**
+The four exact public GET routes (`/`, `/ui.js`, `/ui.css`, `/controls.mjs`)
+allow cross-site embedding by the host. They contain no capability, profile or
+pixels. Host/duplicate-header checks still apply; API/frame requests and every
+POST retain bearer authentication and strict origin/cross-site rejection.
+SDK open/status success alone does not prove the embedded page rendered.
 
 ## Private profile
 

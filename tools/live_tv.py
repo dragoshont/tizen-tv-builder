@@ -751,7 +751,7 @@ def handler(app):
             self.end_headers()
             self.wfile.write(body)
 
-        def check(self, private=False):
+        def check(self, private=False, public_static=False):
             self.connection.settimeout(3)
             host = f"127.0.0.1:{self.server.server_port}"
             for key in ("Host", "Origin", "Authorization", "Content-Length", "Transfer-Encoding", "Content-Type"):
@@ -760,21 +760,23 @@ def handler(app):
             if self.headers.get("Host") != host:
                 fail("origin", "Host does not match this loopback service")
             origin = self.headers.get("Origin")
-            if origin and origin != "http://" + host:
+            if not public_static and origin and origin != "http://" + host:
                 fail("origin", "Cross-origin requests are forbidden")
-            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+            if not public_static and self.headers.get("Sec-Fetch-Site") == "cross-site":
                 fail("origin", "Cross-site requests are forbidden")
             if private and not secrets.compare_digest(self.headers.get("Authorization", ""), "Bearer " + app.token):
                 fail("auth", "Private canvas authentication is required")
 
         def do_GET(self):
             try:
-                self.check()
                 static = {"/": ("index.html", "text/html; charset=utf-8"),
                           "/ui.js": ("ui.js", "text/javascript"),
                           "/controls.mjs": ("controls.mjs", "text/javascript"),
                           "/ui.css": ("ui.css", "text/css")}
                 if self.path in static:
+                    # The host embeds this public shell cross-site. It contains no
+                    # profile, token or pixels; authenticated API routes stay strict.
+                    self.check(public_static=True)
                     name, mime = static[self.path]
                     self.reply(200, (ASSETS / name).read_bytes(), mime)
                     return

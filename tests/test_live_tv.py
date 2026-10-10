@@ -369,6 +369,16 @@ class LiveTests(unittest.TestCase):
                 return reply.status, json.loads(raw) if reply.getheader("Content-Type") == "application/json" else raw
             auth = {"Authorization": "Bearer " + app.token}
             try:
+                embedded = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "iframe"}
+                for route in ("/", "/ui.js", "/ui.css", "/controls.mjs"):
+                    status, public = request("GET", route, **embedded)
+                    self.assertEqual(status, 200, "Embedded host must load public renderer files")
+                    self.assertNotIn(app.token.encode(), public)
+                self.assertEqual(request("GET", "/", **embedded, Host="untrusted.example")[0], 403)
+                self.assertEqual(request("GET", "/api/state", **auth, **embedded)[0], 403)
+                self.assertEqual(request("POST", "/api/connect/sample", {}, **auth, **embedded)[0], 403)
+                self.assertEqual(request("GET", "/ui.js?private=1", **embedded)[0], 403)
+                self.assertIsNone(app.sources["sample"].client)
                 self.assertEqual(request("GET", "/api/state")[0], 403)
                 self.assertEqual(request("GET", "/api/state", **auth, Origin="https://untrusted.example")[0], 403)
                 self.assertEqual(request("GET", "/api/state", **auth, Host="untrusted.example")[0], 403)

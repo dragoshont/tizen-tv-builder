@@ -14,6 +14,8 @@ intentionally breaking them. No version number is a claim of TV model support.
 - Mandatory builder live-acceptance workflow with explicit unavailable status.
 - Offline protocol/route/lifecycle/input/install gates; TV acceptance pending.
 - No new published release or installed-plugin replacement.
+- Runtime correction: permit host cross-site iframe loading of exact public
+  renderer GET routes, while preserving authenticated API/POST origin checks.
 
 ## 0.1.0 - 2026-10-11
 
