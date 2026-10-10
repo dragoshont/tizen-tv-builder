@@ -31,6 +31,11 @@ GitHub authentication. The marketplace is pinned to the release tag. It installs
 Tizen Studio, a Samsung certificate or a TV app.
 No hooks, MCP servers or background services are bundled.
 
+That describes the published **0.1.0** package. The checkout now also contains an
+**unreleased live-canvas candidate**, held for parent/device acceptance. Do not
+replace your installed plugin or publish it yet. See [live canvas setup](docs/live-canvas.md)
+for the standalone adapter, explicit private profile and SDK opening steps.
+
 For a fixed version, download the release instead:
 
 ```sh
@@ -149,6 +154,11 @@ On the studied 2017 TV, `Page.captureScreenshot` timed out and screencasting
 reported false. Newer investigation reports native **paint-layer snapshots**;
 those are not panel/compositor/video-plane captures or a recording. Read
 [the dated capture lesson](docs/lessons.md) before generalizing.
+
+The unreleased candidate adds successive native paint-layer frames, user-operated
+remote controls and source metadata in a standalone Copilot canvas. It does not
+claim TV acceptance from host fixtures. The builder's live UI acceptance workflow
+requires this canvas when available, or an explicit unavailable/blocked result.
 
 ## What we know, and what we do not
 

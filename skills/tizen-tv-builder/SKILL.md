@@ -48,6 +48,36 @@ return-to-list state, resume/standby and The Frame Art Mode as distinct gates.
 
 ## Inspector boundaries
 
+### Mandatory interactive acceptance workflow (unreleased candidate)
+
+During authorized device UI work, open the standalone **tizen-live** canvas with an
+absolute private `profilePath` before claiming live visual acceptance. Read
+docs/live-canvas.md for installation, canonical ownership, grants and integration.
+Use the canvas capabilities tool, open a caller-chosen instance, then invoke its
+read-only `status` action to verify SDK routing. Only the human may Connect,
+Start/Pause, Refresh or send input; the agent has no mutation action.
+This is reusable for new apps: supply their explicit page/profile, never a Plex
+identity assumed from an example. Preserve optional model/year/OS/firmware with
+user-provided/observed/unknown provenance; do not infer hardware from an engine.
+For input, use the visible remote buttons or focused arrow/Space/Enter/Backspace
+shortcuts. Audit the app's non-write activation IDs before enabling OK/click;
+leave the allowlist empty by default. Hold the canonical Samsung directory lane,
+not flock or a separate lock, and confirm ownership-checked cleanup.
+Require genuine native frames with source/time/provenance, and examine actual
+results rather than infer them from successful RPCs. For periodic-feed acceptance,
+observe at least three 10-second cycles on the named TV after its current lane owner
+has released it. Do not perform real household playback/progress writes.
+Use the app's explicit pairing flow and approved test accounts, not cookie,
+session-storage or token extraction. Pixel grants may expose private on-screen
+data; keep captures private and redact any evidence deliberately exported.
+Host mock/UI fixture passes are not named-TV acceptance.
+
+If the host has no extension/canvas capability, no authorized target, a held lane,
+or an unsupported protocol, report the exact blocked/unavailable/unsupported state.
+Continue host-only development; do not substitute desktop/emulated pixels or refuse
+all building merely because live inspection is unavailable. Emulator comparison
+requires an explicit separately labelled source. Never silently choose it for a TV.
+
 On the observed 2017 Tizen 3.0 target, `shell 0 debug APP` failed with "closed", but an explicit
 trailing `0` launched debugging (with a timeout-option warning). Use `--legacy-timeout 0` only
 when relevant; never infer a general shell exists. Forward the returned inspector port to
@@ -58,8 +88,9 @@ Page.canScreencast=false is an explicit unsupported result. A recognized capture
 request with no callback is a failure, not a PNG. Screenshots cannot prove AVPlay video-plane
 composition or HDR/audio.
 Do not generalize this to "no native image capture is possible": the parent investigation
-reports LayerTree paint snapshots on the same engine. This toolkit ships no LayerTree
-client and has not rerun those upstream captures. Paint-layer replay is neither
+reports LayerTree paint snapshots on the same engine. The unreleased standalone
+candidate now ships an independently implemented LayerTree client, tested with host
+fixtures, but has not rerun those upstream TV captures. Paint-layer replay is neither
 panel/compositor capture nor a TV recording. Read the dated evidence entry before claiming
 anything about completeness. Never use root/framebuffer or DRM bypass as a fallback.
 

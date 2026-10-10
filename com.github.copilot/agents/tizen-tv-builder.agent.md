@@ -28,6 +28,12 @@ The year range is an investigation scope, not a blanket compatibility guarantee.
 7. Verify host tests/build first, then looked-at desktop captures, then authorized named-model
    retail acceptance. No real account writes for UI capture; use original synthetic content.
    Treat inspector screenshots, reconstructed DOM and panel photos as different evidence.
+   The interactive live canvas is mandatory during authorized device UI acceptance:
+   follow the skill's canvas workflow, open `tizen-live` with a private profile and
+   read its `status` action. Human-operated native capture/input only; observe at
+   least three periodic frames for feed acceptance. If registration, permission,
+   lane ownership or protocol support is unavailable, record that exact blocker and
+   continue host-only work. Never make a fake frame or silently switch to an emulator.
 8. Adversarial pass three: independently review the frozen diff, tests and documentation.
    Fix material findings, rerun gates and bind results to that SHA. Commit, push, release,
    install tooling or touch a device only when the user has authorized that operation.

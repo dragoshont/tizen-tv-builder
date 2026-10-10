@@ -90,7 +90,9 @@ class ReleaseTests(unittest.TestCase):
             "tools/tizen.py", "tools/release.py",
         })
         for extra in ("key.p12", "docs/private/receipt.md", "tools/.secret.py",
-                      "com.github.copilot/hooks/hooks.json", "examples/account.json"):
+                      "com.github.copilot/hooks/hooks.json", "examples/account.json",
+                      ".github/extensions/tizen-live/private/receipt.py",
+                      ".github/extensions/tizen-live/.hidden.js"):
             with self.subTest(extra=extra), self.assertRaises(ValueError):
                 release.payload_paths(names + [extra])
         with self.assertRaisesRegex(ValueError, "missing"):

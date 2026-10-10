@@ -55,8 +55,9 @@ capture, a video-plane capture, a DOM reconstruction or a TV recording. Visual
 completeness is not established. The parent inspected a privacy-masked 1920x1080
 preview showing the actual sign-in UI, with separate button/spinner content missing.
 Three native PNGs totaled 118,765 bytes; snapshot release and LayerTree disable
-were confirmed. The toolkit bundles no replay implementation and claims no
-successful native capture of its own.
+were confirmed. The published 0.1.0 bundles no replay implementation. The
+unreleased [standalone canvas candidate](live-canvas.md) now implements the
+protocol independently, with host mocks only; it claims no TV capture of its own.
 
 The parent also reports a one-shot retail SDB `printf` attempt returned `closed` with
 no marker. A framebuffer recipe requiring root and `enlightenment_info` was not run.

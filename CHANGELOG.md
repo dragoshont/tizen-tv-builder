@@ -4,6 +4,17 @@ Versions follow [Semantic Versioning](https://semver.org/). While we are below 1
 minor releases may change command contracts; patch releases fix defects without
 intentionally breaking them. No version number is a claim of TV model support.
 
+## Unreleased — live-canvas candidate
+
+- Standalone scaffold-derived Copilot canvas with an independently implemented
+  bounded localhost/CDP/LayerTree provider and user-only mutation routes.
+- Native discrete 10-second feed, stale retention, pixel reuse, guarded controls,
+  focused keyboard shortcuts, optional provenance-labelled metadata/comparison.
+- Canonical Samsung atomic-directory lane; bounded connected runs are not TTL.
+- Mandatory builder live-acceptance workflow with explicit unavailable status.
+- Offline protocol/route/lifecycle/input/install gates; TV acceptance pending.
+- No new published release or installed-plugin replacement.
+
 ## 0.1.0 - 2026-10-11
 
 First versioned release.

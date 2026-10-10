@@ -44,6 +44,21 @@ we captured every discovery or implemented every helper.
 8. Is every lesson equally strong? **No.** Official tables, named-model study
    observations, candidate reports and host fixtures are different evidence kinds.
 
+## Unreleased canvas continuation
+
+The 0.1.0 inventory above remains historical. The current candidate adds a
+stdlib uncompressed WebSocket/RPC/LayerTree implementation, canonical directory
+lease, authenticated localhost routes, user-only feed/input, metadata persistence
+and a scaffold-derived standalone SDK canvas. The skill/agent now requires opening
+it for authorized live UI acceptance, or recording an actual blocker. See
+[the integration and evidence contract](live-canvas.md).
+
+Host protocol/route/input/lifecycle/install tests and a timed three-cycle mock
+feed do not establish native TV performance or input fidelity. SDK registration,
+offline opening/status/schema routing and real browser UI testing are separate
+host gates. Parent-reported 406 ms native capture belongs to the upstream viewer,
+not this candidate. Existing Samsung lane ownership is never overridden.
+
 ## Source boundaries
 
 Stable references: [Samsung engine table](https://developer.samsung.com/smarttv/develop/specifications/web-engine-specifications.html),
