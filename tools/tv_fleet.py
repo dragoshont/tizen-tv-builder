@@ -977,8 +977,13 @@ class Fleet:
             text = self.runner([self.sdb, "-s", serial, "shell", "0", "vd_applist"], 30)
         except LiveError:
             return None
+        # Observed on the 2017 and 2019 TVs: "get app list...", "apps count: N", then N app_tizen_id lines.
+        count = re.search(r"apps count:\s*(\d+)", text)
+        listed = [line for line in text.splitlines() if "app_tizen_id" in line]
         apps = set(APP_ID_TOKEN.findall(text))
-        return apps or None
+        if not apps or (count and listed and len(listed) < int(count.group(1))):
+            return None
+        return apps
 
     def _tizen(self, args, timeout=120):
         """(failed, scrubbed output). The Tizen CLI often exits 0 on failure, so callers read the text."""

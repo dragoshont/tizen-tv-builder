@@ -218,7 +218,7 @@ python3 tools/tizen.py tv rename tv-abc123 "Den TV"
 python3 tools/tizen.py tv portal              # prints http://127.0.0.1:47811/ (or a free port)
 ```
 
-First run, from a terminal (unreleased; host-tested against a fake SDK, not yet run on a TV):
+First run, from a terminal (unreleased; host-tested against a fake SDK):
 
 ```sh
 python3 tools/tizen.py tv setup                     # sdb, tizen CLI, signing profiles; installs nothing
@@ -238,8 +238,9 @@ from the developer link (`getduid`), not the network API's `duid`. `remove` re-l
 the TV's apps (`0 vd_applist`) and only reports success when the app is gone: on
 Tizen 5.0 `tizen uninstall` exits 0 and changes nothing, so the command then says to
 delete the app on the TV (Apps, gear, the app, Delete). If the list cannot be read the
-result is "unconfirmed", never success. The `vd_applist` listing is not yet verified on
-a TV. Python 3.10 or newer is required; older versions stop with that message.
+result is "unconfirmed", never success, and so is a list shorter than its own
+"apps count". The listing itself was checked read-only on the 2017 (Tizen 3.0) and 2019
+(Tizen 5.0) TVs; the other first-run commands are not yet verified on a TV. Python 3.10 or newer is required; older versions stop with that message.
 
 `check` reports each stage separately and only says "Developer Mode ready" when
 all of them pass: Developer Mode port open (a TCP answer only), developer

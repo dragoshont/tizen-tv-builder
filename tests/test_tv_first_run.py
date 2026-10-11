@@ -70,7 +70,10 @@ FAKE_TOOL = textwrap.dedent('''
             if rest == ["shell", "0", "vd_applist"]:
                 if scenario.get("applist") == "closed":
                     done("closed")
-                done("\\n".join("appid = " + a for a in ["SyStEmApp1.Home"] + state["installed"]))
+                apps = ["SyStEmApp1.Home"] + state["installed"]
+                count = len(apps) + (5 if scenario.get("applist") == "truncated" else 0)
+                done("\\n".join(["get app list...", "apps count: %d" % count]
+                                + ["app_tizen_id = " + a for a in apps]))
     if tool == "tizen":
         target = args[args.index("-t") + 1] if "-t" in args else None
         if args[0] == "package":
@@ -448,6 +451,15 @@ class RemoveVerificationTests(FirstRunBase):
             result = fleet.remove(alias, {"confirm": alias, "app": APP})
             self.assertEqual((result["ok"], result["code"]), (False, "remove-unconfirmed"))
             self.assertIn("Delete", result["next"])
+        finally:
+            fleet.close()
+
+    def test_truncated_list_is_unconfirmed_not_a_removal(self):
+        fleet, alias = self.installed_fleet()
+        try:
+            self.set_scenario(install="ok", applist="truncated")
+            result = fleet.remove(alias, {"confirm": alias, "app": APP})
+            self.assertEqual((result["ok"], result["code"]), (False, "remove-unconfirmed"))
         finally:
             fleet.close()
 
