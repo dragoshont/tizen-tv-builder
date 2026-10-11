@@ -14,6 +14,13 @@ import workbench
 
 
 class ShellTests(unittest.TestCase):
+    def test_setup_actions_need_no_redundant_discovery_checkbox(self):
+        html = (workbench.ASSETS / "index.html").read_text(encoding="utf-8")
+        script = (workbench.ASSETS / "ui.js").read_text(encoding="utf-8")
+        self.assertNotIn("sdk-grant", html)
+        self.assertNotIn("sdk-grant", script)
+        self.assertIn('operation, ...values, authorized: true', script)
+
     def test_record_route_reuses_authenticated_bounded_json_policy(self):
         app = live_tv.App(None, {"sources": []})
         app.record = lambda data: {"state": "fixture", "operation": data["operation"]}

@@ -45,8 +45,11 @@ try {
       if (!String(path).startsWith("/api/")) throw new Error("Only fixture APIs allowed");
       if (uiFailed) throw new Error("fixture connection lost");
       let data;
-      if (path === "/api/setup") data = {sdb:true,tizen:true,platform:"HOST FIXTURE",page_count:1,
-        configured:true,devices:[],apps:[],forward_owned:false};
+      if (path === "/api/setup") {
+        if(options.method === "POST") uiCalls.push({path,body:JSON.parse(options.body)});
+        data = {sdb:true,tizen:true,platform:"HOST FIXTURE",page_count:1,
+          configured:true,devices:[],apps:[],forward_owned:false};
+      }
       else if (path === "/api/record") {
         if (options.method === "POST") {
           const body=JSON.parse(options.body); uiCalls.push({path,body});
@@ -83,6 +86,13 @@ try {
     await rpc("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
   }
+  await evaluate("uiFailed=false;uiSource.status='disconnected';uiSource.expires_in=0");
+  await wait(1200);
+  assert.equal(await evaluate("document.querySelector('#sdk-grant') === null"), true);
+  assert.equal(await evaluate("document.querySelector('#find-network').disabled"), false);
+  await evaluate("document.querySelector('#find-network').click()");
+  await wait(300);
+  assert.equal(await evaluate("uiCalls.filter(c=>c.path==='/api/setup'&&c.body.operation==='find-network'&&c.body.authorized===true).length"), 1);
   console.log("Workbench fixture: keyboard, media route, repeat, disconnect and responsive contracts passed. No TV called.");
 } finally {
   socket.close();

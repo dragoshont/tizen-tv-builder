@@ -22,11 +22,11 @@ async function request(path, data) {
 function ready() { return source?.status === "connected" && source.expires_in > 0; }
 function controls() {
   const connected = ready(), session = source && ["connected", "in-flight"].includes(source.status) && source.expires_in > 0;
-  for (const id of ["discover", "connect-tv", "debug"]) $(id).disabled = busy || session || !setupState.sdb || !$("sdk-grant").checked;
-  for (const id of ["find-network", "confirm-tv"]) $(id).disabled = busy || session || !$("sdk-grant").checked;
+  for (const id of ["discover", "connect-tv", "debug"]) $(id).disabled = busy || session || !setupState.sdb;
+  for (const id of ["find-network", "confirm-tv"]) $(id).disabled = busy || session;
   $("attach").disabled = busy || session || !$("attach-grant").checked || setupState.forward_owned;
   $("select-page").disabled = busy || session || !setupState.page_count;
-  $("release").disabled = busy || session || !setupState.forward_owned || !$("sdk-grant").checked;
+  $("release").disabled = busy || session || !setupState.forward_owned;
   $("connect").disabled = busy || session || !source || !$("authorized").checked;
   $("disconnect").disabled = busy || !session;
   $("capture").disabled = busy || !connected || !source.pixels_allowed;
@@ -77,7 +77,8 @@ async function setup(operation, values) {
   busy = true; error(); controls();
   $("status").textContent = "Setup in progress. Do not repeat this operation.";
   try {
-    setupView(await request("/api/setup", { operation, ...values }));
+    setupView(await request("/api/setup", operation === "select"
+      ? { operation, ...values } : { operation, ...values, authorized: true }));
     if (operation === "debug" && setupState.page_count === 1) {
       setupView(await request("/api/setup", { operation: "select", page: 0,
         safe_ids: $("safe-ids").value.split(",").map((id) => id.trim()).filter(Boolean) }));
@@ -192,22 +193,22 @@ async function refresh() {
     controls();
   } finally { polling = false; }
 }
-for (const id of ["sdk-grant", "attach-grant", "authorized"]) $(id).addEventListener("change", controls);
-$("connect-tv").addEventListener("click", () => setup("connect-tv", { serial: $("serial").value.trim(), authorized: $("sdk-grant").checked }));
-$("discover").addEventListener("click", () => setup("discover", { serial: $("tv").value || $("serial").value.trim(), authorized: $("sdk-grant").checked }));
-$("find-network").addEventListener("click", () => setup("find-network", { authorized: $("sdk-grant").checked }));
-$("confirm-tv").addEventListener("click", () => setup("confirm-tv", { ip: $("manual-ip").value.trim(), authorized: $("sdk-grant").checked }));
+for (const id of ["attach-grant", "authorized"]) $(id).addEventListener("change", controls);
+$("connect-tv").addEventListener("click", () => setup("connect-tv", { serial: $("serial").value.trim() }));
+$("discover").addEventListener("click", () => setup("discover", { serial: $("tv").value || $("serial").value.trim() }));
+$("find-network").addEventListener("click", () => setup("find-network", {}));
+$("confirm-tv").addEventListener("click", () => setup("confirm-tv", { ip: $("manual-ip").value.trim() }));
 $("tv").addEventListener("change", () => {
-  if ((setupState.devices || []).includes($("tv").value)) setup("discover", { serial: $("tv").value, authorized: $("sdk-grant").checked });
+  if ((setupState.devices || []).includes($("tv").value)) setup("discover", { serial: $("tv").value });
   else {
     $("serial").value = $("tv").value;
     $("setup-message").textContent = "Enable Developer Mode for this computer, then Connect TV in Advanced.";
     $("onboarding").open = true;
   }
 });
-$("debug").addEventListener("click", () => setup("debug", { serial: $("tv").value || $("serial").value.trim(), authorized: $("sdk-grant").checked, app: $("installed-app").value || $("app-id").value.trim(), legacy: $("legacy").checked }));
+$("debug").addEventListener("click", () => setup("debug", { serial: $("tv").value || $("serial").value.trim(), app: $("installed-app").value || $("app-id").value.trim(), legacy: $("legacy").checked }));
 $("attach").addEventListener("click", () => setup("attach", { port: Number($("port").value), authorized: $("attach-grant").checked }));
-$("release").addEventListener("click", () => setup("release", { authorized: $("sdk-grant").checked }));
+$("release").addEventListener("click", () => setup("release", {}));
 $("select-page").addEventListener("click", () => setup("select", { page: Number($("page").value), safe_ids: $("safe-ids").value.split(",").map((id) => id.trim()).filter(Boolean) }));
 $("connect").addEventListener("click", () => command("connect", { authorized: $("authorized").checked, pixels: $("pixels").checked, input: $("input").checked, extended_input: $("extended-input").checked, run_seconds: Number($("duration").value) }));
 $("disconnect").addEventListener("click", () => command("disconnect", {}));

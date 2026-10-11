@@ -39,8 +39,8 @@ real Windows-to-TV behavior remain untested.
    Extension with the computer owner's permission if missing.
 2. Enable TV Developer Mode using Samsung's documented Device Manager workflow.
    Resolve host Local Network/firewall permission normally; no relay, TLS or
-   security bypass is created. Authorize TV discovery/debug setup and click
-   **Find TV & apps**. One connected IPv4 TV is selected automatically; choose
+   security bypass is created. Click **Find TV & apps** directly; no discovery
+   permission checkbox is needed. One connected IPv4 TV is selected automatically; choose
    explicitly when several are connected. Discovery reads SDB devices and the
    selected TV's installed-app list under a short exclusive lease.
 3. Use Samsung Certificate Manager to prepare author/distributor certificates
