@@ -195,6 +195,15 @@ class LiveTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join()
 
+    def test_target_id_validator_is_exact_on_every_platform(self):
+        for value in ("(0123456789abcdef0123456789ABCDEF)", "test-page", "A1_b2"):
+            self.assertTrue(live.target_id_ok(value), value)
+        for value in ("(0123456789abcdef0123456789ABCDEF)/x", "(0123456789abcdef0123456789ABCDE)",
+                      "(0123456789abcdef0123456789ABCDEG)", "((0123456789abcdef0123456789ABCDEF))",
+                      "(test-page)", "page?q", "page\r\n", "a/b", "", None, 7):
+            self.assertFalse(live.target_id_ok(value), repr(value))
+
+    @unittest.skipUnless(os.name == "posix", "Canvas private profiles use POSIX ownership; Windows uses workbench")
     def test_source_accepts_only_the_exact_parenthesized_hex_target(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
