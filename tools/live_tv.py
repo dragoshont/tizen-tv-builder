@@ -710,7 +710,6 @@ class App:
         self.path = path
         self.config = config
         self.sources = {s["id"]: Source(s, factory) for s in config["sources"]}
-        self.token = secrets.token_urlsafe(32)
         self.persist_lock = threading.Lock()
         self.fleet = fleet
 
@@ -816,8 +815,20 @@ def handler(app):
                 fail("origin", "Cross-origin requests are forbidden")
             if not public_static and self.headers.get("Sec-Fetch-Site") == "cross-site":
                 fail("origin", "Cross-site requests are forbidden")
-            if private and not secrets.compare_digest(self.headers.get("Authorization", ""), "Bearer " + app.token):
-                fail("auth", "Private canvas authentication is required")
+            if not private:
+                return
+            token = getattr(app, "token", None)
+            if token is not None:
+                if not secrets.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
+                    fail("auth", "Private canvas authentication is required")
+                return
+            # Unauthenticated portal (user decision): loopback Host plus same-origin proof.
+            # Browsers send Origin on every POST and Sec-Fetch-Site on every fetch, so another
+            # web page, including another localhost port (same-site), cannot drive or read it.
+            if self.headers.get("Sec-Fetch-Site") not in {None, "same-origin", "none"}:
+                fail("origin", "Only this portal page may use its API")
+            if self.command == "POST" and origin != "http://" + host:
+                fail("origin", "Requests must come from this portal page")
 
         def do_GET(self):
             try:
@@ -928,8 +939,8 @@ def serve(profile, owner_stdin=False):
     server.daemon_threads = True
     server.timeout = 0.2
     server.request_queue_size = 8
-    # The URL contains private authentication in its fragment, never query/log/HTTP referrer.
-    print(json.dumps({"url": f"http://127.0.0.1:{server.server_port}/#{app.token}"}), flush=True)
+    # Loopback-only and unauthenticated by design; see docs/live-canvas.md for the local-user risk.
+    print(json.dumps({"url": f"http://127.0.0.1:{server.server_port}/"}), flush=True)
     if owner_stdin:
         def monitor_owner():
             sys.stdin.buffer.read()  # EOF when the SDK provider exits, even if it is killed.

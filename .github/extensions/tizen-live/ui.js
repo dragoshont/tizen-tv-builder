@@ -1,9 +1,7 @@
 import { shortcut, handledShortcut, coordinate } from "/controls.mjs";
 
-const token = location.hash.slice(1);
-history.replaceState(null, "", location.pathname);
 const $ = (id) => document.getElementById(id);
-const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+const headers = { "Content-Type": "application/json" };
 const fields = ["model", "year", "os_version", "firmware"];
 const fieldLabels = { model: "Model", year: "Year", os_version: "Tizen version", firmware: "Firmware" };
 const urls = new Map(), cards = new Map(), confirmed = new Set();

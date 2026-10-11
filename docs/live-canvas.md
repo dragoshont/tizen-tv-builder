@@ -44,12 +44,17 @@ Call `list_canvas_capabilities`, `open_canvas`, then
 It performs no device RPC and returns no endpoint, page identity, DOM, pixels or
 authentication token. There is no agent-callable mutation action.
 
-Opening starts only an authenticated, loopback-only local service. **No inspector
-connection or device lease is acquired until the human clicks Connect.**
-The four exact public GET routes (`/`, `/ui.js`, `/ui.css`, `/controls.mjs`)
-allow cross-site embedding by the host. They contain no capability, profile or
-pixels. Host/duplicate-header checks still apply; API/frame requests and every
-POST retain bearer authentication and strict origin/cross-site rejection.
+Opening starts an **unauthenticated**, loopback-only local service (user decision:
+no token prompt). **No inspector connection or device lease is acquired until the
+human clicks Connect.** Every request must name Host `127.0.0.1:<port>`; duplicate
+headers are refused. API and frame requests are refused when the browser marks them
+`same-site` or `cross-site` (this also blocks other localhost ports), and every POST
+must carry this page's exact `Origin`. The four public GET routes (`/`, `/ui.js`,
+`/ui.css`, `/controls.mjs`) contain no capability, profile or pixels.
+**Residual risk:** any local process or other local user on this computer can call
+the portal API while it runs (consent grants are JSON flags, not secrets). Run it
+only on a single-user machine and stop it when done. The standalone Workbench
+(`tools/workbench.py`) keeps its URL-fragment bearer token.
 SDK open/status success alone does not prove the embedded page rendered.
 
 ## Private profile
@@ -135,6 +140,26 @@ the alias and a matching DUID. Addresses, DUIDs and lock paths appear only under
 Details, redacted; they are never shown on the card or written to receipts.
 The remote and screen view work for configured sources; for scanned TVs the
 remote stays off with an inline reason until an app is opened for inspection.
+Each card shows one plain status pill (Ready to connect, Connecting…, Connected,
+Needs setup, In use, Not reachable) and a one-line sentence such as
+"Connected · Tizen 4.0 · ready to install".
+
+### Same features from the terminal: `tv`
+
+```sh
+python3 tools/tv.py scan                       # or: status [--json] (same state as the portal)
+python3 tools/tv.py --profile P rename tv-abc123 "Den TV"
+python3 tools/tv.py connect tv-abc123 --yes    # connect, identify, then disconnect
+python3 tools/tv.py --profile P key SOURCE down back --yes
+python3 tools/tv.py --profile P screenshot SOURCE --out ~/private-shots --yes
+python3 tools/tv.py --profile P portal         # prints the URL to open
+```
+
+The CLI calls the same Fleet/Source code as the portal, accepts aliases only (never
+raw addresses), keeps the key allowlist and the OK safe-target gate, writes
+screenshots 0600 outside this repository only, and releases every connection,
+lease and forward before it exits. Use `py tools\tv.py ...` on Windows; private
+profiles (rename, key, screenshot, portal) require POSIX permissions.
 Scan, naming and guidance are host-tested with a mocked SDB only; real 2018 TV
 wording, identify output and the 8001 fields are **unverified**.
 

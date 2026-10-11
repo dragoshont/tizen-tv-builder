@@ -276,11 +276,18 @@ class LiveTests(unittest.TestCase):
                                    {"Content-Type": "application/json", **headers})
                 reply = connection.getresponse(); raw = reply.read(); connection.close()
                 return reply.status, json.loads(raw)
-            auth = {"Authorization": "Bearer " + app.token}
+            # The portal is unauthenticated by user decision; same-origin proof replaces the token.
+            auth = {"Origin": f"http://127.0.0.1:{server.server_port}"}
             try:
+                self.assertFalse(hasattr(app, "token"))
                 self.assertEqual(request("POST", "/api/detect", {})[0], 403)
-                self.assertEqual(request("POST", "/api/detect", {}, **auth, Origin="https://untrusted.example")[0], 403)
+                self.assertEqual(request("POST", "/api/detect", {}, Origin="https://untrusted.example")[0], 403)
+                self.assertEqual(request("POST", "/api/detect", {}, Origin="http://127.0.0.1:1")[0], 403)
                 self.assertEqual(request("POST", "/api/tv/connect/tv-0a1b2c", {"confirm": ""})[0], 403)
+                self.assertEqual(request("GET", "/api/state", **{"Sec-Fetch-Site": "same-site"})[0], 403)
+                self.assertEqual(request("GET", "/api/state", Host="localhost:%d" % server.server_port)[0], 403)
+                self.assertEqual(request("GET", "/api/state")[0], 200)
+                self.assertEqual(request("GET", "/api/state", **{"Sec-Fetch-Site": "same-origin"})[0], 200)
                 self.assertEqual(fleet.calls, [])
                 status, state = request("GET", "/api/state", **auth)
                 self.assertEqual((status, state["tvs"][0]["name"], state["sources"]), (200, "Bedroom TV", []))
@@ -473,22 +480,22 @@ class LiveTests(unittest.TestCase):
                 connection.request(method, route, body, supplied)
                 reply = connection.getresponse(); raw = reply.read(); connection.close()
                 return reply.status, json.loads(raw) if reply.getheader("Content-Type") == "application/json" else raw
-            auth = {"Authorization": "Bearer " + app.token}
+            auth = {"Origin": f"http://127.0.0.1:{server.server_port}"}
             try:
                 embedded = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "iframe"}
                 for route in ("/", "/ui.js", "/ui.css", "/controls.mjs"):
                     status, public = request("GET", route, **embedded)
                     self.assertEqual(status, 200, "Embedded host must load public renderer files")
-                    self.assertNotIn(app.token.encode(), public)
+                    self.assertNotIn(b"Authorization", public)
                 self.assertEqual(request("GET", "/", **embedded, Host="untrusted.example")[0], 403)
                 self.assertEqual(request("GET", "/api/state", **auth, **embedded)[0], 403)
                 self.assertEqual(request("POST", "/api/connect/sample", {}, **auth, **embedded)[0], 403)
                 self.assertEqual(request("GET", "/ui.js?private=1", **embedded)[0], 403)
                 self.assertIsNone(app.sources["sample"].client)
-                self.assertEqual(request("GET", "/api/state")[0], 403)
-                self.assertEqual(request("GET", "/api/state", **auth, Origin="https://untrusted.example")[0], 403)
-                self.assertEqual(request("GET", "/api/state", **auth, Host="untrusted.example")[0], 403)
-                self.assertEqual(request("POST", "/api/connect/sample", {}, **auth, Origin="null")[0], 403)
+                self.assertEqual(request("POST", "/api/connect/sample", {"authorized": True, "pixels": True, "input": False})[0], 403)
+                self.assertEqual(request("GET", "/api/state", Origin="https://untrusted.example")[0], 403)
+                self.assertEqual(request("GET", "/api/state", Host="untrusted.example")[0], 403)
+                self.assertEqual(request("POST", "/api/connect/sample", {}, Origin="null")[0], 403)
                 self.assertEqual(request("OPTIONS", "/api/state", **auth)[0], 405)
                 status, refused = request("<script>", "/api/state", **auth)
                 self.assertEqual(status, 501)
@@ -501,7 +508,8 @@ class LiveTests(unittest.TestCase):
                 self.assertEqual(request("POST", "/api/key/sample", {"key": "ok"}, **auth)[0], 403)
                 self.assertEqual(request("POST", "/api/capture/sample", {}, **auth)[0], 200)
                 revision = app.sources["sample"].revision
-                self.assertEqual(request("GET", f"/api/frame/sample/0/{revision}")[0], 403)
+                self.assertEqual(request("GET", f"/api/frame/sample/0/{revision}", **{"Sec-Fetch-Site": "same-site"})[0], 403)
+                self.assertEqual(request("GET", f"/api/frame/sample/0/{revision}", Origin="http://127.0.0.1:1")[0], 403)
                 self.assertEqual(request("GET", f"/api/frame/sample/0/{revision}", **auth)[1], native_fixture())
                 values = {"model": {"value": "Sample model", "provenance": "user-provided"}}
                 self.assertEqual(request("POST", "/api/metadata/sample", values, **auth)[0], 200)

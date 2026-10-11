@@ -23,6 +23,7 @@ class ShellTests(unittest.TestCase):
 
     def test_record_route_reuses_authenticated_bounded_json_policy(self):
         app = live_tv.App(None, {"sources": []})
+        app.token = "workbench-fixture-token"  # Workbench keeps token auth; the portal does not.
         app.record = lambda data: {"state": "fixture", "operation": data["operation"]}
         server = live_tv.BoundedServer(("127.0.0.1", 0), live_tv.handler(app))
         thread = threading.Thread(target=server.serve_forever, daemon=True)

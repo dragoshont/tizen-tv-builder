@@ -36,7 +36,7 @@ async function start(profilePath) {
       if (!buffer.includes("\n")) return;
       try {
         const { url } = JSON.parse(buffer.split("\n")[0]);
-        if (!/^http:\/\/127\.0\.0\.1:\d+\/#[A-Za-z0-9_-]{40,}$/.test(url)) throw new Error();
+        if (!/^http:\/\/127\.0\.0\.1:\d+\/$/.test(url)) throw new Error();
         settled = true; clearTimeout(timeout);
         resolve({ child, url, refs: new Set() });
       } catch {
@@ -81,7 +81,6 @@ await joinSession({
         const address = new URL(entry.url);
         try {
           const response = await fetch(`${address.origin}/api/state`, {
-            headers: { Authorization: `Bearer ${address.hash.slice(1)}` },
             signal: AbortSignal.timeout(3000),
           });
           if (!response.ok) throw new Error();

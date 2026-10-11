@@ -330,6 +330,43 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(tv["guidance"]["title"], "Connected, install blocked: needs certificate update")
         fleet.close()
 
+    def test_plain_status_headline_for_every_card_state(self):
+        self.sdb.accept = False
+        self.sdb.devices = {f"{LAN_B}:26101": "offline"}
+        fleet = self.fleet(hits=(LAN_A,))
+        fleet.detect()
+        tvs = {tv["reachable"]: tv["alias"] for tv in fleet.state()["tvs"]}
+        def card(alias):
+            return next(t for t in fleet.state()["tvs"] if t["alias"] == alias)
+        self.assertEqual((card(tvs[True])["label"], card(tvs[True])["tone"]), ("Ready to connect", "idle"))
+        self.assertEqual(card(tvs[False])["label"], "Not reachable")
+        with self.assertRaises(live.LiveError):
+            fleet.connect(tvs[True], {"confirm": ""})
+        tv = card(tvs[True])
+        self.assertEqual((tv["status"], tv["label"], tv["tone"]), ("not-connected", "Needs setup", "warn"))
+        self.assertIn("Host PC IP", tv["headline"])
+        self.sdb.accept = True
+        fleet.connect(tvs[True], {"confirm": ""})
+        self.assertEqual((card(tvs[True])["label"], card(tvs[True])["tone"]), ("Connected", "ok"))
+        self.assertEqual(card(tvs[True])["headline"], "Connected. Identify it to check install readiness")
+        fleet.identify(tvs[True], {})
+        tv = card(tvs[True])
+        self.assertEqual(tv["headline"], "Connected · Tizen 4.0 · ready to install")
+        self.certificate.write_text("<profile><duid>OTHERDEVICE0002</duid></profile>")
+        fleet.identify(tvs[True], {})
+        self.assertEqual(card(tvs[True])["label"], "Needs setup")
+        self.assertEqual(card(tvs[True])["headline"], "Connected · install blocked until the certificate includes this TV")
+        fleet.close()
+        self.canonical.write_text("{}")
+        busy = self.fleet(hits=())
+        self.sdb.devices = {"127.0.0.1:26111": "device"}
+        busy.detect()
+        tv = self.only(busy)
+        self.assertEqual((tv["label"], tv["tone"]), ("In use", "busy"))
+        for text in (tv["headline"], tv["label"]):
+            self.assertNotRegex(text, r"lane|lease|sdb|CDP|\d+\.\d+\.\d+\.\d+")
+        busy.close()
+
     def test_submit_connect_runs_in_background_then_identifies(self):
         fleet = self.fleet()
         fleet.submit("detect", None, {})

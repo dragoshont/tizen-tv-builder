@@ -237,6 +237,33 @@ class Fleet:
         year = info.get("year", "unknown")
         return f"Samsung TV ({year}) #{number}" if re.fullmatch(r"20[0-9]{2}", year) else f"Samsung TV #{number}"
 
+    PENDING = {"connect": "Connecting…", "identify": "Checking…", "disconnect": "Disconnecting…",
+               "run": "Starting app…"}
+
+    def headline(self, record, status, busy, reason):
+        """One plain-language status line per card: (pill label, tone, sentence)."""
+        if busy:
+            return "In use", "busy", busy
+        if record["pending"]:
+            label = self.PENDING.get(record["pending"], "Working…")
+            return label, "progress", label
+        if record.get("missing"):
+            return "Not found", "warn", "Not found in the last scan. Check that the TV is on, then scan again"
+        if status == "connected":
+            identity = record["identity"] or {}
+            if not identity:
+                return "Connected", "ok", "Connected. Identify it to check install readiness"
+            tizen = identity.get("tizen")
+            prefix = "Connected · Tizen " + tizen if tizen and tizen != "unknown" else "Connected"
+            if record["certificate"] == "match":
+                return "Connected", "ok", prefix + " · ready to install"
+            return "Needs setup", "warn", "Connected · install blocked until the certificate includes this TV"
+        if record["guidance"]:
+            return "Needs setup", "warn", record["guidance"]["title"]
+        if record["reachable"]:
+            return "Ready to connect", "idle", reason or "Developer Mode port is open"
+        return "Not reachable", "warn", reason or "Developer Mode port is closed or the TV is off"
+
     def summary(self, record, number):
         busy = self.busy_reason(record)
         connected = record["lease"] is not None or record["sdb_state"] == "device"
@@ -251,7 +278,9 @@ class Fleet:
                       "Developer Mode port is closed or the TV is off")
         else:
             reason = None
+        label, tone, headline = self.headline(record, status, busy, reason)
         return {"alias": record["alias"], "name": self.names.get(record["alias"], default),
+                "label": label, "tone": tone, "headline": headline,
                 "default_name": default, "renamed": record["alias"] in self.names,
                 "status": status, "busy_reason": busy, "not_connected_reason": reason,
                 "reachable": bool(record["reachable"]), "missing": record.get("missing", False),

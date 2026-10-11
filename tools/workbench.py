@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import secrets
 import threading
 import time
 import webbrowser
@@ -190,6 +191,8 @@ def pages(port):
 class Workbench(App):
     def __init__(self, sdb=None, runner=run_sdb, discover=pages, factory=CDP):
         super().__init__(None, {"sources": []}, factory)
+        # The Workbench may be opened from any browser tab, so it keeps its URL-fragment token.
+        self.token = secrets.token_urlsafe(32)
         self.assets = ASSETS
         self.frame_ancestors = "'none'"
         self.sdb = sdk_tool("sdb", sdb)
