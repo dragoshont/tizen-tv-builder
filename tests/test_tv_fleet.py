@@ -94,7 +94,7 @@ class FleetTests(unittest.TestCase):
             self.assertRegex(alias, r"^tv-[0-9a-f]{6}$")
         statuses = sorted(tv["status"] for tv in tvs.values())
         # An sdb link this portal does not hold is not "Connected": that needs a working preview.
-        self.assertEqual(statuses, ["busy", "not-connected", "not-connected"])
+        self.assertEqual(statuses, ["not-connected", "not-connected", "not-connected"])
         lan = next(tv for tv in tvs.values() if tv["status"] == "not-connected" and tv["reachable"])
         self.assertTrue(lan["reachable"])
         self.assertEqual(lan["model"], {"value": "UE55NU7400", "provenance": "observed"})
@@ -108,61 +108,65 @@ class FleetTests(unittest.TestCase):
         (self.root / "alias.key").unlink()
         self.assertNotEqual(self.fleet().detect()["tvs"][0]["alias"], first)
 
-    def test_relay_and_other_lane_leases_are_busy_and_read_only(self):
+    def foreign_locks(self, alias):
+        """Lock files other sessions left behind: a live owner, a dead owner and the shared lane."""
+        live_owner = live.Lease(self.root / f"tizen-tv-{alias}.lock")
+        live_owner.acquire()
+        dead = self.root / "tizen-tv-tv-dead00.lock"
+        dead.mkdir()
+        (dead / "owner.json").write_text('{"pid": 999999999, "token": "x"}')
+        self.canonical.mkdir()
+        return live_owner, {path: sorted(p.name for p in path.iterdir()) for path in (live_owner.path, dead, self.canonical)}
+
+    def test_lock_files_from_other_sessions_never_block_scan_status_or_connect(self):
         self.sdb.devices = {"127.0.0.1:26111": "device"}
         fleet = self.fleet(hits=(LAN_A,))
-        fleet.detect()
-        tvs = fleet.state()["tvs"]
-        relay = next(tv for tv in tvs if tv["status"] == "busy")
-        lan = next(tv for tv in tvs if tv["status"] != "busy")
-        self.assertIn("another", relay["busy_reason"])
-        with self.assertRaises(live.LiveError) as caught:
-            fleet.connect(relay["alias"], {"confirm": relay["alias"]})
-        self.assertEqual(caught.exception.code, "busy")
-        held = live.Lease(self.root / f"tizen-tv-{lan['alias']}.lock")
-        held.acquire()
+        aliases = [tv["alias"] for tv in fleet.detect()["tvs"]]
+        lan = next(tv["alias"] for tv in fleet.state()["tvs"] if tv["reachable"])
+        live_owner, before = self.foreign_locks(lan)
         try:
-            self.assertEqual(next(t for t in fleet.state()["tvs"] if t["alias"] == lan["alias"])["status"], "busy")
-            with self.assertRaises(live.LiveError):
-                fleet.connect(lan["alias"], {"confirm": ""})
+            fleet.detect()
+            for tv in fleet.state()["tvs"]:
+                self.assertNotEqual(tv["status"], "busy")
+                self.assertNotIn("busy_reason", tv)
+                self.assertNotIn("caution", tv)
+                self.assertNotIn("In use", tv["label"] + tv["headline"])
+            for alias in aliases:
+                fleet.connect(alias, {"confirm": ""})
+            self.assertEqual({tv["status"] for tv in fleet.state()["tvs"]}, {"developer"})
+            fleet.close()
+            for path, names in before.items():
+                self.assertEqual(sorted(p.name for p in Path(path).iterdir()), names, "Other sessions' files are never touched")
         finally:
-            held.release()
-        self.assertEqual(self.sdb.mutations(), [])
+            live_owner.release()
+            fleet.close()
 
-    def test_connected_elsewhere_while_canonical_lane_active_is_busy(self):
-        self.sdb.devices = {f"{LAN_A}:26101": "device"}
-        self.canonical.mkdir()
-        fleet = self.fleet()
-        fleet.detect()
-        self.assertEqual(self.only(fleet)["status"], "busy")
-
-    def test_canonical_lane_active_requires_typed_confirmation(self):
-        self.canonical.mkdir()
-        fleet = self.fleet()
-        alias = fleet.detect()["tvs"][0]["alias"]
-        self.assertTrue(self.only(fleet)["caution"])
-        with self.assertRaises(live.LiveError) as caught:
-            fleet.connect(alias, {"confirm": ""})
-        self.assertEqual(caught.exception.code, "confirm")
-        self.assertEqual(self.sdb.mutations(), [])
-        fleet.connect(alias, {"confirm": alias})
-        self.assertEqual(self.only(fleet)["status"], "developer")
-        self.assertTrue(self.canonical.is_dir(), "The canonical lock is never touched")
-        fleet.close()
-
-    def test_connect_owned_holds_per_tv_lease_and_disconnects_only_owned(self):
+    def test_connect_is_stateless_and_writes_no_lock_files(self):
         fleet = self.fleet()
         alias = fleet.detect()["tvs"][0]["alias"]
         fleet.connect(alias, {"confirm": ""})
         tv = self.only(fleet)
         self.assertEqual((tv["status"], tv["owned"]), ("developer", True))
-        lease = self.root / f"tizen-tv-{alias}.lock"
-        self.assertTrue(lease.is_dir())
-        self.assertFalse(self.canonical.exists())
+        self.assertEqual(list(self.root.glob("*.lock")), [])
+        self.assertNotIn("lease", tv["details"])
         fleet.disconnect(alias, {})
         self.assertIn(["disconnect", f"{LAN_A}:26101"], self.sdb.calls)
-        self.assertFalse(lease.exists())
         self.assertEqual(self.only(fleet)["status"], "not-connected")
+        # A fresh process reconnects without depending on the previous one's cleanup.
+        again = self.fleet()
+        again.detect()
+        again.connect(alias, {"confirm": ""})
+        self.assertEqual(self.only(again)["status"], "developer")
+        again.close()
+
+    def test_same_portal_still_serializes_its_own_connect(self):
+        fleet = self.fleet()
+        alias = fleet.detect()["tvs"][0]["alias"]
+        fleet.connect(alias, {"confirm": ""})
+        with self.assertRaises(live.LiveError) as caught:
+            fleet.connect(alias, {"confirm": ""})
+        self.assertEqual(caught.exception.code, "busy")
+        fleet.close()
 
     def test_already_connected_tv_is_never_disconnected_by_portal(self):
         self.sdb.devices = {f"{LAN_A}:26101": "device"}
@@ -266,17 +270,16 @@ class FleetTests(unittest.TestCase):
         self.assertPrivate(fleet.state())
         fleet.close()
 
-    def test_two_tvs_have_independent_leases(self):
+    def test_two_tvs_connect_independently(self):
         fleet = self.fleet(hits=(LAN_A, LAN_B))
         first, second = (tv["alias"] for tv in fleet.detect()["tvs"])
         fleet.connect(first, {"confirm": ""})
         fleet.connect(second, {"confirm": ""})
-        self.assertTrue((self.root / f"tizen-tv-{first}.lock").is_dir())
-        self.assertTrue((self.root / f"tizen-tv-{second}.lock").is_dir())
         fleet.disconnect(first, {})
-        self.assertTrue((self.root / f"tizen-tv-{second}.lock").is_dir())
+        states = {tv["alias"]: tv["status"] for tv in fleet.state()["tvs"]}
+        self.assertEqual((states[first], states[second]), ("not-connected", "developer"))
         fleet.close()
-        self.assertFalse((self.root / f"tizen-tv-{second}.lock").exists())
+        self.assertEqual(list(self.root.glob("*.lock")), [])
 
     def test_scan_is_bounded(self):
         many = [f"10.254.0.{n}" for n in range(1, 101)]
@@ -379,14 +382,14 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(card(tvs[True])["dev_mode"]["label"], "Dev mode enabled")
         fleet.close()
         self.canonical.write_text("{}")
-        busy = self.fleet(hits=())
+        other = self.fleet(hits=())
         self.sdb.devices = {"127.0.0.1:26111": "device"}
-        busy.detect()
-        tv = self.only(busy)
-        self.assertEqual((tv["label"], tv["tone"]), ("In use", "busy"))
+        other.detect()
+        tv = self.only(other)
+        self.assertNotEqual(tv["tone"], "busy")
         for text in (tv["headline"], tv["label"]):
-            self.assertNotRegex(text, r"lane|lease|sdb|CDP|\d+\.\d+\.\d+\.\d+")
-        busy.close()
+            self.assertNotRegex(text, r"lane|lease|sdb|CDP|In use|\d+\.\d+\.\d+\.\d+")
+        other.close()
 
     def test_submit_connect_runs_in_background_then_identifies(self):
         fleet = self.fleet()

@@ -1,4 +1,4 @@
-"""TVs on this network: bounded read-only scan, per-TV leases and user-operated connect.
+"""TVs on this network: bounded read-only scan and stateless, user-operated connect.
 
 Addresses, serials and DUIDs stay in this process's memory. Everything returned by
 state() uses keyed aliases and redacted details so it can reach the UI safely.
@@ -20,7 +20,7 @@ import time
 
 import flows
 import live_tv
-from live_tv import Lease, LiveError, exact, fail
+from live_tv import LiveError, exact, fail
 import network_tv
 import appkit
 import samsung_models
@@ -195,14 +195,19 @@ def explain(output, fallback_code, fallback_message, fallback_next):
     return fallback_code, fallback_message, fallback_next
 
 
-class _HeldLease:
-    """The fleet already holds this TV's lease; the preview source must not take or drop it."""
+class _Link:
+    """This process's own developer link to one TV. In memory only: no lock file reserves the TV,
+    so other sessions' leftover locks never block it and a restart needs no cleanup."""
+    identity = "in-memory"
 
     def acquire(self):
         pass
 
     def release(self):
         pass
+
+
+_HeldLease = _Link
 
 
 PREVIEW_SECONDS = 900
@@ -380,17 +385,6 @@ class Fleet:
     def lease_path(self, alias):
         return self.lease_root / f"tizen-tv-{alias}.lock"
 
-    def busy_reason(self, record):
-        if record["lease"] is not None:
-            return None
-        if record.get("loopback"):
-            return "Used by another tool on this computer"
-        if self.lease_path(record["alias"]).exists():
-            return "In use by another session"
-        if record["sdb_state"] == "device" and self.canonical.exists():
-            return "Connected to another session"
-        return None
-
     def host_ip(self, record):
         if not record.get("host"):
             return None
@@ -411,10 +405,8 @@ class Fleet:
     PENDING = {"connect": "Connecting…", "identify": "Checking…", "disconnect": "Disconnecting…",
                "run": "Starting app…", "preview": "Opening app…"}
 
-    def headline(self, record, status, busy, reason):
+    def headline(self, record, status, reason):
         """One plain-language status line per card: (pill label, tone, sentence)."""
-        if busy:
-            return "In use", "busy", busy
         if record["pending"]:
             label = self.PENDING.get(record["pending"], "Working…")
             return label, "progress", label
@@ -515,10 +507,9 @@ class Fleet:
                 "firmware": info["firmware"] if info["firmware"] != "unknown" else None}
 
     def summary(self, record, number):
-        busy = self.busy_reason(record)
         developer = record["lease"] is not None
         # Connected means the developer link AND a working app preview (attached and captured).
-        status = ("busy" if busy else "connected" if developer and self.preview_ready(record)
+        status = ("connected" if developer and self.preview_ready(record)
                   else "developer" if developer else "not-connected")
         info = record.get("info") or {}
         default = self.default_name(record, number)
@@ -531,11 +522,11 @@ class Fleet:
                       "Developer Mode port is closed or the TV is off")
         else:
             reason = None
-        label, tone, headline = self.headline(record, status, busy, reason)
+        label, tone, headline = self.headline(record, status, reason)
         return {"alias": record["alias"], "name": self.names.get(record["alias"], default),
                 "label": label, "tone": tone, "headline": headline,
                 "default_name": default, "renamed": record["alias"] in self.names,
-                "status": status, "busy_reason": busy, "not_connected_reason": reason,
+                "status": status, "not_connected_reason": reason,
                 "reachable": bool(record["reachable"]), "missing": record.get("missing", False),
                 "developer_mode": info.get("developer_mode", "unknown"),
                 "dev_mode": self.dev_mode(record, status), "install": self.install_line(record),
@@ -544,15 +535,13 @@ class Fleet:
                 "year": info.get("year", "unknown"), "metadata": self.metadata(record),
                 "owned": bool(record["owned"]), "held": record["lease"] is not None,
                 "preview": self.preview_summary(record),
-                "caution": bool(not busy and record["lease"] is None and self.canonical.exists()),
                 "identity": record["identity"], "certificate": record["certificate"],
                 "guidance": guidance, "pending": record["pending"], "error": record["error"],
                 "job": record["job"],
                 "details": {"network": redacted_address(record.get("host")),
                             "developer_port": "open" if record["reachable"] else "closed or unknown",
                             "sdk_link": record["sdb_state"] or "none",
-                            "duid": "present (hidden)" if (record["identity"] or {}).get("duid_present") else "not read",
-                            "lease": "held by this portal" if record["lease"] is not None else "not held"}}
+                            "duid": "present (hidden)" if (record["identity"] or {}).get("duid_present") else "not read"}}
 
     def state(self):
         with self.lock:
@@ -573,17 +562,11 @@ class Fleet:
         self._require_sdk()
         with self.lock:
             record = self.record(alias)
-            busy = self.busy_reason(record)
-            if busy:
-                fail("busy", busy + "; it is shown read-only")
             if record["lease"] is not None:
                 fail("busy", "This portal is already connected to that TV")
-            if self.canonical.exists() and data["confirm"] != alias:
-                fail("confirm", f"Another TV session is active. Type {alias} to confirm this is a different TV")
             if not record.get("host"):
                 fail("invalid", "This TV has no network address to connect to")
-            lease = Lease(self.lease_path(alias))
-            lease.acquire()
+            lease = _Link()
             record["lease"], record["error"], record["guidance"] = lease, None, None
         serial = record["serial"]
         attempted = False

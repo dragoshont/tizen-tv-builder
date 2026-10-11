@@ -142,7 +142,7 @@ are listed. This discovery path is host-tested with mocks only and is
 ### Developer Mode labels
 
 Each card and `tv scan`/`tv check` show one developer-readiness label with a next
-action. It is separate from Connected / Not connected / In use, and comes from
+action. It is separate from Connected / Developer Mode ready / Not connected, and comes from
 observed evidence only:
 
 | Evidence | Label |
@@ -173,19 +173,24 @@ upgrades exist (for example 2017 ENTRY_CN1 ran Tizen 2.4). Model codes are parse
 with anchored family patterns (LED `UE43RU7092` → 2019, QLED, Neo QLED, OLED, The
 Frame/Serif/Sero); unknown or ambiguous codes give "Model year unknown".
 
-Each TV card shows one of four states. **Connected** means both a developer
+Each TV card shows one of three states. **Connected** means both a developer
 link and a current app picture that the page has decoded; a non-empty list of
 returned layers is not enough. Nothing else earns that label, and the page fails
 closed (keys stay off) if the helper reports Connected without a decodable,
 current picture. **Developer Mode ready** means the developer link works
-but no preview is attached ("Preview not connected"). **Not connected** and
-**Busy** (another session holds its lock; read-only) cover the rest.
+but no preview is attached ("Preview not connected"). **Not connected** covers
+the rest.
 
-Connect has no confirmation dialog: it launches no app and sends no keys. It runs
-`sdb connect` and Identify under that TV's own lease
-`/tmp/tizen-tv-<alias>.lock`, so it never preempts the canonical lock. If the
-canonical lock is present the portal shows a caution and you must type the alias. When Connect fails the
-card explains why and offers Retry.
+Connections are stateless. Connect has no confirmation dialog: it launches no app
+and sends no keys. It runs `sdb connect` and Identify and keeps that link in this
+portal's memory only. No lock or lease file reserves the TV, so there is no Busy
+state and nothing to unlock: lock files left by other sessions (including
+`/tmp/tizen-tv-<alias>.lock` and the canonical lock) are ignored, never deleted.
+Status reflects the connection and picture observed now, not ownership. Within
+one portal, requests run one at a time. Two portals or tools driving the same TV
+at once can interfere with each other; avoid that. Disconnect and portal exit
+remove only the link and forwards this portal created; the shared SDB server is
+never stopped. When Connect fails the card explains why and offers Retry.
 
 From Developer Mode ready, **Open app for preview** takes an app ID and always
 asks first, because it restarts that app on the TV in debug mode; the portal
@@ -248,8 +253,7 @@ connection accepted by the TV (`sdb connect` listed as a device), and identity
 read (Tizen version; the DUID is only reported as present, never shown). An open
 port with a refused connection is "Not ready": Developer Mode is on, but the TV's Host PC IP most
 likely points to another computer. A TV that reports Developer Mode off is told apart and
-not connected to. Busy TVs
-are not touched. `tv-abc123` is the alias printed by `scan`; aliases stay stable
+not connected to. `tv-abc123` is the alias printed by `scan`; aliases stay stable
 between runs, and `list` keeps only names and status from the last scan
 (`last-scan.json`, 0600), never addresses or identities.
 
@@ -261,8 +265,8 @@ same CLI.
 
 The CLI calls the same Fleet/Source code as the portal, accepts aliases only (never
 raw addresses), keeps the key allowlist and the OK safe-target gate, writes
-screenshots 0600 outside this repository only, and releases every connection,
-lease and forward before it exits. Use `py tools\tizen.py tv ...` on Windows; the
+screenshots 0600 outside this repository only, and releases every connection
+and forward it made before it exits. Use `py tools\tizen.py tv ...` on Windows; the
 private profile (rename, key, screenshot, portal) requires POSIX permissions.
 Scan, naming and guidance are host-tested with a mocked SDB only; real 2018 TV
 wording, identify output and the 8001 fields are **unverified**.
@@ -293,7 +297,7 @@ Each card has its own on-screen Remote panel. Focus it or the screen view:
 | Space / Enter | OK |
 | Backspace | TV Back |
 
-Editing fields, IME/modifiers, held repeats, disconnected or busy input cannot
+Editing fields, IME/modifiers, held repeats, disconnected input or input while a key is sending cannot
 dispatch. Handled focused keys suppress browser defaults/native button clicks,
 so Enter/Space does not double-send. Buttons use the same guarded command route.
 There is no Home, Exit, volume, arbitrary evaluation or text-entry route.

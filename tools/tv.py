@@ -6,7 +6,7 @@ live_tv.Source for profile-configured inspector targets). Output shows names and
 redacted aliases only, never TV addresses, DUIDs or certificate data.
 
 Each run is one-shot: TVs are scanned in-process (addresses are never stored), and
-anything this command connects, leases or forwards is released before it exits.
+anything this command connects or forwards is released before it exits.
 No setup is needed: names and settings live in a private profile that is created
 empty on first use (~/.tizen-tv-builder/profile.json, or $TIZEN_TV_PROFILE).
 """
@@ -422,9 +422,6 @@ def check(fleet, tv, say):
     say("About: " + " · ".join(describe(meta)))
     if meta.get("baseline"):
         say("  " + meta["baseline"])
-    if tv["status"] == "busy":
-        say("In use by another session; not checked (" + (tv["busy_reason"] or "busy") + ")")
-        return 1
     say("Developer Mode port: " + ("open" if tv["reachable"] else "closed or not answering"))
     if not tv["reachable"] and tv["status"] != "connected":
         dev = tv["dev_mode"]

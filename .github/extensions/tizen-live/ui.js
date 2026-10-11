@@ -49,7 +49,7 @@ function ask(name, mustType, text, title = `Connect to ${name}?`, action = "Conn
   $("confirm-ok").textContent = action;
   $("confirm-text").textContent = text;
   $("confirm-type").hidden = !mustType;
-  $("confirm-type-text").textContent = mustType ? `Another session recently used a TV here. Type ${mustType} to continue.` : "";
+  $("confirm-type-text").textContent = mustType ? `Type ${mustType} to continue.` : "";
   $("confirm-alias").value = "";
   return new Promise((resolve) => {
     dialog.addEventListener("close", () => {
@@ -115,13 +115,14 @@ function usablePreview(card, preview) {
 function remotePanel() {
   const button = (key, label, text) => el("button", { type: "button", data: { key }, "aria-label": label }, text);
   const why = el("p", { class: "why" });
+  const hint = el("p", { class: "hint" }, "Keyboard: arrows, Enter = OK, Backspace = Back");
   const remote = el("div", { class: "remote", tabIndex: 0, role: "group", "aria-label": "Remote" },
     el("h3", {}, "Remote"),
     el("div", { class: "dpad" }, button("up", "Up", "▲"), button("left", "Left", "◀"), button("ok", "OK", "OK"),
       button("right", "Right", "▶"), button("down", "Down", "▼")),
     el("div", { class: "remote-row" }, button("back", "Back", "Back")),
-    why, el("p", { class: "hint" }, "Keyboard: arrows, Enter = OK, Backspace = Back"));
-  return { remote, why, keys: [...remote.querySelectorAll("[data-key]")] };
+    why, hint);
+  return { remote, why, hint, keys: [...remote.querySelectorAll("[data-key]")] };
 }
 
 // ---- scanned TV cards -------------------------------------------------------------
@@ -140,7 +141,7 @@ function tvCard(alias) {
   const details = el("details", {}, el("summary", {}, "Advanced"), list, install, certGuide,
     el("div", { class: "row" }, identify),
     el("div", { class: "fields" }, el("label", {}, "App ID", app), el("label", {}, "Package", pkg), el("div", { class: "row" }, run, job)));
-  const { remote, why, keys } = remotePanel();
+  const { remote, why, hint, keys } = remotePanel();
   const screenText = el("p"), frames = el("div", { class: "frames" }), age = el("p", { class: "note" });
   const previewApp = el("input", { maxLength: 40, placeholder: "Package.AppName", "aria-label": "App to preview",
     autocomplete: "off", spellcheck: "false", value: localStorage.getItem("tizen-preview-app") || "" });
@@ -155,7 +156,7 @@ function tvCard(alias) {
       el("div", { class: "title-row" }, name, pill, rename),
       info, dev, reason, el("div", { class: "row" }, connect, disconnect), guide, details),
     screen, remote);
-  const card = { root, name, pill, reason, connect, identify, disconnect, info, guide, certGuide, list, job, app, pkg, run, remote, why, keys, screenText, devLabel, devNext, install, summary: "",
+  const card = { root, name, pill, reason, connect, identify, disconnect, info, guide, certGuide, list, job, app, pkg, run, remote, why, hint, keys, screenText, devLabel, devNext, install, summary: "",
     previewApp, open, opener, refreshPicture, frames, age, revision: null };
   open.addEventListener("click", async () => {
     const tv = state.tvs.find((t) => t.alias === alias), appId = previewApp.value.trim(); if (!tv) return;
@@ -181,10 +182,8 @@ function tvCard(alias) {
   });
   connect.addEventListener("click", async () => {
     const tv = state.tvs.find((t) => t.alias === alias); if (!tv) return;
-    // Plain Connect needs no dialog; only the shared-lock caution asks for the alias.
-    const answer = tv.caution ? await ask(tv.name, tv.alias,
-      "Connect to Developer Mode and read TV information. No app is launched and no keys are sent.") : "";
-    if (answer !== null) tvCommand("connect", alias, { confirm: answer });
+    // Connect needs no dialog: it reserves nothing and launches no app.
+    tvCommand("connect", alias, { confirm: "" });
   });
   identify.addEventListener("click", () => tvCommand("identify", alias));
   disconnect.addEventListener("click", () => tvCommand("disconnect", alias));
@@ -231,15 +230,14 @@ async function updateTv(card, tv, keep) {
   card.name.textContent = tv.name;
   const working = Boolean(tv.pending);
   const label = working ? `${tv.pending[0].toUpperCase()}${tv.pending.slice(1)}ing…`.replace("eing", "ing")
-    : { connected: "Connected", developer: "Developer Mode ready", busy: "Busy", "not-connected": "Not connected" }[status] || status;
+    : { connected: "Connected", developer: "Developer Mode ready", "not-connected": "Not connected" }[status] || status;
   card.pill.textContent = label;
-  card.pill.className = `pill ${working ? "working" : status === "connected" ? "connected" : status === "developer" ? "ready" : status === "busy" ? "busy" : ""}`;
-  card.root.classList.toggle("busy", status === "busy");
-  const reason = previewError || tv.error || (status === "busy" ? tv.busy_reason : status === "not-connected" ? tv.not_connected_reason
+  card.pill.className = `pill ${working ? "working" : status === "connected" ? "connected" : status === "developer" ? "ready" : ""}`;
+  const reason = previewError || tv.error || (status === "not-connected" ? tv.not_connected_reason
     : status === "developer" ? "Preview not connected" : "") || "";
   card.reason.textContent = reason;
   card.reason.className = `reason${previewError || tv.error ? " problem" : ""}`;
-  const free = !working && status !== "busy";
+  const free = !working;
   card.connect.hidden = status !== "not-connected";
   card.connect.textContent = tv.error ? "Retry" : "Connect";
   card.connect.disabled = !free || offline || state.sdk === "missing";
@@ -289,14 +287,13 @@ async function updateTv(card, tv, keep) {
   card.refreshPicture.disabled = busy || !live;
   card.screenText.textContent = offline ? "Connection lost to this page's helper. No picture is shown; reopen the portal to retry."
     : previewError ? previewError
-    : status === "busy" ? "Busy: another session is using this TV. Nothing is shown."
     : status === "not-connected" ? "Not connected. Choose Connect to start."
     : live ? "" : "Preview not connected. Open an app to see its screen. Its own drawing is shown, not the whole TV or video.";
   card.screenText.parentElement.hidden = live;
   card.previewReady = live;
   for (const key of card.keys) key.disabled = busy || !live || !p.input_allowed || (key.dataset.key === "ok" && !p.activation_allowed);
-  card.why.textContent = status === "busy" ? "Busy: another session is using this TV."
-    : !live ? "The remote turns on once an app is open for preview."
+  card.hint.textContent = live && !p.activation_allowed ? "Keyboard: arrows, Backspace = Back" : "Keyboard: arrows, Enter = OK, Backspace = Back";
+  card.why.textContent = !live ? "The remote turns on once an app is open for preview."
     : !p.activation_allowed ? "Arrows and Back go to the app. OK is off: this app has no audited safe buttons." : busy ? "Sending…" : "Ready.";
   card.age.textContent = live && p.captured_at ? `Picture from ${new Date(p.captured_at * 1000).toLocaleTimeString()} · the app's own drawing, not the whole TV` : "";
   if (!live) { card.frames.replaceChildren(); card.revision = null; return; }
@@ -331,12 +328,12 @@ function sourceCard(id) {
   meta.append(el("div", { class: "row" }, el("button", { type: "submit", class: "secondary" }, "Save TV info")));
   const details = el("details", {}, el("summary", {}, "Details"), list,
     el("label", {}, "Stay connected for (seconds)", duration), meta, limits);
-  const { remote, why, keys } = remotePanel();
+  const { remote, why, hint, keys } = remotePanel();
   const root = el("article", { class: "device", "aria-label": id },
     el("div", { class: "device-main" }, el("div", { class: "title-row" }, name, kind, pill),
       reason, el("div", { class: "row" }, connect, disconnect), details),
     picture, remote);
-  const card = { root, name, kind, pill, reason, connect, disconnect, capture, stream, duration, interval, frames, age, view, list, limits, inputs, remote, why, keys, filled: false, revision: null };
+  const card = { root, name, kind, pill, reason, connect, disconnect, capture, stream, duration, interval, frames, age, view, list, limits, inputs, remote, why, hint, keys, filled: false, revision: null };
   const current = () => state.sources.find((s) => s.id === id);
   connect.addEventListener("click", async () => {
     const source = current(); if (!source) return;
@@ -399,6 +396,7 @@ async function updateSource(card, s, keep) {
   for (const key of card.keys) {
     key.disabled = busy || !ready || !s.input_allowed || (key.dataset.key === "ok" && !s.activation_allowed);
   }
+  card.hint.textContent = ready && !s.activation_allowed ? "Keyboard: arrows, Backspace = Back" : "Keyboard: arrows, Enter = OK, Backspace = Back";
   card.why.textContent = offline ? "Connection lost. Keys are off until the page reconnects."
     : !ready ? "Choose Connect on this card to turn the remote on."
     : !s.activation_allowed ? "OK is off: this app has no audited safe buttons." : busy ? "Sending…" : "Ready.";
