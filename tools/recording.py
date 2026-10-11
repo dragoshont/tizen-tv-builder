@@ -148,7 +148,7 @@ class WindowsDirectory:
             if not self._identity(handle)[0] & 0x10:
                 fail("output", "Windows output parent is not a directory")
 
-    def _create(self):
+    def _security_attributes(self):
         c, w = self.ctypes, self.wintypes
         descriptor = c.c_void_p()
         sddl = f"O:{self.sid}D:P(A;OICI;FA;;;{self.sid})"
@@ -158,8 +158,12 @@ class WindowsDirectory:
         class SecurityAttributes(c.Structure):
             _fields_ = [("length", w.DWORD), ("descriptor", c.c_void_p), ("inherit", w.BOOL)]
         attributes = SecurityAttributes(c.sizeof(SecurityAttributes), descriptor, False)
+        return descriptor, attributes
+
+    def _create(self):
+        descriptor, attributes = self._security_attributes()
         try:
-            if not self.kernel.CreateDirectoryW(str(self.path), c.byref(attributes)):
+            if not self.kernel.CreateDirectoryW(str(self.path), self.ctypes.byref(attributes)):
                 fail("output", "Windows output folder must be new; private exclusive creation failed")
         finally:
             self.kernel.LocalFree(descriptor)
@@ -220,9 +224,23 @@ class WindowsDirectory:
             info = path.lstat()
             if info.st_file_attributes & 0x400 or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 fail("output", "Windows native frame is not an ordinary private file")
-        stream = open(path, "rb" if read else "xb")
+        import msvcrt
+        descriptor, attributes = self._security_attributes()
         try:
-            import msvcrt
+            handle = self.kernel.CreateFileW(
+                str(path), 0x80020000 if read else 0xC0020000, 1,
+                self.ctypes.byref(attributes), 3 if read else 1, 0x00200000, None)
+        finally:
+            self.kernel.LocalFree(descriptor)
+        if handle in (None, self.ctypes.c_void_p(-1).value):
+            fail("output", "Windows private file open or exclusive creation failed")
+        try:
+            fd = msvcrt.open_osfhandle(handle, os.O_BINARY | (os.O_RDONLY if read else os.O_WRONLY))
+        except Exception:
+            self.kernel.CloseHandle(handle)
+            raise
+        stream = os.fdopen(fd, "rb" if read else "wb")
+        try:
             handle = msvcrt.get_osfhandle(stream.fileno())
             if self._identity(handle)[0] & 0x400:
                 fail("output", "Windows recording file is a reparse point")
