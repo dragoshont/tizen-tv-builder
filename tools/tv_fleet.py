@@ -347,6 +347,9 @@ class Fleet:
         self.pictures = Path(pictures) if pictures else Path.home() / "Pictures" / "TV Screenshots"
         self.clock = clock
         self.runner = runner
+        # The tizen CLI prints long progress before its verdict: keep the newest output, not the oldest.
+        self.tizen_runner = (lambda argv, timeout: flows.run_tool(argv, timeout, tail=True)) \
+            if runner is flows.run_tool else runner
         self.interfaces = interfaces
         self.sweep = sweep
         self.info = info
@@ -456,9 +459,15 @@ class Fleet:
     def _device_name(self, serial):
         """The `tizen -t` target: the third column of `sdb devices` (the serial alone is ignored)."""
         output = self.runner([self.sdb, "devices"], 10)
-        for line in output.splitlines()[1:]:
-            parts = line.split()
-            if len(parts) >= 3 and parts[0] == serial and re.fullmatch(r"[A-Za-z0-9_.:<>-]{1,64}", parts[2]):
+        rows = [line.split() for line in output.splitlines()[1:]]
+        rows = [parts for parts in rows if len(parts) >= 3]
+        for parts in rows:
+            if parts[0] == serial and re.fullmatch(r"[A-Za-z0-9_.:<>-]{1,64}", parts[2]):
+                twins = [other[0] for other in rows if other[2] == parts[2] and other[0] != serial]
+                if twins:
+                    # `tizen -t` picks by this name; two TVs of one model would make it a guess.
+                    fail("ambiguous-target", "Another connected TV has the same model name (" + parts[2]
+                         + "), so the tizen CLI cannot tell them apart. Disconnect the other TV, then try again")
                 return parts[2]
         fail("connect", "The TV is no longer connected; connect again")
 
@@ -1130,6 +1139,7 @@ class Fleet:
         if not app:
             fail("invalid", "That file is not a valid Tizen TV web app package (config.xml needs an app ID and the tv profile)")
         device = self._device_name(record["serial"])
+        before = self._installed_apps(record["serial"])  # So a later listing can prove what changed.
         with tempfile.TemporaryDirectory(prefix="tizen-install-") as folder:
             source = Path(folder) / "in" / "app.wgt"  # Safe name: the CLI chokes on spaces.
             source.parent.mkdir()
@@ -1146,17 +1156,32 @@ class Fleet:
                                              "app": app})
             safe = out / "app.wgt"  # The CLI names the output after <name>, which may hold spaces.
             built[0].replace(safe)
-            failed, text = self._tizen(["install", "-n", safe.name, "-t", device, "--", str(out)], timeout=180)
-        if failed or not re.search(r"successfully installed|install completed", text, re.I):
-            code, message, nxt = explain(text, "install-failed", "The TV did not install the app",
-                                         "Check the output below, then try again")
-            return self._finish(record, {"op": "install", "ok": False, "code": code, "message": message,
-                                         "next": nxt.replace("TV APP_ID", f"{alias} {app}").replace(
-                                             "tv cert add TV", "tv cert add " + alias),
-                                         "output": text[-400:], "app": app})
-        # "Installed" only when the TV's own app list shows this exact ID afterwards.
+            failed, text = self._tizen(["install", "-n", safe.name, "-t", device, "--", str(out)], timeout=300)
+        reported = not failed and bool(re.search(
+            r"successfully installed|installed successfully|install completed", text, re.I))
+        code, message, nxt = explain(text, "install-failed", "The TV did not install the app",
+                                     "Check the output below, then try again")
+        refused = code != "install-failed"  # The TV named a reason (certificate, author): keep it.
+        # Whatever the CLI printed, the TV's own app list decides what is on the TV now.
         listed = self._installed_apps(record["serial"])
         self._remember_apps(record, listed)
+        nxt = nxt.replace("TV APP_ID", f"{alias} {app}").replace("tv cert add TV", "tv cert add " + alias)
+        if not reported:
+            failure = {"op": "install", "ok": False, "app": app, "output": text[-400:]}
+            if refused or (listed is not None and app not in listed):
+                if not refused:
+                    message += ": " + app + " is not in its app list"
+                return self._finish(record, dict(failure, code=code, message=message, next=nxt))
+            if listed is None:
+                return self._finish(record, dict(failure, code="install-unconfirmed", next=f"tv info {alias} --app {app}",
+                                                 message="The install result is unknown: the SDK gave no final "
+                                                         "result and the TV's app list could not be read"))
+            if before is None or app in before:
+                return self._finish(record, dict(failure, code="install-unconfirmed", next=f"tv info {alias} --app {app}",
+                                                 message=app + " is on the TV, but the SDK gave no final result, so "
+                                                         "it is unknown whether this copy replaced the earlier one"))
+            # Absent before, listed now: the TV's own list proves the install.
+        # "Installed" only when the TV's own app list shows this exact ID afterwards.
         if listed is None:
             return self._finish(record, {"op": "install", "ok": False, "code": "install-unconfirmed",
                                          "message": "The TV reported an install, but its app list could not be read "
@@ -1295,11 +1320,12 @@ class Fleet:
         return list(records.values()) + [{"id": a} for a in sorted(apps - set(records))]
 
     def _tizen(self, args, timeout=120):
-        """(failed, scrubbed output). The Tizen CLI often exits 0 on failure, so callers read the text."""
+        """(failed, output without addresses). The Tizen CLI often exits 0 on failure, so callers read
+        the text. Its verdict is the last line, so the whole bounded output is kept, never its head."""
         try:
-            return False, scrub(self.runner([self.tizen] + args, timeout))
+            return False, IPV4.sub("[address]", self.tizen_runner([self.tizen] + args, timeout))
         except LiveError as error:
-            return True, scrub(error)
+            return True, IPV4.sub("[address]", str(error))
 
     # ---- screenshot and certificate ------------------------------------------
     def screenshot(self, alias, data, folder=None):

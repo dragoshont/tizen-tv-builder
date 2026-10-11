@@ -1,6 +1,7 @@
 """Production-readiness regressions: archive safety, signature structure, identity, verdicts, budgets."""
 import base64
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -20,6 +22,18 @@ import flows
 from live_tv import LiveError
 from test_appkit import signature
 from test_flows import Clock, FakeCDP, Runner, SERIAL, TOOL, session_args
+
+
+def child(returncode, stdout):
+    """Stand-in for the SDK child process: fixed output and exit code."""
+    class Child:
+        def __init__(self, argv, **kwargs):
+            self.stdout, self.returncode = io.BytesIO(stdout), returncode
+        def wait(self, timeout=None):
+            return self.returncode
+        def kill(self):
+            pass
+    return patch.object(flows.subprocess, "Popen", Child)
 
 
 class Base(unittest.TestCase):
@@ -150,8 +164,7 @@ class ReReview(Base):
     def kill_with(self, returncode, stdout):
         clock = Clock()
         session = flows.Session(SERIAL, "AbCdEfGhIj.App", **session_args(flows.run_tool, clock))
-        done = subprocess.CompletedProcess([], returncode, stdout=stdout)
-        with patch.object(flows.subprocess, "run", return_value=done):
+        with child(returncode, stdout):
             session.kill()
         return session.receipt["steps"][0], flows.verdict(session.receipt)["passed"]
 
@@ -165,17 +178,41 @@ class ReReview(Base):
 
     def test_truncated_zero_exit_output_is_rejected_by_the_runner(self):
         valid = b"Pkgid: AbCdEfGhIj is Terminated\n"
-        done = subprocess.CompletedProcess([], 0, stdout=b"error: device offline\n" + valid)
-        with patch.object(flows.subprocess, "run", return_value=done):
+        with child(0, b"error: device offline\n" + valid):
             with self.assertRaises(LiveError) as caught:
                 flows.run_tool(["sdb"], limit=len(valid))
         self.assertEqual(caught.exception.code, "sdk_output_truncated")
         self.assertLessEqual(len(str(caught.exception)), 700)
-        with patch.object(flows.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout=valid)):
+        with child(0, valid):
             self.assertEqual(flows.run_tool(["sdb"], limit=len(valid)), valid.decode())
         step, passed = self.kill_with(0, b"error: device offline\n" + b" " * (512 * 1024) + valid)
         self.assertEqual((step["result"], step["reason"]), ("failed", "sdk_output_truncated"))
         self.assertFalse(passed)
+
+    def test_runner_drains_long_progress_and_keeps_the_final_lines(self):
+        """Live regression: 2017/2019 installs print long progress; the verdict is the last line."""
+        script = ("import sys\nfor i in range(40000): print('app_id[AbCdEfGhIj.App] installing[%d]' % (i % 100))\n"
+                  "print('Tizen application is successfully installed.')\nsys.exit(int(sys.argv[1]))")
+        out = flows.run_tool([sys.executable, "-c", script, "0"], timeout=60, limit=64 * 1024, tail=True)
+        self.assertLessEqual(len(out), 64 * 1024)
+        self.assertTrue(out.rstrip().endswith("successfully installed."))
+        with self.assertRaises(LiveError) as caught:
+            flows.run_tool([sys.executable, "-c", script, "0"], timeout=60, limit=64 * 1024)
+        self.assertEqual(caught.exception.code, "sdk_output_truncated", "Strict mode still refuses cut output")
+        failing = script.replace("successfully installed.", "install failed[118, -11], reason: Author certificate not match")
+        with self.assertRaises(LiveError) as caught:
+            flows.run_tool([sys.executable, "-c", failing, "1"], timeout=60, limit=64 * 1024, tail=True)
+        self.assertIn("Author certificate not match", str(caught.exception))
+        self.assertLessEqual(len(str(caught.exception)), 700)
+
+    def test_runner_deadline_covers_the_process_and_keeps_its_last_output(self):
+        script = "import time\nprint('installing[9]', flush=True)\ntime.sleep(30)"
+        started = time.monotonic()
+        with self.assertRaises(LiveError) as caught:
+            flows.run_tool([sys.executable, "-c", script], timeout=1)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(caught.exception.code, "sdk_timeout")
+        self.assertIn("installing[9]", str(caught.exception))
 
     def test_zero_exit_kill_is_classified_by_observed_sdk_wording(self):
         timing = b"spend time for pkgcmd is [111]ms\n"

@@ -50,7 +50,8 @@ FAKE_TOOL = textwrap.dedent('''
 
     if tool == "sdb":
         if args == ["devices"]:
-            done("List of devices attached\\n" + "".join(s + "\\tdevice\\tUE55NU7400\\n" for s in state["connected"]))
+            twin = "10.255.255.99:26101\\tdevice\\tUE55NU7400\\n" if scenario.get("twin") else ""
+            done("List of devices attached\\n" + "".join(s + "\\tdevice\\tUE55NU7400\\n" for s in state["connected"]) + twin)
         if args[0] == "connect":
             if scenario["connect"] == "accept":
                 state["connected"].append(args[1])
@@ -111,6 +112,20 @@ FAKE_TOOL = textwrap.dedent('''
                     state["installed"].append(app_of(os.path.join(folder, name)))
                 done("Installed the package: Id(" + app_of(os.path.join(folder, name)) + ")\\n"
                      "Tizen application is successfully installed.")
+            app = app_of(os.path.join(folder, name))
+            progress = "".join("app_id[%s] installing[%d]\\n" % (app, i % 100) for i in range(30000))  # > 512 KiB
+            if outcome in ("verbose-ok", "cut-installed"):
+                if app not in state["installed"]:
+                    state["installed"].append(app)
+            if outcome == "verbose-ok":  # Real 2017 shape: long progress, completion lines last.
+                done("Installing the package...\\n" + progress + "app_id[" + app + "] install completed\\n"
+                     "Installed the package: Id(" + app + ")\\nTizen application is successfully installed.")
+            if outcome == "verbose-fail":
+                done(progress + "app_id[" + app + "] install failed[118, -11], reason: Author certificate not match :", 1)
+            if outcome == "cut-installed":  # The CLI stops mid-progress, yet the TV did install it.
+                done(progress[:900], 1)
+            if outcome == "cut-absent":
+                done(progress[:900], 1)
             if outcome == "ghost":  # Claims success; the TV's list never shows the app.
                 done("Tizen application is successfully installed.")
             if outcome == "author":
@@ -396,6 +411,66 @@ class FleetFirstRunTests(FirstRunBase):
         finally:
             fleet.close()
         self.assertEqual(self.state()["connected"], [], "The refused link is disconnected, not left behind")
+
+    def test_verbose_install_progress_keeps_the_final_result(self):
+        """Live regression: long TV progress hid the completion line and the real error."""
+        self.profiles()
+        fleet = self.fleet()
+        try:
+            alias = self.detected(fleet)["alias"]
+            fleet.connect(alias, {"confirm": alias})
+            request = {"confirm": alias, "package": str(package(self.root)), "sign": "MyTV"}
+            self.set_scenario(install="verbose-fail")
+            result = fleet.install(alias, dict(request))
+            self.assertEqual((result["ok"], result["code"]), (False, "author-mismatch"))
+            self.assertIn("Author certificate not match", result["output"])
+            self.assertLessEqual(len(result["output"]), 400)
+            self.set_scenario(install="cut-absent")
+            result = fleet.install(alias, dict(request))
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "install-failed", "Absence is proven by the app list")
+            self.assertIn("not in its app list", result["message"])
+            self.set_scenario(install="verbose-ok")
+            result = fleet.install(alias, dict(request))
+            self.assertEqual((result["ok"], result["code"]), (True, "installed"))
+        finally:
+            fleet.close()
+
+    def test_cut_install_output_is_resolved_by_the_app_list_not_guessed(self):
+        self.profiles()
+        fleet = self.fleet()
+        try:
+            alias = self.detected(fleet)["alias"]
+            fleet.connect(alias, {"confirm": alias})
+            request = {"confirm": alias, "package": str(package(self.root)), "sign": "MyTV"}
+            self.set_scenario(install="cut-installed")
+            result = fleet.install(alias, dict(request))
+            self.assertEqual((result["ok"], result["code"]), (True, "installed"),
+                             "Absent before, listed after: the TV's own list proves the install")
+            result = fleet.install(alias, dict(request))
+            self.assertEqual((result["ok"], result["code"]), (False, "install-unconfirmed"),
+                             "Already listed before: presence cannot prove this copy replaced it")
+            self.set_scenario(install="cut-installed", applist="closed")
+            result = fleet.install(alias, dict(request))
+            self.assertEqual((result["ok"], result["code"]), (False, "install-unconfirmed"))
+            self.assertNotIn("not installed", result["message"].lower())
+        finally:
+            fleet.close()
+
+    def test_install_refuses_an_ambiguous_tizen_target_name(self):
+        """Two connected TVs of one model share the `tizen -t` name; never install to a guess."""
+        self.profiles()
+        fleet = self.fleet()
+        try:
+            alias = self.detected(fleet)["alias"]
+            fleet.connect(alias, {"confirm": alias})
+            self.set_scenario(install="ok", twin=True)
+            with self.assertRaises(tv_fleet.LiveError) as caught:
+                fleet.install(alias, {"confirm": alias, "package": str(package(self.root)), "sign": "MyTV"})
+            self.assertEqual(caught.exception.code, "ambiguous-target")
+            self.assertFalse([c for c in self.calls("tizen") if c and c[0] == "install"])
+        finally:
+            fleet.close()
 
     def test_install_is_installed_only_when_the_tv_lists_the_exact_app(self):
         self.profiles()

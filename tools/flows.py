@@ -13,6 +13,7 @@ import re
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 
 from live_tv import CDP, KEYS, Lease, LiveError, fail
@@ -30,25 +31,56 @@ MARKS = ("(function(){var t=window.performance&&performance.timing,m=window.__tv
          "load:t&&t.loadEventEnd?t.loadEventEnd-t.navigationStart:null});}())")
 
 
-def run_tool(argv, timeout=60, limit=512 * 1024):
-    """Cross-platform bounded child process; kills only the child it started."""
+def run_tool(argv, timeout=60, limit=512 * 1024, tail=False):
+    """Cross-platform bounded child process; kills only the child it started.
+
+    Output is drained as it arrives into a buffer of at most `limit` bytes (the newest bytes),
+    under one deadline for the process and its output together. By default overflow is an
+    error, because a cut listing cannot prove absence. With tail=True overflow is allowed and
+    the newest `limit` bytes are returned: for chatty progress output whose verdict comes last.
+    """
     if not argv[0]:
         fail("sdk", "SDK tool not found. Install Tizen Studio with the TV extension")
     try:
-        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout,
-                              env=dict(os.environ, TERM=os.environ.get("TERM", "dumb")))
-    except subprocess.TimeoutExpired:
-        fail("sdk_timeout", "SDK command timed out; owned child stopped")
+        child = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 env=dict(os.environ, TERM=os.environ.get("TERM", "dumb")))
     except OSError:
         fail("sdk", "SDK tool could not start")
-    output = done.stdout[-limit:].decode("utf-8", errors="replace")
-    if len(done.stdout) > limit:
+    kept, seen = bytearray(), [0]
+
+    def drain():
+        for chunk in iter(lambda: child.stdout.read1(65536), b""):
+            seen[0] += len(chunk)
+            kept.extend(chunk)
+            if len(kept) > limit:
+                del kept[:len(kept) - limit]
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + timeout
+    try:
+        child.wait(timeout=max(0, deadline - time.monotonic()))
+        reader.join(max(0, deadline - time.monotonic()))
+        if reader.is_alive():
+            raise subprocess.TimeoutExpired(argv, timeout)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
+        reader.join(5)
+        last = bytes(kept[-600:]).decode("utf-8", errors="replace")
+        fail("sdk_timeout", "SDK command timed out; owned child stopped. Last output: " + redact(last).strip())
+    finally:
+        child.stdout.close()
+    output = bytes(kept).decode("utf-8", errors="replace")
+    over = seen[0] > limit
+    if over and not tail:
         fail("sdk_output_truncated", "SDK output exceeded the limit and was truncated: "
              + redact(output[-600:]).strip())
-    if done.returncode:
-        if len(done.stdout) > min(limit, 600):
-            fail("sdk_output_truncated", "SDK command failed (output truncated): " + redact(output[-600:]).strip())
-        fail("sdk", "SDK command failed: " + redact(output[-600:]).strip())
+    if child.returncode:
+        if len(output) > 600 or over:  # Only the last part fits the message; callers must not read absence from it.
+            fail("sdk_output_truncated", "SDK command failed (last part of its output): "
+                 + redact(output[-600:]).strip())
+        fail("sdk", "SDK command failed: " + redact(output).strip())
     return output
 
 
