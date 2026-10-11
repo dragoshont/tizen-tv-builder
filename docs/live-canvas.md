@@ -172,7 +172,7 @@ baseline ("2019 models shipped with Tizen 5.0") comes from Samsung's
 table and is never shown as the TV's version, because regional exceptions and
 upgrades exist (for example 2017 ENTRY_CN1 ran Tizen 2.4). Model codes are parsed
 with anchored family patterns (LED `UE43RU7092` → 2019, QLED, Neo QLED, OLED, The
-Frame/Serif/Sero); unknown or ambiguous codes give "Model year unknown".
+Frame/Serif/Sero); unknown or ambiguous codes are omitted, as is a bare "Tizen" without a version.
 
 Each TV has one status, identical in the pill, the list row and the CLI: **Not
 reachable**, **Developer Mode off**, **Ready to connect**, **Connecting…**,
@@ -223,26 +223,29 @@ No setup is needed. On first use the kit creates an empty private profile at
 credentials); set `TIZEN_TV_PROFILE` or pass `--profile` to use another one.
 
 ```sh
-python3 tools/tizen.py tv scan                # find Samsung TVs; shows model, model year, OS, Dev mode label
+python3 tools/tizen.py tv scan                # find Samsung TVs: status, model, OS, full address
 python3 tools/tizen.py tv list                # last scan again, without contacting any TV
-python3 tools/tizen.py tv check tv-abc123     # is Developer Mode really working?
-python3 tools/tizen.py tv connect tv-abc123   # connect, identify, then disconnect
+python3 tools/tizen.py tv connect tv-abc123   # status, details, certificate and apps, then disconnect
 python3 tools/tizen.py tv info tv-abc123      # every detail the portal shows, incl. this computer's IP for the TV
-python3 tools/tizen.py tv info tv-abc123 --connect     # adds Tizen version, DUID (hidden) and certificate match
-python3 tools/tizen.py tv info tv-abc123 --show-duid   # same, and prints the DUID
+python3 tools/tizen.py tv info tv-abc123 --connect     # also reads Tizen version, DUID, certificate and apps
 python3 tools/tizen.py tv rename tv-abc123 "Den TV"
 python3 tools/tizen.py tv portal              # prints http://127.0.0.1:47811/ (or a free port)
 ```
 
-First run, from a terminal (unreleased; host-tested against a fake SDK):
+First run, from a terminal (unreleased; host-tested against a fake SDK). TV is a name
+or a `tv-xxxxxx` alias; nothing asks for `--yes`, and the TV's real error is printed:
 
 ```sh
 python3 tools/tizen.py tv setup                     # sdb, tizen CLI, signing profiles; installs nothing
-python3 tools/tizen.py tv cert tv-abc123            # which certificate; saves the DUID privately (0600)
-python3 tools/tizen.py tv duid tv-abc123 --out ~/duid.txt   # hidden unless --show or --out
-python3 tools/tizen.py tv install tv-abc123 app.wgt --sign MyTV --yes
-python3 tools/tizen.py tv launch tv-abc123 AbCdEf1234.App --yes
-python3 tools/tizen.py tv remove tv-abc123 AbCdEf1234.App --yes
+python3 tools/tizen.py tv cert tv-abc123            # does the active certificate cover this TV?
+python3 tools/tizen.py tv cert add tv-abc123        # add this TV to your certificate (tizen-cert)
+python3 tools/tizen.py tv duid tv-abc123            # print the Device ID
+python3 tools/tizen.py tv apps tv-abc123            # every app ID on the TV
+python3 tools/tizen.py tv install tv-abc123 app.wgt [--sign MyTV]
+python3 tools/tizen.py tv open tv-abc123 AbCdEf1234.App      # restarts the app
+python3 tools/tizen.py tv screenshot tv-abc123 --app AbCdEf1234.App [--out DIR]
+python3 tools/tizen.py tv key tv-abc123 down ok --app AbCdEf1234.App
+python3 tools/tizen.py tv uninstall tv-abc123 AbCdEf1234.App
 ```
 
 Each command connects, acts, and disconnects what it connected. `install` re-signs a

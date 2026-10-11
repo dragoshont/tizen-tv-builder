@@ -171,8 +171,11 @@ def card_lines(state):
     for tv in tvs:
         yield f"{tv['name']:<{width}}  {tv['alias']}  {tv['label']}"
         details = tv.get("details") or {}
-        yield "    " + " · ".join(describe(tv.get("metadata") or {}) +
-                                  ([details["address"]] if details.get("address") else []))
+        facts = describe(tv.get("metadata") or {}) + ([details["address"]] if details.get("address") else [])
+        if tv.get("missing") and tv.get("last_seen"):
+            facts.append("last seen " + time.strftime("%H:%M", time.localtime(tv["last_seen"])))
+        if facts:
+            yield "    " + " · ".join(facts)
         if tv.get("headline") and tv["headline"] != tv["label"]:
             yield "    " + tv["headline"]
 
@@ -180,15 +183,15 @@ def card_lines(state):
 def model_year_text(meta):
     year = (meta.get("model_year") or {})
     if not year.get("value"):
-        return "Model year unknown"
+        return None
     source = {"reported by the TV": "reported", "inferred from the model code": "from model code"}
     return f"Model year {year['value']} ({source.get(year.get('provenance'), year.get('provenance'))})"
 
 
 def describe(meta):
     """Presentation only; the metadata itself comes from tv_fleet.Fleet.metadata, shared with the portal."""
-    parts = [meta.get("model") or "Model unknown", model_year_text(meta),
-             (meta.get("os") or {}).get("text", "OS unknown")]
+    # Unknown fields are omitted, never printed as placeholders.
+    parts = [p for p in (meta.get("model"), model_year_text(meta), (meta.get("os") or {}).get("text")) if p]
     if meta.get("resolution"):
         parts.append(meta["resolution"])
     if meta.get("frame_tv"):

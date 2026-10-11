@@ -368,6 +368,8 @@ class Fleet:
         self.scan_lock = threading.Lock()
         self.threads = []
         self.secret = None
+        # A memory with nothing to show (no name, model or Device ID) would only be a nameless card.
+        self.known = {a: f for a, f in self.known.items() if any(f.get(k) for k in ("name", "model", "duid"))}
         for alias, fact in self.known.items():
             self.records[alias] = self._blank(alias) | {
                 "serial": None, "host": None, "reachable": False, "sdb_state": None, "loopback": False,
@@ -381,7 +383,7 @@ class Fleet:
                 "guidance": None, "job": None, "pending": None, "error": None, "dev_proven": False,
                 "dev_refused": False}
 
-    def _remember(self, record):
+    def _remember(self, record, answered=True):
         """Persist last-known name/model/OS/DUID for this alias. Never the network address."""
         info = record.get("info") or {}
         fact = {k: info[k] for k in ("name", "model") if info.get(k, "unknown") != "unknown"}
@@ -393,11 +395,24 @@ class Fleet:
             fact["serial_alias"] = self.alias("serial:" + record["serial"])
         old = self.known.get(record["alias"], {})
         fact = {k: v for k, v in old.items() if k != "last_seen"} | fact
-        fact["last_seen"] = int(self.clock())
+        if not any(fact.get(k) for k in ("name", "model", "duid")):
+            return  # Nothing worth remembering yet.
+        # "Last seen" is when the TV actually answered, not when sdb merely still lists it.
+        if answered:
+            fact["last_seen"] = int(self.clock())
+        elif old.get("last_seen"):
+            fact["last_seen"] = old["last_seen"]
+        if fact.get("serial_alias") and fact["serial_alias"] != record["alias"] and record["lease"] is None:
+            # A serial-keyed memory of this same TV is superseded by its real identity.
+            stale = self.records.get(fact["serial_alias"])
+            if fact["serial_alias"] in self.known or (stale and stale["lease"] is None and stale.get("missing")):
+                self.known.pop(fact["serial_alias"], None)
+                if stale and stale["lease"] is None:
+                    self.records.pop(fact["serial_alias"], None)
         self.known[record["alias"]] = fact
         stable = lambda f: {k: v for k, v in f.items() if k != "last_seen"}
         # Write when a fact changed, or at most once a minute for "last seen".
-        if self.save_known and (stable(fact) != stable(old) or fact["last_seen"] - old.get("last_seen", 0) >= 60):
+        if self.save_known and (stable(fact) != stable(old) or fact.get("last_seen", 0) - old.get("last_seen", 0) >= 60):
             try:
                 self.save_known(dict(self.known))
             except (LiveError, OSError, ValueError):
@@ -525,7 +540,7 @@ class Fleet:
                         # Keep last-known name/model rather than replacing them with "unknown".
                         record.update(api=False, info={k: "unknown" for k in INFO_FIELDS} | {
                             k: v for k, v in (record.get("info") or {}).items() if v != "unknown"})
-                    self._remember(record)
+                    self._remember(record, answered=bool(info) or entry["reachable"] or entry["sdb_state"] == "device")
                 for alias, record in self.records.items():
                     if alias not in seen:
                         # One missed scan must not make a known TV vanish: keep it, truthfully "Not reachable".
@@ -667,7 +682,7 @@ class Fleet:
                        "text": "Tizen " + observed}
         else:
             os_info = {"name": os_name, "version": None, "provenance": "reported name only" if os_name != "unknown" else "unknown",
-                       "text": os_name if os_name != "unknown" else None}  # Unknown fields are omitted.
+                       "text": None}  # A name without a version says nothing; unknown fields are omitted.
         baseline = samsung_models.BASELINE_TIZEN.get(year["value"])
         return {"manufacturer": info["manufacturer"] if info["manufacturer"] != "unknown" else
                 ("Samsung" if record.get("api") or record["reachable"] or record["sdb_state"] else "unknown"),

@@ -364,6 +364,55 @@ class FleetTests(unittest.TestCase):
         self.assertIn("Samsung 7 Series", tv["name"])
         self.assertEqual(tv["last_seen"], fact["last_seen"])
 
+    def test_asleep_tv_still_listed_by_sdb_keeps_its_name_and_real_last_seen(self):
+        saved, now = [], [1_000_000]
+        clock = lambda: now[0]
+        fleet = self.fleet(save_known=saved.append, clock=clock)
+        fleet.detect()
+        alias = self.only(fleet)["alias"]
+        first = saved[-1][alias]["last_seen"]
+        # Hours later the TV sleeps: its ports are closed, its API is silent, but sdb still lists it offline.
+        now[0] += 3 * 3600
+
+        def silent(host):
+            raise OSError("timed out")
+        self.sdb.devices = {f"{LAN_A}:26101": "offline"}
+        later = self.fleet(hits=[], info=silent, known=saved[-1], save_known=saved.append, clock=clock)
+        later.detect()
+        tv = self.only(later)
+        self.assertEqual(tv["alias"], alias, "Same card, not a second serial-keyed one")
+        self.assertIn("Samsung 7 Series", tv["name"])
+        self.assertNotIn("#", tv["name"])
+        self.assertEqual(tv["label"], "Not reachable")
+        self.assertEqual(tv["last_seen"], first, "Last seen is when it was reachable, not this scan")
+
+    def test_serial_only_memory_without_facts_is_not_a_nameless_card(self):
+        fleet = self.fleet(hits=[], known={"tv-abcdef": {"last_seen": 1_000_000}})
+        fleet.detect()
+        self.assertEqual(fleet.state()["tvs"], [], "No 'Samsung TV #1' for a TV we know nothing about")
+
+    def test_tv_seen_by_its_api_only_is_remembered_and_listed_when_off(self):
+        saved = []
+        fleet = self.fleet(hits=[], api_hits=[LAN_B], save_known=saved.append,
+                           info=lambda host: {"name": "[TV] Neo QLED", "model": "QE55QN90AATXXU",
+                                              "year": "2021", "developer_mode": "0", "uid": "uuid:neo"})
+        fleet.detect()
+        alias = self.only(fleet)["alias"]
+        self.assertEqual(saved[-1][alias]["model"], "QE55QN90AATXXU")
+        later = self.fleet(hits=[], api_hits=[], known=saved[-1])
+        later.detect()
+        tv = self.only(later)
+        self.assertEqual((tv["alias"], tv["label"]), (alias, "Not reachable"))
+        self.assertIn("Neo QLED", tv["name"])
+
+    def test_os_without_a_version_is_omitted_not_a_bare_tizen(self):
+        fleet = self.fleet(info=lambda host: {"name": "[TV] Den", "model": "UE55NU7400", "os": "Tizen",
+                                              "developer_mode": "1", "uid": "uuid:" + host})
+        fleet.detect()
+        tv = self.only(fleet)
+        self.assertIsNone(tv["metadata"]["os"]["text"])
+        self.assertIsNone(tv["details"]["os"])
+
     def test_known_tvs_reject_addresses_and_unknown_fields(self):
         for bad in ({"tv-abcdef": {"host": "192.0.2.4"}}, {"tv-abcdef": {"name": "192.0.2.4:26101"}},
                     {"192.0.2.4": {"name": "TV"}}, {"tv-abcdef": {"last_seen": "yesterday"}}):
@@ -783,7 +832,7 @@ class DiscoveryAndReadinessTests(FleetTests):
         self.assertEqual(meta["model"], "UE43RU7092UXXH")
         self.assertEqual(meta["model_year"], {"value": 2019, "provenance": "inferred from the model code"})
         self.assertIsNone(meta["manufacture_date"])
-        self.assertEqual(meta["os"]["text"], "Tizen")
+        self.assertIsNone(meta["os"]["text"], "A bare \"Tizen\" without a version is omitted")
         self.assertIsNone(meta["os"]["version"])
         self.assertIn("not this TV's observed version", meta["baseline"])
         self.assertIsNone(meta["firmware"])
