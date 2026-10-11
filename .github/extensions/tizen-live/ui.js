@@ -106,6 +106,10 @@ async function command(id, operation, data) {
 function sourceById(id) {
   return state.sources.find((s) => s.id === id) || (state.tvs || []).find((t) => t.alias === id)?.preview || null;
 }
+function usablePreview(card, preview) {
+  return card.previewReady && !offline && preview?.ready && !preview.stale &&
+    preview.revision === card.revision && preview.frames?.length > 0;
+}
 
 // ---- remote ---------------------------------------------------------------------
 function remotePanel() {
@@ -164,12 +168,12 @@ function tvCard(alias) {
   });
   refreshPicture.addEventListener("click", () => command(alias, "capture", {}));
   for (const key of keys) key.addEventListener("click", () => {
-    if (card.previewReady && !offline) command(alias, "key", { key: key.dataset.key });
+    if (usablePreview(card, sourceById(alias))) command(alias, "key", { key: key.dataset.key });
   });
   remote.addEventListener("keydown", (event) => {
     if (!handledShortcut(event)) return;
     event.preventDefault();
-    const p = sourceById(alias), ready = card.previewReady && Boolean(p?.ready) && p.input_allowed;
+    const p = sourceById(alias), ready = usablePreview(card, p) && p.input_allowed;
     const key = shortcut(event, ready, busy);
     if (!key) return;
     if (key === "ok" && !p.activation_allowed) { error("OK is limited to safe, audited buttons on this app."); return; }
@@ -211,8 +215,13 @@ async function updateTv(card, tv, keep) {
         await img.decode();
         figures.push(el("figure", {}, img));
       }
-      card.frames.replaceChildren(...figures);
-      card.revision = p.revision;
+      const current = state.tvs.find((item) => item.alias === tv.alias);
+      live = !offline && current?.status === "connected" && current.preview?.ready &&
+        !current.preview.stale && current.preview.revision === p.revision && current.preview.frames?.length > 0;
+      if (live) {
+        card.frames.replaceChildren(...figures);
+        card.revision = p.revision;
+      }
     } catch (problem) {
       live = false;
       previewError = `Could not display the app preview: ${problem.message}. Open the app for preview again to retry.`;
@@ -464,9 +473,9 @@ function renderRail(wanted) {
 }
 
 // ---- page ---------------------------------------------------------------------------
-let rendering = false;
+let rendering = false, renderAgain = false;
 async function render() {
-  if (rendering) return;
+  if (rendering) { renderAgain = true; return; }
   rendering = true;
   try {
     const scanInfo = state.scan || {};
@@ -500,7 +509,10 @@ async function render() {
     $("pick").hidden = Boolean(selected) || !wanted.length;
     for (const [key, url] of urls) if (!keep.has(key)) { URL.revokeObjectURL(url); urls.delete(key); }
   } catch (problem) { error(problem.message); }
-  finally { rendering = false; }
+  finally {
+    rendering = false;
+    if (renderAgain) { renderAgain = false; queueMicrotask(render); }
+  }
 }
 let polling = false;
 async function refresh() {
