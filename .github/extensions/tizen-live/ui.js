@@ -544,6 +544,135 @@ function renderRail(wanted) {
   });
 }
 
+// ---- setup wizard: the server's guide (tv_setup.evaluate), same steps and words as `tv setup` ----
+const WIZARD_POLL_MS = 3000, WIZARD_SCAN_MS = 5000;
+const wizard = { open: false, alias: null, view: null, loading: false, acting: false, lastPoll: 0, lastScan: 0, auto: new Set() };
+const tvReady = (tv) => tv.held || tv.reachable;
+const stepMarks = { done: "✓", working: "…", failed: "!", active: "", todo: "" };
+function wizardClosed() { try { return sessionStorage.getItem("tizen-wizard-closed") === "1"; } catch { return false; } }
+function openWizard(byUser) {
+  if (byUser) { wizard.alias = null; wizard.auto.clear(); try { sessionStorage.removeItem("tizen-wizard-closed"); } catch { /* storage unavailable */ } }
+  wizard.open = true; wizard.lastPoll = 0;
+  showWizard(); pollWizard(true);
+  if (byUser) $("wizard-title").focus();
+}
+function closeWizard() {
+  wizard.open = false;
+  try { sessionStorage.setItem("tizen-wizard-closed", "1"); } catch { /* storage unavailable */ }
+  showWizard(); render();
+}
+function showWizard() {
+  $("wizard").hidden = !wizard.open;
+  $("tvs").hidden = wizard.open;
+  $("setup-tv").setAttribute("aria-expanded", String(wizard.open));
+  if (wizard.open) $("pick").hidden = true;
+}
+// Opens by itself only when no TV is usable, and only after the first check finished:
+// before that, remembered TVs are "Checking…", not missing.
+function maybeOpenWizard() {
+  if (wizard.open || offline || wizardClosed()) return;
+  if (!["done", "failed"].includes(state.scan?.status)) return;
+  if (!(state.tvs || []).some(tvReady) && !(state.sources || []).length) openWizard(false);
+}
+async function pollWizard(force) {
+  if (!wizard.open || wizard.loading || offline) return;
+  const now = Date.now();
+  if (!force && now - wizard.lastPoll < WIZARD_POLL_MS) return;
+  wizard.loading = true; wizard.lastPoll = now;
+  try {
+    wizard.view = await request("/api/wizard", wizard.alias ? { tv: wizard.alias } : {});
+    if (wizard.view.alias) wizard.alias = wizard.view.alias;
+    renderWizard(); await wizardAutomatic();
+  } catch (problem) { error(problem.message); }
+  finally { wizard.loading = false; }
+}
+async function runWizard(fn) {
+  if (wizard.acting) return;
+  wizard.acting = true; renderWizard();
+  try { await fn(); } catch (problem) { error(problem.message); }
+  finally { wizard.acting = false; await pollWizard(true); renderWizard(); }
+}
+const wizardActions = {
+  "install-sdk": () => request("/api/install-sdk", {}),
+  scan: () => scan(),
+  connect: (alias) => tvCommand("connect", alias, {}),
+  cert: (alias) => tvCommand("cert", alias, {}),
+  profile: (alias, data) => tvCommand("profile", alias, { profile: data.profile }),
+  choose: async (alias) => {
+    error("");
+    const picked = await request("/api/choose-package", {});
+    if (picked.path) await tvCommand("install", alias, { package: picked.path });
+  },
+  sample: (alias) => tvCommand("sample", alias, {}),
+  preview: (alias, data) => openApp(alias, data.app),
+};
+function wizardAct(action) {
+  const alias = wizard.view?.alias, run = wizardActions[action.action];
+  if (!run || (!alias && !["install-sdk", "scan"].includes(action.action))) return;
+  if (action.action === "cert") {
+    // The sign-in page may already be open: the same button brings it back instead of starting over.
+    const tv = (state.tvs || []).find((t) => t.alias === alias), job = tv?.job;
+    if (job?.op === "cert" && job.code === "waiting" && job.url) { window.open(job.url, "_blank", "noopener"); return; }
+  }
+  runWizard(() => run(alias, action.data || {}));
+}
+// "Connect" and "Open screen" happen by themselves once, like the CLI; a failure waits for the user.
+async function wizardAutomatic() {
+  const view = wizard.view, step = view?.steps.find((s) => s.id === view.current);
+  if (!step || wizard.acting) return;
+  if (step.id === "developer-mode" && step.status === "active" && state.scan?.status !== "scanning" &&
+      Date.now() - wizard.lastScan > WIZARD_SCAN_MS) {
+    wizard.lastScan = Date.now();
+    await scan(); return;
+  }
+  const once = (key, action) => { if (wizard.auto.has(key)) return; wizard.auto.add(key); wizardAct(action); };
+  if (step.id === "connect" && step.status === "active" && view.alias) once(`connect:${view.alias}`, step.actions[0]);
+  if (step.id === "see" && step.status === "active" && step.actions[0]) once(`see:${view.alias}:${step.actions[0].data?.app}`, step.actions[0]);
+}
+function wizardStep(step, current) {
+  const mine = step.id === current;
+  const head = el("div", { class: "step-head" },
+    el("span", { class: `step-mark ${step.status}`, "aria-hidden": "true" }, stepMarks[step.status] || String(step.n)),
+    el("h3", {}, step.title),
+    el("span", { class: "visually-hidden" }, { done: "Done", working: "In progress", failed: "Needs attention", active: "Your turn", todo: "Not yet" }[step.status] || ""));
+  const parts = [head];
+  if (step.status !== "todo") parts.push(el("p", { class: "step-text" }, step.text));
+  if (mine) {
+    if (step.ip && step.id === "developer-mode") parts.push(el("p", { class: "step-ip" }, "This computer's address: ", el("code", {}, step.ip)));
+    if (step.items.length) {
+      const list = el(step.id === "developer-mode" ? "ol" : "ul", { class: "step-items" }, ...step.items.map((item) => el("li", {}, item)));
+      parts.push(list);
+    }
+    if (step.percent != null) parts.push(el("progress", { max: 100, value: step.percent, "aria-label": "Progress" }));
+    if (step.status_line) parts.push(el("p", { class: "step-status", role: "status" }, step.status_line));
+    if (step.url) parts.push(el("p", { class: "subtle" }, "Browser didn't open? ", el("a", { href: step.url, target: "_blank", rel: "noopener" }, "Open Samsung sign-in")));
+    if (step.error) parts.push(el("p", { class: "problem", role: "alert" }, step.error));
+    if (step.output) parts.push(el("pre", { class: "output" }, step.output));
+    if (step.actions.length) {
+      parts.push(el("div", { class: "row" }, ...step.actions.map((action, index) => {
+        const button = el("button", { type: "button", class: index === 0 ? "primary" : "secondary" }, action.label);
+        button.disabled = wizard.acting || offline || step.status === "working";
+        button.addEventListener("click", () => wizardAct(action));
+        return button;
+      })));
+    }
+    if (step.command) parts.push(el("p", { class: "subtle" }, step.status === "failed" ? "Or do it by hand: " : "By hand instead: ", el("code", {}, step.command)));
+  }
+  const item = el("li", { class: `step ${step.status}${mine ? " current" : ""}` }, ...parts);
+  if (mine) item.setAttribute("aria-current", "step");
+  return item;
+}
+function renderWizard() {
+  if (!wizard.open) return;
+  const view = wizard.view;
+  if (!view) { $("wizard-steps").replaceChildren(el("li", { class: "step" }, el("p", { class: "subtle" }, "Checking this computer…"))); return; }
+  $("wizard-steps").replaceChildren(...view.steps.map((step) => wizardStep(step, view.current)));
+  $("wizard-sub").textContent = view.tv_name ? `Setting up ${view.tv_name}.` : "From a TV you've never touched to your app on its screen.";
+  const finished = view.done;
+  $("wizard-finish").hidden = !finished;
+  $("wizard-close").textContent = finished ? "Done" : "Close";
+}
+
 // ---- page ---------------------------------------------------------------------------
 let rendering = false, renderAgain = false;
 async function render() {
@@ -578,7 +707,7 @@ async function render() {
     for (const key of wanted) cards.get(key).root.hidden = key !== selected;
     renderRail(wanted);
     $("empty").hidden = wanted.length > 0;
-    $("pick").hidden = Boolean(selected) || !wanted.length;
+    $("pick").hidden = Boolean(selected) || !wanted.length || wizard.open;
     for (const [key, url] of urls) if (!keep.has(key)) { URL.revokeObjectURL(url); urls.delete(key); }
   } catch (problem) { error(problem.message); }
   finally {
@@ -603,8 +732,15 @@ async function refresh() {
   await render();
   // A fresh portal knows TVs only from memory; check them now (a scan is read-only).
   if (!offline && !autoScanned && state.scan?.status === "never") { autoScanned = true; scan(); }
+  maybeOpenWizard(); pollWizard(false);
 }
 $("scan").addEventListener("click", scan);
+$("setup-tv").addEventListener("click", () => openWizard(true));
+$("wizard-close").addEventListener("click", () => {
+  const alias = wizard.view?.done ? wizard.view.alias : null;
+  closeWizard();
+  if (alias) select(`tv:${alias}`);
+});
 window.addEventListener("pagehide", () => {
   stopped = true; for (const url of urls.values()) URL.revokeObjectURL(url);
   // Intentional teardown only; no device input in unload.

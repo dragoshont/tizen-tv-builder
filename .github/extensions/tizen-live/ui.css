@@ -154,3 +154,29 @@ button.danger:hover:not(:disabled) { color: #ffc2bd; border-color: rgba(255, 69,
 .checklist .done > span { color: var(--ok, #7ee2a8); }
 .checklist .waiting { color: var(--muted); }
 .placeholder:empty { display: none; }
+/* Setup wizard: one column of numbered steps; only the current step shows its details. */
+.wizard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; display: grid; gap: 20px; max-width: 760px; }
+.wizard-head { display: flex; gap: var(--gap); align-items: flex-start; justify-content: space-between; }
+.wizard-head h2 { font-size: 22px; font-weight: 650; }
+.wizard-head h2:focus { outline: none; } .wizard-head h2:focus-visible { outline: 3px solid var(--text); }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.step { display: grid; gap: 10px; padding: 14px 16px; border-radius: 12px; border: 1px solid transparent; }
+.step.current { background: var(--panel-2); border-color: var(--line); }
+.step.todo { color: var(--muted); }
+.step-head { display: flex; align-items: center; gap: 12px; }
+.step-head h3 { font-size: 15px; color: inherit; }
+.step-mark { flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  font-size: 13px; font-weight: 700; border: 1.5px solid var(--line); color: var(--muted); }
+.step-mark.done { background: var(--ok); border-color: var(--ok); color: #08080a; }
+.step-mark.working { border-color: var(--warn); color: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+.step-mark.failed { background: var(--bad); border-color: var(--bad); color: #fff; }
+.step-mark.active { border-color: var(--text); color: var(--text); }
+.step-text, .step-items, .step-ip, .step-status, .step .problem, .step .output, .step .row, .step > .subtle, .step progress { margin-left: 38px; }
+.step-items { margin-top: 0; margin-bottom: 0; padding-left: 20px; display: grid; gap: 4px; }
+.step code { font: 600 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.step-ip code { color: var(--warn); font-size: 16px; }
+.step-status { color: var(--warn); font-weight: 600; }
+.step .problem { color: #ffd1ce; }
+.step progress { width: calc(100% - 38px); accent-color: var(--ok); }
+.wizard-finish { color: #b9f6c8; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

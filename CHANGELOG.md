@@ -16,6 +16,23 @@ intentionally breaking them. No version number is a claim of TV model support.
 - No new published release or installed-plugin replacement.
 - Runtime correction: permit host cross-site iframe loading of exact public
   renderer GET routes, while preserving authenticated API/POST origin checks.
+- `python3 tools/tizen.py setup [--check]`: computer-only preparation (sdb and the
+  tizen CLI); returns before any TV, certificate or app step.
+- Guided setup with the same six steps and words in two places: the interactive
+  `tv setup` and the portal's "Set up a new TV" wizard (opens automatically when no
+  TV is ready). Developer Mode is polled, then connect, permission, app and screen.
+- One-click certificate: `tv cert add TV` (and the portal button) adds a TV to the
+  certificate after one Samsung sign-in, keeping the existing author certificate.
+- Top-level TV commands: `scan`, `install PACKAGE_OR_HTTPS_URL TV` (bounded HTTPS
+  download, validated `.wgt`, private temporary copy), `info TV [--app APP]`, `apps`,
+  `open`, `screenshot`, `portal`. Legacy `install --serial` keeps its form.
+- Install never uninstalls an app signed by another author; it says so and stops.
+- Install fix: long TV progress no longer hides the final result. SDK output is
+  drained into a bounded buffer that keeps the newest bytes under one deadline; the
+  TV's app list then decides installed, not installed (absence proven) or unknown.
+  An install refuses a `tizen -t` name shared by two connected TVs of one model.
+- Not production-ready: live certificate sign-in, HTTPS-URL install, the Tizen Studio
+  installer and Developer Mode detection on a fresh TV still need device acceptance.
 
 ## 0.1.0 - 2026-10-11
 

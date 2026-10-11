@@ -13,6 +13,7 @@
       <h1>Samsung TV Developer Companion</h1>
       <p class="subtle">Find your TVs, open any app's screen, install, debug and use the remote.</p>
     </div>
+    <button id="setup-tv" class="secondary" type="button" aria-controls="wizard" aria-expanded="false">Set up a new TV</button>
   </header>
   <div id="error" class="banner" role="alert" hidden></div>
   <div class="layout">
@@ -23,9 +24,20 @@
       </div>
       <h2 id="tvs-title" class="section-title">Your TVs</h2>
       <ul id="tv-list" class="tv-list" aria-label="Your TVs"></ul>
-      <p id="empty" class="empty-state" hidden>No TVs yet. Turn on Developer Mode on the TV, then choose <strong>Scan network for TVs</strong>.</p>
+      <p id="empty" class="empty-state" hidden>No TVs yet. Choose <strong>Set up a new TV</strong> for step-by-step help.</p>
     </aside>
     <main aria-label="Selected TV">
+      <section id="wizard" class="wizard" aria-labelledby="wizard-title" hidden>
+        <div class="wizard-head">
+          <div>
+            <h2 id="wizard-title" tabindex="-1">Set up a new TV</h2>
+            <p id="wizard-sub" class="subtle">From a TV you've never touched to your app on its screen.</p>
+          </div>
+          <button id="wizard-close" class="secondary" type="button">Close</button>
+        </div>
+        <ol id="wizard-steps" class="steps" aria-live="polite"></ol>
+        <p id="wizard-finish" class="wizard-finish" hidden>All set. Choose <strong>Done</strong> to use the remote and save screenshots.</p>
+      </section>
       <div id="tvs" class="devices"></div>
       <p id="pick" class="empty-state" hidden>Choose a TV on the left to see it here.</p>
     </main>
