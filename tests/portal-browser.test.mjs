@@ -106,6 +106,12 @@ try {
     "document.querySelector('.device:not([hidden]) .placeholder p').textContent.trim().length>0", true);
   await check("Missing preview keeps all keys disabled",
     "[...document.querySelector('.device:not([hidden]) .remote').querySelectorAll('button')].every(b=>b.disabled)", true);
+  await evaluate("window.testState.tvs[0].error='Fixture TV accepted the connection but refused commands';window.testState.tvs[0].guidance={kind:'host-ip',title:'Check the TV\\'s Host PC IP',steps:[]};new Promise(r=>setTimeout(r,2600))");
+  await check("A held link with an error is a connection problem, never No app open",
+    "document.querySelector('.device:not([hidden]) .pill').textContent", "Connection problem");
+  await check("The connection problem says what failed",
+    "document.querySelector('.device:not([hidden])').innerText.includes('refused commands')", true);
+  await evaluate("delete window.testState.tvs[0].error;delete window.testState.tvs[0].guidance;new Promise(r=>setTimeout(r,2600))");
   await evaluate("document.querySelectorAll('.tv-row')[1].click()");
   await check("Selected-TV isolation", "document.querySelectorAll('.device:not([hidden])').length", 1);
   await check("Selection sends no provider commands", "window.testCalls.length", 0);

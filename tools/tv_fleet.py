@@ -53,6 +53,9 @@ DEVELOPER_STEPS = (
 )
 
 
+REFUSED = re.compile(r"\bclosed\b|refused", re.IGNORECASE)
+
+
 def scrub(text):
     """Remove network addresses from any message that may reach the UI, logs or receipts."""
     return IPV4.sub("[address]", str(text))[:400]
@@ -643,8 +646,10 @@ class Fleet:
         try:
             public, duid = flows._identity(record["serial"], self.sdb, self.runner)
         except (LiveError, ValueError) as error:
+            if isinstance(error, LiveError) and REFUSED.search(str(error)):
+                self._refused(record, error)
             with self.lock:
-                record["error"] = "Could not read the TV identity: " + scrub(error)
+                record["error"] = record["error"] or "Could not read the TV identity: " + scrub(error)
             fail("identity", record["error"])
         certificate = self._certificate(duid)
         del duid
@@ -662,6 +667,20 @@ class Fleet:
                           "Point the portal profile's certificate_duids at the new device-profile file.",
                           "Choose Identify again."]}
         return self.state()
+
+    def _refused(self, record, error):
+        """The TV accepted the link but refuses every command: not a connection; Host PC IP points elsewhere."""
+        try:
+            self._release(record)
+        except LiveError:
+            pass  # The refusal is the story; a failed cleanup is not a connection either.
+        name = self.names.get(record["alias"]) or "The TV"
+        with self.lock:
+            record["dev_refused"], record["dev_proven"] = True, False
+            record["guidance"] = {"kind": "host-ip", "title": "Check the TV's Host PC IP",
+                                  "steps": list(DEVELOPER_STEPS)}
+            record["error"] = (f"{name} accepted the connection but refused commands. On the TV set Host PC IP "
+                               "to this computer, restart the TV, then Connect (" + scrub(error) + ")")
 
     def _certificate(self, duid):
         if not self.certificate_duids:
@@ -1067,7 +1086,8 @@ class Fleet:
                     except LiveError:
                         pass  # Recorded on the card; the connection itself stays.
                     try:
-                        self.apps(alias, {})  # Read-only list; changes nothing on the TV.
+                        if self.records[alias]["lease"] is not None:
+                            self.apps(alias, {})  # Read-only list; changes nothing on the TV.
                     except LiveError:
                         pass  # Shown as "app list unreadable"; Show apps retries.
                 else:

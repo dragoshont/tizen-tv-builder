@@ -127,6 +127,9 @@ function tvStatus(tv, live, previewError) {
     detail: "Not found in the last scan. Turn the TV on, then scan again." };
   if (live) return { label: "Connected", tone: "connected", next: "", problem: Boolean(problem),
     detail: problem || `Showing ${tv.preview?.app || "the app"}: its own drawing, not the whole TV.` };
+  // A held link that just failed is not a working connection: never "No app open" over an error.
+  if (tv.held && tv.error) return { label: "Connection problem", tone: "lost", problem: true, detail: tv.error,
+    next: tv.guidance?.title || (dev.next && dev.next !== "None" ? dev.next : "") };
   if (tv.held) return { label: "No app open", tone: "ready", next: "", problem: Boolean(problem),
     detail: problem || "Connected to the TV. Open an app to see its screen." };
   const blocked = {

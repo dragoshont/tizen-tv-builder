@@ -63,6 +63,8 @@ FAKE_TOOL = textwrap.dedent('''
             if args[1] not in state["connected"]:
                 done("error: device not found", 1)
             rest = args[2:]
+            if scenario.get("commands") == "closed":
+                done("closed", 1)  # Accepted the link, refuses every command (Host PC IP elsewhere).
             if rest == ["capability"]:
                 done("platform_version:4.0\\nprofile_name:tv")
             if rest == ["shell", "0", "getduid"]:
@@ -365,6 +367,27 @@ class FleetFirstRunTests(FirstRunBase):
         finally:
             fleet.close()
         self.assertEqual(self.state()["connected"], [])
+
+    def test_connect_then_refused_commands_releases_the_link_with_host_ip_steps(self):
+        fleet = self.fleet()
+        try:
+            alias = self.detected(fleet)["alias"]
+            self.set_scenario(commands="closed")
+            fleet.submit("connect", alias, {"confirm": alias})
+            fleet.wait()
+            tv = fleet.state()["tvs"][0]
+            self.assertFalse(tv["held"], "A link that refuses every command is not a connection")
+            self.assertEqual(tv["status"], "not-connected")
+            self.assertEqual(tv["guidance"]["kind"], "host-ip")
+            self.assertEqual(tv["guidance"]["host_ip"], "10.255.255.10")
+            self.assertIn("accepted the connection but refused commands", tv["error"])
+            self.assertIn("Host PC IP", tv["error"])
+            self.assertEqual(tv["dev_mode"]["state"], "needs-config")
+            self.assertEqual(tv["dev_mode"]["diagnosis"], "host-ip-elsewhere")
+            self.assert_private(json.dumps(tv["error"]))
+        finally:
+            fleet.close()
+        self.assertEqual(self.state()["connected"], [], "The refused link is disconnected, not left behind")
 
     def test_install_is_installed_only_when_the_tv_lists_the_exact_app(self):
         self.profiles()
