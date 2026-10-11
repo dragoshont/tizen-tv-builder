@@ -9,7 +9,7 @@ Resolve the toolkit at `../..` from this skill's reported base directory.
 Read [Common contract](../common.md) for permission, ownership and host limits,
 then [prerequisites](../../docs/prerequisites.md).
 
-1. For a new TV, follow [new-TV onboarding](../../docs/getting-started.md#new-tv-onboarding):
+1. For a new TV, follow [new-TV onboarding](../../docs/getting-started.md#3-prepare-your-tv):
    bounded discovery only in the granted network scope while no sibling lane is
    active; confirm candidates, leave unreturned metadata unknown, then configure
    Developer Mode/Host PC IP and the new target's certificate/install permission.

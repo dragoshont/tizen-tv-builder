@@ -235,7 +235,10 @@ def inspect(port):
 
 
 TV_COMMANDS = {"scan", "apps", "info", "open", "screenshot", "portal"}
-TV_HELP = """TV commands (TV = IP address, name or tv-xxxxxx alias):
+TV_HELP = """Start here:
+  setup [--check]                       Prepare this computer (sdb, tizen CLI); installs them if missing
+
+TV commands (TV = IP address, name or tv-xxxxxx alias):
   scan                                  Find Samsung TVs on your network
   install PACKAGE_OR_HTTPS_URL TV       Sign a .wgt (file or https:// link) with your profile and install it
   info TV [--app APP]                   TV details; --app: is APP (ID or name) installed, and which version
@@ -243,7 +246,7 @@ TV_HELP = """TV commands (TV = IP address, name or tv-xxxxxx alias):
   open TV APP                           Open an app's screen (restarts the app)
   screenshot TV --app APP [--out DIR]   Save the app's picture as PNG
   portal                                Open the Samsung TV Developer Companion in your browser
-  tv COMMAND ...                        Every TV command, e.g. tv setup, tv cert add TV, tv key, tv uninstall
+  tv COMMAND ...                        Every TV command, e.g. tv setup (guided, to your app on a TV), tv cert add TV, tv key, tv uninstall
 
 Legacy device commands keep their form: install --serial SERIAL PACKAGE, run, debug, forward, unforward."""
 INSTALL_USAGE = ("Use: install PACKAGE_OR_HTTPS_URL TV [--sign PROFILE]  "
@@ -482,9 +485,11 @@ def main(argv=None):
             return 0
         print("ERROR: " + str(error), file=sys.stderr)
         return 2
-    if forwarded is not None:
+    if forwarded is not None or argv[:1] == ["setup"]:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import tv
+        if forwarded is None:
+            return tv.computer_setup(argv[1:])
         return tv.main(forwarded)
     previous_sigterm = signal.signal(signal.SIGTERM, _cancel)
     try:

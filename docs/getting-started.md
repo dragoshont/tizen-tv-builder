@@ -6,52 +6,66 @@ Every command below is complete: copy it as is, replacing only `NAME` (the TV's 
 as printed by `scan`, in quotes if it has spaces) and `APP` (an app ID such as
 `AbCdEf1234.MyTv`).
 
+In short:
+
+1. Clone this repository.
+2. `python3 tools/tizen.py setup` prepares this computer.
+3. Prepare the TV: turn on Developer Mode.
+4. `python3 tools/tizen.py scan`, then `python3 tools/tizen.py install APP.wgt TV`.
+
 ## 1. What you need
 
 - **Python 3.10 or newer.** Check with `python3 --version` (Windows: `py -3 --version`).
-- **Tizen Studio** with the Web CLI and the Samsung TV and Samsung Certificate
-  extensions, from [Samsung's SDK instructions](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html).
-  The companion uses its `sdb` and `tizen` tools; see [prerequisites](prerequisites.md).
+- **Tizen Studio's command-line tools** (`sdb` and `tizen`) with the Samsung TV and
+  Samsung Certificate extensions. `python3 tools/tizen.py setup` installs them if they are
+  missing; to do it by hand, follow [Samsung's SDK instructions](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html)
+  and [prerequisites](prerequisites.md).
 - **openssl** for the one-click certificate (built into macOS; on Windows it comes with Git for Windows).
 - A Samsung account, for the certificate sign-in.
 - The TV and this computer on the same network.
 
-## 2. Get the companion
+## 2. Get the companion and set up this computer
 
 ```sh
 gh repo clone dragoshont/tizen-tv-builder
 cd tizen-tv-builder
 git checkout dragoshont-samsung-tv-remote-toolkit
-python3 tools/tizen.py tv setup
+python3 tools/tizen.py setup
 ```
 
-`tv setup` checks Python, `sdb`, the `tizen` CLI, openssl and your signing profiles. It
-installs nothing. On Windows write `py -3 tools\tizen.py` instead of `python3 tools/tizen.py`
-in every command.
+`setup` checks Python, `sdb` and the `tizen` CLI. If `sdb` or `tizen` is missing it
+downloads and runs Tizen Studio's command-line installer for your system, with progress,
+then checks again. If that fails it prints the real error and the one command to run by
+hand. It only prepares this computer: it does not contact a TV, make a certificate or wait
+for anything, and it ends by printing the TV steps below with this computer's IP.
+`python3 tools/tizen.py setup --check` only reports and installs nothing.
 
-## 3. Find your TV
+For a guided walk through every step, from this computer to your app on the TV, use
+`python3 tools/tizen.py tv setup` instead.
+
+On Windows write `py -3 tools\tizen.py` instead of `python3 tools/tizen.py` in every command.
+
+## 3. Prepare your TV
+
+Turn on Developer Mode once per TV:
+
+1. On the TV open **Apps**, then type **1 2 3 4 5** on the remote.
+2. Switch **Developer mode** to **On**.
+3. Set **Host PC IP** to this computer's address (`python3 tools/tizen.py setup` prints it).
+4. Restart the TV (hold the power button until it turns off and on again).
+
+## 4. Find your TV
 
 ```sh
 python3 tools/tizen.py scan
 ```
 
 This lists the Samsung TVs on your network with their name, model, Tizen version and
-status. A TV that is switched off stays listed as "Not reachable"; turn it on and scan again.
+status. A prepared TV shows "Developer Mode ready". "Not ready" means Developer Mode is
+on but the Host PC IP points to another computer. A TV that is switched off stays listed
+as "Not reachable"; turn it on and scan again.
 
-## New-TV onboarding
-
-Turn on Developer Mode once per TV:
-
-1. On the TV open **Apps**, then type **1 2 3 4 5** on the remote.
-2. Switch **Developer mode** to **On**.
-3. Set **Host PC IP** to this computer's address (`python3 tools/tizen.py info NAME`
-   shows it as "this computer's IP for the TV").
-4. Restart the TV (hold the power button until it turns off and on again).
-
-Scan again: the TV now shows "Developer Mode ready". If it says "Not ready", Developer Mode
-is on but the Host PC IP points to another computer.
-
-## 4. Allow installing your apps on this TV
+## 5. Allow installing your apps on this TV
 
 ```sh
 python3 tools/tizen.py tv cert NAME
@@ -66,7 +80,7 @@ it the one used for installs. On macOS the password goes to the login Keychain, 
 Studio does it. If your apps were signed with a different author certificate, the result
 says they need to be reinstalled. Details: [live canvas](live-canvas.md).
 
-## 5. Install, open and check your app
+## 6. Install, open and check your app
 
 ```sh
 python3 tools/tizen.py install /path/to/MyApp.wgt NAME

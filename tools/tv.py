@@ -391,6 +391,100 @@ def setup_lines(report):
     yield report["note"]
 
 
+COMPUTER_TOOLS = ("sdb", "tizen")
+
+
+def default_installer(progress):
+    import tv_setup
+    return tv_setup.install_sdk(progress)
+
+
+def default_ip():
+    import tv_setup
+    return tv_setup.lan_ip()
+
+
+def computer_setup(argv, stdout=None, stderr=None, report=default_setup, installer=default_installer,
+                   ip=default_ip, fleet_factory=None):
+    """`tizen.py setup [--check]`: prepare this computer only, then return. Never contacts a TV.
+
+    fleet_factory is accepted only so tests can prove it is never used."""
+    import tv_setup
+    out, err = stdout or sys.stdout, stderr or sys.stderr
+    say = lambda line="": print(line, file=out)  # noqa: E731
+    cli = argparse.ArgumentParser(prog="tizen.py setup", description=(
+        "Prepare this computer for Samsung TV apps: Python, sdb and the tizen CLI. Installs Tizen "
+        "Studio's command-line tools when they are missing. Does not contact a TV; for the full guided "
+        "path to your app on a TV use: python3 tools/tizen.py tv setup"))
+    cli.add_argument("--check", action="store_true", help="Only report what this computer has; install nothing")
+    try:
+        args = cli.parse_args(argv)
+    except SystemExit as stop:
+        if stop.code:
+            print("For the guided TV setup use: python3 tools/tizen.py tv setup [TV]", file=err)
+        return stop.code
+
+    def missing(found):
+        return [c for c in found["checks"] if c["id"] in COMPUTER_TOOLS and c["status"] != "found"]
+
+    def show(found):
+        say(f"Python: found ({sys.version.split()[0]})")
+        for c in found["checks"]:
+            if c["id"] in COMPUTER_TOOLS:
+                say(f"{c['label'].split(' (')[0]}: {c['status']}")
+
+    found = report()
+    show(found)
+    if missing(found):
+        if args.check:
+            say("Install the missing tools with: python3 tools/tizen.py setup")
+            return 1
+        say("")
+        say("Installing Tizen Studio's command-line tools and the Samsung TV extensions (a few minutes).")
+        last = None
+
+        def progress(text, percent):
+            nonlocal last
+            line = "  " + text + (f" ({percent}%)" if percent is not None and text != "Done" else "")
+            if line != last:
+                say(line)
+                last = line
+        try:
+            installer(progress)
+        except tv_setup.SetupError as error:
+            print("ERROR: " + str(error), file=err)
+            if error.output:
+                print(error.output.strip()[-2000:], file=err)
+            if error.command:
+                print("By hand: " + error.command, file=err)
+            return 1
+        say("")
+        found = report()
+        show(found)
+        if missing(found):
+            print("ERROR: The tools are still not found after installing.", file=err)
+            command = tv_setup.install_command()
+            if command:
+                print("By hand: " + command, file=err)
+            return 1
+    say("")
+    say("This computer is ready.")
+    say("")
+    say("Next, prepare your TV (once per TV):")
+    for n, line in enumerate(tv_setup.developer_steps(ip()), 1):
+        say(f"  {n}. {line}")
+    say("")
+    say("Then find it and install your app (TV = its IP address or name):")
+    say("  python3 tools/tizen.py scan")
+    say("  python3 tools/tizen.py install APP.wgt TV")
+    if not found["profiles"]["names"]:
+        say("No signing certificate yet. Make one for your TV with one Samsung sign-in:")
+    else:
+        say("If the TV does not accept your certificate, add it with one Samsung sign-in:")
+    say("  python3 tools/tizen.py tv cert add TV")
+    return 0
+
+
 def write_private(path, text):
     path = path.expanduser().absolute()
     if path.resolve().is_relative_to(ROOT):

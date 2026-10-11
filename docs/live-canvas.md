@@ -286,7 +286,8 @@ First run, from a terminal (unreleased; host-tested against a fake SDK). TV is a
 or a `tv-xxxxxx` alias; nothing asks for `--yes`, and the TV's real error is printed:
 
 ```sh
-python3 tools/tizen.py tv setup                     # sdb, tizen CLI, signing profiles; installs nothing
+python3 tools/tizen.py setup                        # this computer: sdb, tizen CLI; installs them if missing
+python3 tools/tizen.py tv setup                     # guided: this computer to your app on a TV
 python3 tools/tizen.py tv cert tv-abc123            # does the active certificate cover this TV?
 python3 tools/tizen.py tv cert add tv-abc123        # add this TV to your certificate (one Samsung sign-in)
 python3 tools/tizen.py tv duid tv-abc123            # print the Device ID

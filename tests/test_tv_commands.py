@@ -279,3 +279,84 @@ class AppInfo(FirstRunBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def report(sdb=True, tizen=True, profiles=()):
+    checks = [{"id": "sdb", "label": "sdb (connects to the TV)", "status": "found" if sdb else "missing",
+               "next": None if sdb else "Install Tizen Studio"},
+              {"id": "tizen", "label": "tizen CLI (signs and installs)", "status": "found" if tizen else "missing",
+               "next": None if tizen else "Install Tizen Studio"},
+              {"id": "profiles", "label": "Signing profiles", "status": "found" if profiles else "missing",
+               "next": None if profiles else "Make one"}]
+    return {"ready": sdb and tizen and bool(profiles), "checks": checks,
+            "profiles": {"names": list(profiles), "active": profiles[0] if profiles else None}, "note": "n"}
+
+
+class ComputerSetup(unittest.TestCase):
+    """`tizen.py setup`: this computer only. It never waits for a TV, a certificate or an app."""
+
+    def run_setup(self, *argv, reports=(), install=None):
+        reports = list(reports)
+        out, err = io.StringIO(), io.StringIO()
+        calls = []
+
+        def installer(progress):
+            calls.append("install")
+            progress("Downloading Tizen Studio's command-line tools", 50)
+            progress("Done", 100)
+            if install:
+                raise install
+
+        code = tv.computer_setup(list(argv), stdout=out, stderr=err, report=lambda: reports.pop(0),
+                                 installer=installer, ip=lambda: "192.168.1.142",
+                                 fleet_factory=lambda: self.fail("setup must not touch a TV"))
+        return code, out.getvalue(), err.getvalue(), calls
+
+    def test_top_level_setup_is_computer_only_and_tv_setup_stays_the_wizard(self):
+        with mock.patch.object(tv, "computer_setup", return_value=0) as computer, \
+                mock.patch.object(tv, "main", return_value=5) as wizard:
+            self.assertEqual(tizen.main(["setup"]), 0)
+            computer.assert_called_once_with([])
+            self.assertEqual(tizen.main(["setup", "--check"]), 0)
+            self.assertEqual(tizen.main(["tv", "setup"]), 5)
+            wizard.assert_called_once_with(["setup"])
+        self.assertIn("setup [--check]", tizen.parser().format_help())
+
+    def test_ready_computer_installs_nothing_and_points_to_the_tv_steps(self):
+        code, out, _, calls = self.run_setup(reports=[report(profiles=("tv-companion",))])
+        self.assertEqual((code, calls), (0, []))
+        self.assertIn("Python: found", out)
+        self.assertIn("This computer is ready.", out)
+        for words in ("Apps", "1 2 3 4 5", "Host PC IP: 192.168.1.142",
+                      "python3 tools/tizen.py scan", "python3 tools/tizen.py install APP.wgt TV"):
+            self.assertIn(words, out)
+
+    def test_missing_tools_are_installed_with_progress_then_checked_again(self):
+        code, out, _, calls = self.run_setup(reports=[report(sdb=False, tizen=False), report()])
+        self.assertEqual((code, calls), (0, ["install"]))
+        self.assertIn("Downloading Tizen Studio's command-line tools (50%)", out)
+        self.assertIn("sdb: found", out.split("Done")[-1])
+        self.assertIn("This computer is ready.", out)
+        # No certificate yet is not a computer problem: it is made later, for a named TV.
+        self.assertIn("python3 tools/tizen.py tv cert add TV", out)
+
+    def test_check_only_reports_and_never_installs(self):
+        code, out, _, calls = self.run_setup("--check", reports=[report(sdb=False)])
+        self.assertEqual((code, calls), (1, []))
+        self.assertIn("sdb: missing", out)
+        self.assertIn("python3 tools/tizen.py setup", out)
+
+    def test_install_failure_shows_the_real_error_and_the_command_by_hand(self):
+        import tv_setup
+        failure = tv_setup.SetupError("The Tizen Studio installer did not finish", "disk full", "curl -fLO x && ./x")
+        code, out, err, _ = self.run_setup(reports=[report(sdb=False)], install=failure)
+        self.assertEqual(code, 1)
+        self.assertIn("The Tizen Studio installer did not finish", err)
+        self.assertIn("disk full", err)
+        self.assertIn("By hand: curl -fLO x && ./x", err)
+        self.assertNotIn("This computer is ready.", out)
+
+    def test_unknown_options_are_usage_errors(self):
+        code, _, err, calls = self.run_setup("Sebi", reports=[])
+        self.assertEqual((code, calls), (2, []))
+        self.assertIn("tv setup", err)

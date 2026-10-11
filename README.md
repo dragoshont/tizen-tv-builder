@@ -15,7 +15,10 @@ python3 tools/tizen.py portal
   restart the TV.
 - Then: Scan → pick a TV → Connect → Open screen on your app.
 
-**New here?** [Getting started](docs/getting-started.md) is the one from-zero guide: TV
+**New here?** Four steps: clone this repository, run `python3 tools/tizen.py setup` (prepares
+this computer, installing Tizen Studio's CLI if missing), turn on Developer Mode on the TV, then
+`python3 tools/tizen.py scan` and `python3 tools/tizen.py install APP.wgt TV`.
+[Getting started](docs/getting-started.md) is the one from-zero guide: TV
 Developer Mode, the one-click certificate, install, open, screenshot and uninstall, as
 `tv` commands and as portal steps, plus making your own app.
 

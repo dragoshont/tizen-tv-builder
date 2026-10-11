@@ -7,7 +7,7 @@ description: Prepare Samsung TV author/distributor signing profiles with the tar
 
 Resolve the toolkit at `../..` from this skill's reported base directory.
 Read [Common contract](../common.md) for permission and privacy holds, then
-[certificate steps](../../docs/getting-started.md#4-allow-installing-your-apps-on-this-tv).
+[certificate steps](../../docs/getting-started.md#5-allow-installing-your-apps-on-this-tv).
 
 1. With explicit owner permission, open installed Certificate Manager and add
    **Samsung → TV**, not a generic Tizen profile. Human account sign-in stays
