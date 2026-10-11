@@ -24,7 +24,7 @@ from live_tv import LiveError, read_profile  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 KEYS = sorted(live_tv.KEYS)
 PORTAL_PORT = 47811
-CERT_POLL = 1.0  # Seconds between checks while tizen-cert runs.
+CERT_POLL = 1.0  # Seconds between checks while the certificate is being made.
 STATE_DIR = Path.home() / ".tizen-tv-builder"
 # The scan cache is a file on disk: names and status only, never addresses or Device IDs.
 CACHE_FIELDS = ("alias", "name", "label", "headline", "status", "reachable", "year", "dev_mode", "metadata")
@@ -366,7 +366,8 @@ def result(say, job):
     for step in job.get("steps") or []:
         # ASCII markers: a redirected Windows console may be cp1252.
         say(("  [done] " if step["done"] else "  [next] ") + step["text"].replace("→", "->").replace("…", "..."))
-    for key, label in (("backup", "Old certificate files backed up to"), ("command", "Command"), ("next", "Next")):
+    for key, label in (("note", "Note"), ("backup", "Old certificate files backed up to"), ("command", "Command"),
+                       ("next", "Next")):
         if job.get(key):
             say(f"{label}: {job[key]}")
     if job.get("output"):
@@ -405,22 +406,31 @@ def act(args, fleet, tv, say):
                 say("Certificate: " + certificate_text(connected))
                 return 0
             job = fleet.cert(alias, {})
-            code = result(say, job)
-            if job.get("use_profile"):
-                say(f"Run: tv cert use {alias} {job['use_profile']}")
             if job.get("code") != "waiting":
+                code = result(say, job)
+                if job.get("use_profile"):
+                    say(f"Run: tv cert use {alias} {job['use_profile']}")
                 return code
-            # Report what tizen-cert really did: its exit code and a fresh read of the certificate.
+            say(job["message"])
+            say("Sign in to Samsung in your browser. If it didn't open, go to:")
+            say("  " + job["url"])
+            # Each step once, as it happens; then the real outcome from a fresh read of the certificate.
+            shown = set()
             try:
-                while (job := fleet.cert_result(alias)).get("code") == "waiting":
+                while True:
+                    job = fleet.cert_result(alias) or {}
+                    for step in job.get("steps") or []:
+                        if step["text"] not in shown:
+                            shown.add(step["text"])
+                            say(("  [done] " if step["done"] else "  [....] ") +
+                                step["text"].replace("\u2026", "..."))
+                    if job.get("code") != "waiting":
+                        break
                     time.sleep(CERT_POLL)
             except KeyboardInterrupt:
-                say(f"Stopped waiting. Check later with: tv cert {alias}")
+                say("Stopped waiting; the sign-in page no longer completes this request.")
                 return 1
-            code = result(say, dict(job, steps=None, command=None, backup=None))
-            if job.get("use_profile"):
-                say(f"Run: tv cert use {alias} {job['use_profile']}")
-            return code
+            return result(say, dict(job, steps=None))
         if command == "open":
             try:
                 fleet.preview(alias, {"app": args.app})

@@ -1000,7 +1000,7 @@ def handler(app):
                         fail("invalid", "No options are accepted")
                     self.reply(200, app.fleet.choose())
                     return
-                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|rename|preview|apps|install|remove|launch|screenshot|cert)/(tv-[0-9a-f]{6})", self.path)
+                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|rename|preview|apps|install|remove|launch|screenshot|cert|profile)/(tv-[0-9a-f]{6})", self.path)
                 if match and app.fleet is not None:
                     self.reply(200, app.fleet.submit(match[1], match[2], data))
                     return

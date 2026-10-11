@@ -166,6 +166,10 @@ Manager's **Permit to install applications** for that TV. Follow
 [Samsung's certificate guide](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html).
 Keep certificates, passwords and DUIDs private.
 
+Or let the companion do it: `python3 tools/tv.py cert add TV` (or "Allow installing my apps on
+this TV" in the portal) makes or renews the certificate with one Samsung sign-in in your
+browser, with no other prompts. See [docs/live-canvas.md](docs/live-canvas.md).
+
 With permission for the exact TV and these operations:
 
 ```sh

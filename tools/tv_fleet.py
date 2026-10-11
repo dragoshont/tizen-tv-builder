@@ -13,7 +13,6 @@ from pathlib import Path
 import platform
 import re
 import secrets
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -21,9 +20,11 @@ import xml.etree.ElementTree as ET
 import zipfile
 import threading
 import time
+import webbrowser
 
 import flows
 import live_tv
+import samsung_cert
 from live_tv import LiveError, exact, fail
 import network_tv
 import appkit
@@ -180,7 +181,7 @@ def certificate_coverage(data_root, duid=None):
 
     Returns DUIDs and the profile name only; the profile's email and passwords are never read out."""
     profiles = signing_profiles(data_root)
-    # Every other profile's device list too: a new profile made in tizen-cert may cover the TV.
+    # Every other profile's device list too: a profile made elsewhere may already cover the TV.
     by_profile = {}
     for name, key in ((profiles or {}).get("distributors") or {}).items():
         devices = _profile_devices(key)[1]
@@ -210,17 +211,19 @@ INSTALL_HELP = {
                     "or set TIZEN_SDK_ROOT to an existing installation",
     "profile": "Create a signing profile: for Developer Mode the default Tizen distributor certificate works on "
                "the 2017 and 2019 TVs tested. Run `tv cert add TV` to add a TV to a Samsung certificate",
-    "tizen-cert": "Optional, only for Samsung certificates: curl -fsSL https://tizen-cert-cli.vercel.app/install.sh | sh "
-                  "(Windows: the project's install.ps1)",
+    "openssl": "Needed for Samsung certificates. macOS and Linux include it; on Windows install Git for Windows",
+    "samsung-ca": "Needed for Samsung certificates: install Tizen Studio's Certificate Manager with the Samsung TV "
+                  "extension (Package Manager)",
 }
 
 
-def setup_report(sdb="auto", tizen="auto", data_root=None, which=shutil.which, cert_locations=None):
+def setup_report(sdb="auto", tizen="auto", data_root=None, which=shutil.which, cert_roots="auto"):
     """What this computer has for the first-run journey. Detects only; never installs or runs anything."""
     sdb = _find_tool("sdb") if sdb == "auto" else sdb
     tizen = _find_tool("tizen") if tizen == "auto" else tizen
     profiles = signing_profiles(data_root or default_data_root())
-    cert = find_tizen_cert(which, cert_locations)
+    openssl = samsung_cert.find_openssl(which)
+    ca = samsung_cert.find_ca(samsung_cert.sdk_roots(sdb, tizen) if cert_roots == "auto" else cert_roots)
     checks = [
         {"id": "sdb", "label": "sdb (connects to the TV)", "status": "found" if sdb else "missing",
          "next": None if sdb else INSTALL_HELP["tizen-studio"]},
@@ -228,10 +231,12 @@ def setup_report(sdb="auto", tizen="auto", data_root=None, which=shutil.which, c
          "next": None if tizen else INSTALL_HELP["tizen-studio"]},
         {"id": "profiles", "label": "Signing profiles", "status": "found" if profiles and profiles["names"] else "missing",
          "next": None if profiles and profiles["names"] else INSTALL_HELP["profile"]},
-        {"id": "tizen-cert", "label": "tizen-cert (Samsung certificates, optional)",
-         "status": "found" if cert else "missing", "next": None if cert else INSTALL_HELP["tizen-cert"]},
+        {"id": "openssl", "label": "openssl (makes Samsung certificates)", "status": "found" if openssl else "missing",
+         "next": None if openssl else INSTALL_HELP["openssl"]},
+        {"id": "samsung-ca", "label": "Samsung certificate files (from Tizen Studio)",
+         "status": "found" if ca else "missing", "next": None if ca else INSTALL_HELP["samsung-ca"]},
     ]
-    ready = all(c["status"] == "found" for c in checks if c["id"] != "tizen-cert")
+    ready = all(c["status"] == "found" for c in checks if c["id"] not in {"openssl", "samsung-ca"})
     return {"ready": ready, "checks": checks,
             "profiles": {"names": profiles["names"], "active": profiles["active"]} if profiles else
                         {"names": [], "active": None},
@@ -249,7 +254,7 @@ INSTALL_ERRORS = (
      "Remove the other version first: tv uninstall TV APP_ID, then install again"),
     ("certificate-expired", re.compile(r"expired", re.I),
      "The signing certificate has expired",
-     "Renew the certificate (tizen-cert: Renew, or create a new Tizen Studio author certificate), then install again"),
+     "Renew it with one Samsung sign-in: tv cert add TV, then install again"),
     ("certificate-chain", re.compile(r"-12\b|invalid certificate chain|check certificate error", re.I),
      "The certificate does not list this TV, so the TV rejects the app",
      "Add this TV to your certificate: tv cert add TV"),
@@ -265,74 +270,6 @@ def explain(output, fallback_code, fallback_message, fallback_next):
         if pattern.search(output):
             return code, message, nxt
     return fallback_code, fallback_message, fallback_next
-
-
-INSTALL_COMMAND = {"posix": "curl -fsSL https://tizen-cert-cli.vercel.app/install.sh | sh",
-                   "windows": "irm https://tizen-cert-cli.vercel.app/install.ps1 | iex"}
-
-
-def tizen_cert_locations(home=None, env=None):
-    """Where tizen-cert's installers put it; ~/.local/bin is often not on PATH."""
-    home, env = Path(home) if home else Path.home(), os.environ if env is None else env
-    places = [Path("/usr/local/bin/tizen-cert"), home / ".local" / "bin" / "tizen-cert"]
-    if env.get("LOCALAPPDATA"):
-        places.insert(0, Path(env["LOCALAPPDATA"]) / "Programs" / "tizen-cert" / "tizen-cert.exe")
-    return places
-
-
-def find_tizen_cert(which=shutil.which, locations=None):
-    """Absolute path of tizen-cert: on PATH, else where its installers put it. None when absent."""
-    found = which("tizen-cert")
-    if found:
-        return found
-    places = tizen_cert_locations() if locations is None else locations
-    return next((str(c) for c in map(Path, places) if c.is_file() and os.access(c, os.X_OK)), None)
-
-
-def run_installer(system=None, run=subprocess.run):
-    """Run tizen-cert's documented installer and return (exit code, its output)."""
-    system = system or platform.system()
-    argv = (["powershell", "-NoProfile", "-Command", INSTALL_COMMAND["windows"]] if system == "Windows"
-            else ["sh", "-c", INSTALL_COMMAND["posix"]])
-    try:
-        done = run(argv, capture_output=True, text=True, timeout=300)
-    except (OSError, subprocess.SubprocessError) as error:
-        return 1, f"{type(error).__name__}: {error}"
-    return done.returncode, (done.stdout or "") + (done.stderr or "")
-
-
-def terminal_command(path, system=None):
-    """How a terminal runs the program at this absolute path."""
-    if (system or platform.system()) == "Windows":
-        return "& '" + str(path).replace("'", "''") + "'"
-    return shlex.quote(str(path))
-
-
-def open_terminal(command, status=None, system=None, popen=subprocess.Popen):
-    """Run a command in a terminal window the user can see and type into. The command is shown first.
-
-    With `status`, the command's exit code is written to that file when it ends, so the caller can
-    report what really happened instead of assuming success."""
-    system = system or platform.system()
-    if system == "Windows":
-        record = (f"; $code = $LASTEXITCODE; Set-Content -Encoding ascii -Path '{str(status).replace(chr(39), chr(39) * 2)}'"
-                  " -Value $code; if ($code -ne 0) { Write-Host \"Exited with code $code\" }") if status else ""
-        popen(["cmd", "/c", "start", "", "powershell", "-NoExit", "-Command",
-               f"Write-Host '> {command.replace(chr(39), chr(39) * 2)}'; {command}{record}"])
-        return
-    folder = Path(tempfile.mkdtemp(prefix="tizen-cert-"))
-    script = folder / "tizen-cert.command"
-    record = ("code=$?\nprintf '%s\\n' \"$code\" > " + shlex.quote(str(status)) +
-              "\n[ \"$code\" -eq 0 ] || echo \"Exited with code $code\"\n") if status else ""
-    script.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote("> " + command) + "\n" + command + "\n" + record)
-    script.chmod(0o700)
-    if system == "Darwin":
-        popen(["open", "-a", "Terminal", str(script)])
-    else:
-        terminal = shutil.which("x-terminal-emulator") or shutil.which("gnome-terminal") or shutil.which("xterm")
-        if not terminal:
-            fail("terminal", "No terminal found; run this yourself: " + command)
-        popen([terminal, "-e", str(script)])
 
 
 def copy_text(text, system=None, run=subprocess.run):
@@ -385,8 +322,8 @@ class Fleet:
                  sweep=network_tv.sweep, info=_info, ssdp=network_tv.ssdp_hosts, key_path=None, lease_root=None, canonical=None,
                  certificate_duids=None, retail=flows.retail, names=None, save_names=None, known=None, save_known=None,
                  session=None, cdp=live_tv.CDP, discover=None, tizen_path="auto", data_root=None,
-                 which=shutil.which, launcher=None, clipboard=None, pictures=None, clock=time.time,
-                 chooser=None, installer=None, cert_locations=None):
+                 which=shutil.which, clipboard=None, pictures=None, clock=time.time,
+                 chooser=None, browser=None, signin=None, opener=None, cert_home=None, openssl="auto", cert_system=None):
         if sdb_path == "auto":
             sdb_path = _find_tool("sdb")
         if tizen_path == "auto":
@@ -395,11 +332,16 @@ class Fleet:
         self.tizen = tizen_path
         self.data_root = Path(data_root) if data_root else default_data_root()
         self.which = which
-        self.launcher = launcher or open_terminal
         self.chooser = chooser or choose_package
         self.clipboard = clipboard or copy_text
-        self.installer = installer or run_installer
-        self.cert_locations = cert_locations
+        # Samsung certificate seams: the browser opener, sign-in listener and HTTP are replaceable in tests.
+        self.browser = browser or webbrowser.open
+        self.signin = signin or samsung_cert.SignIn
+        self.opener = opener or samsung_cert.urllib_opener
+        self.cert_home = Path(cert_home) if cert_home else Path.home() / "SamsungCertificate"
+        self.openssl = samsung_cert.find_openssl(which) if openssl == "auto" else openssl
+        self.cert_system = cert_system  # Tests pass "Linux" so the real Keychain is never touched.
+        self.cert_running = None  # (alias, thread, job) while a certificate request waits for sign-in.
         self.pictures = Path(pictures) if pictures else Path.home() / "Pictures" / "TV Screenshots"
         self.clock = clock
         self.runner = runner
@@ -797,9 +739,8 @@ class Fleet:
                 "preview": self.preview_summary(record),
                 "apps": self.apps_summary(record),
                 "identity": record["identity"], "certificate": self.coverage(duid, record["alias"]),
-                "cert_tool": "installed" if find_tizen_cert(self.which, self.cert_locations) else "missing",
                 "guidance": guidance, "pending": record["pending"], "error": record["error"],
-                "job": self.cert_outcome(record),
+                "job": record["job"],
                 # Shown in full on this loopback page and CLI only; never logged or cached.
                 "details": {"address": record.get("host"), "duid": duid,
                             "model": meta["model"], "os": meta["os"]["text"], "firmware": meta["firmware"],
@@ -1346,109 +1287,90 @@ class Fleet:
         return {"path": self.chooser()}
 
     def cert(self, alias, data):
-        """Add this TV to the active Samsung distributor certificate with tizen-cert.
+        """Allow installing on this TV: one Samsung sign-in in the browser, everything else automatic.
 
-        Backs up the current files first, copies the TV's DUID, and opens tizen-cert (or its documented
-        installer, then tizen-cert) in a visible terminal. Samsung sign-in happens only in the browser."""
+        Keeps every TV the active certificate already lists, adds this one, and makes the resulting
+        "tv-companion" profile active. Runs in the background; the job's steps show progress."""
         exact(data, {})
         with self.lock:
             record = self.record(alias)
             duid = record.get("duid")
+            name = self.short_name(alias) or "this TV"
+            running = self.cert_running
+            if running and running[1].is_alive():
+                if running[0] != alias:
+                    fail("busy", f"Already waiting for Samsung sign-in for {self.short_name(running[0]) or 'another TV'}"
+                                 "; finish that first")
+                # Clicked again while waiting: bring the sign-in page back, keep the same job.
+                record["job"] = running[2]
+                self.browser(samsung_cert.SIGNIN_URL)
+                return dict(running[2])
         if not duid:
             fail("connect", "Connect to this TV first so its Device ID can be read")
-        self._coverage = None  # Re-read after tizen-cert; never a stale answer here.
+        self._coverage = None
         coverage = certificate_coverage(self.data_root, duid)
         if coverage["state"] == "covered":
-            return self._finish(record, {"op": "cert", "ok": True, "code": "covered",
-                                         "message": f"Certificate {coverage['profile']} already includes this TV",
-                                         "next": None})
+            return self._finish(record, {"op": "cert", "ok": True, "code": "covered", "next": None,
+                                         "message": f"You can install your apps on {name}."})
         if coverage["others"]:
-            return self._finish(record, self._other_profile_job(coverage, self.short_name(alias) or "this TV"))
-        installed_now = None
-        binary = find_tizen_cert(self.which, self.cert_locations)
-        if not binary:
-            command = INSTALL_COMMAND["windows" if os.name == "nt" else "posix"]
-            code, output = self.installer()
-            output = (output or "").strip()[-2000:]
-            reported = re.search(r"^Installed: (.+?) \(", output, re.M)
-            binary = (reported.group(1) if reported and Path(reported.group(1)).is_file() else None) \
-                or find_tizen_cert(self.which, self.cert_locations)
-            if code != 0 or not binary:
-                why = f"the installer exited with code {code}" if code != 0 else \
-                    "the installer finished, but tizen-cert was not found where it says it put it"
-                return self._finish(record, {
-                    "op": "cert", "ok": False, "code": "install-failed", "command": command, "output": output,
-                    "message": f"Couldn't install tizen-cert: {why}. Your certificate is unchanged.",
-                    "next": "Run the command yourself in a terminal, then try again"})
-            installed_now = binary
-        backup = None
-        if coverage.get("folder"):
-            folder = Path(coverage["folder"])
-            backup = folder / ("backup-" + time.strftime("%Y%m%d-%H%M%S", time.localtime(self.clock())))
-            backup.mkdir(mode=0o700, parents=True, exist_ok=False)  # Holds private keys.
-            for name in ("distributor.p12", "distributor.crt", "author.p12", "author.crt", "device-profile.xml"):
-                if (folder / name).is_file() and not (folder / name).is_symlink():
-                    shutil.copy2(folder / name, backup / name)
-        copied = self.clipboard(duid)
-        status = Path(tempfile.mkdtemp(prefix="tizen-cert-status-")) / "exit-code"
-        command = terminal_command(binary)
-        self.launcher(command, status)
-        profile = coverage["profile"] or "your profile"
+            return self._finish(record, self._other_profile_job(coverage, name))
+        duids = (coverage["covers"] if coverage["state"] == "not-covered" else []) + [duid]
+        job = {"op": "cert", "ok": True, "code": "waiting", "duid": duid, "url": samsung_cert.SIGNIN_URL,
+               "message": f"Allowing your apps on {name}", "steps": [],
+               "next": "Sign in to Samsung in the browser window that opened"}
+        thread = threading.Thread(target=self._cert_work, args=(record, name, duid, duids, job), daemon=True)
         with self.lock:
-            name = self.short_name(alias) or "this TV"
-            record["cert_watch"] = {"status": str(status), "duid": duid, "name": name, "backup": backup,
-                                    "command": command}
-        # A checklist, not a paragraph: what is done, and what is waiting on the person.
-        checklist = [
-            {"text": f"Installed tizen-cert at {installed_now}", "done": True} if installed_now else None,
-            {"text": "Backed up your certificate files", "done": True} if backup else None,
-            {"text": "Device ID copied to the clipboard", "done": True} if copied else None,
-            {"text": "tizen-cert started in Terminal", "done": True},
-            {"text": f"In tizen-cert: Renew → {profile}, add {duid}", "done": False},
-            {"text": "Waiting for Samsung sign-in and for tizen-cert to finish…", "done": False}]
-        return self._finish(record, {
-            "op": "cert", "ok": True, "code": "waiting", "command": command,
-            "backup": str(backup) if backup else None, "covers": coverage["covers"], "duid": duid,
-            "message": f"Allowing your apps on {name}",
-            "steps": [step for step in checklist if step],
-            "next": "When tizen-cert finishes, this card shows whether your certificate now includes this TV"})
+            self.cert_running = (alias, thread, job)
+            record["job"] = job
+        thread.start()
+        return dict(job)
+
+    def _cert_work(self, record, name, duid, duids, job):
+        steps = {}
+
+        def progress(step, text, done):
+            with self.lock:
+                steps[step] = {"text": text, "done": done}
+                job["steps"] = list(steps.values())
+                if step == "signin" and done:
+                    job["next"] = "Nothing to do: the certificate is being made"
+                record["job"] = dict(job)
+
+        def end(update):
+            with self.lock:
+                job.update(update, steps=list(steps.values()))
+                record["job"] = dict(job)
+                self.cert_running = None
+                self._coverage = self._profiles = None
+
+        try:
+            done = samsung_cert.add_tvs(
+                duids, profiles_path=self.data_root / "profile" / "profiles.xml", cert_home=self.cert_home,
+                openssl=self.openssl, ca=samsung_cert.find_ca(samsung_cert.sdk_roots(self.sdb, self.tizen)),
+                progress=progress, browser=self.browser, signin=self.signin, opener=self.opener, clock=self.clock,
+                system=self.cert_system)
+        except samsung_cert.CertError as error:
+            end({"ok": False, "code": error.code, "message": error.message, "next": error.next, "retry": True})
+            return
+        except Exception as error:  # A real error, shown as it is; never a silent success.
+            end({"ok": False, "code": "cert-failed", "message": scrub(f"{type(error).__name__}: {error}"),
+                 "next": "Try again", "retry": True})
+            return
+        coverage = certificate_coverage(self.data_root, duid)
+        if coverage["state"] != "covered":
+            end({"ok": False, "code": "unchanged", "retry": True, "backup": done["backup"],
+                 "message": f"The certificate was saved, but installs still use one that doesn't list {name}",
+                 "next": "Try again"})
+            return
+        end({"ok": True, "code": "covered", "backup": done["backup"], "url": None,
+             "message": f"You can install your apps on {name}.",
+             "note": "Apps installed with your old certificate need one reinstall." if done["reinstall"] else None,
+             "next": None})
 
     def cert_result(self, alias):
         """The current certificate job for one TV (None while there is none)."""
         with self.lock:
-            return self.cert_outcome(self.record(alias))
-
-    def cert_outcome(self, record):
-        """The certificate job, finished from tizen-cert's real exit code and a fresh read of the certificate."""
-        watch = record.get("cert_watch")
-        if not watch:
-            return record["job"]
-        try:
-            text = Path(watch["status"]).read_text(encoding="ascii", errors="replace").strip()
-        except OSError:
-            return record["job"]  # Still running.
-        record["cert_watch"] = None
-        self._coverage = None
-        code = int(text) if text.lstrip("-").isdigit() else None
-        coverage = certificate_coverage(self.data_root, watch["duid"])
-        base = {"op": "cert", "command": watch["command"], "duid": watch["duid"], "covers": coverage["covers"],
-                "backup": str(watch["backup"]) if watch["backup"] else None}
-        if coverage["state"] == "covered":
-            record["job"] = dict(base, ok=True, code="covered", next=None,
-                                 message=f"Done: your certificate ({coverage['profile']}) now allows {watch['name']}")
-        elif coverage["others"]:
-            record["job"] = dict(base, **self._other_profile_job(coverage, watch["name"]))
-        elif code != 0:
-            record["job"] = dict(base, ok=False, code="tizen-cert-failed",
-                                 message=f"tizen-cert exited with code {text or 'unknown'}. Certificate unchanged: "
-                                         f"it still doesn't list {watch['name']}.",
-                                 next="See the error in the Terminal window, then try again")
-        else:
-            record["job"] = dict(base, ok=False, code="unchanged",
-                                 message=f"Certificate unchanged: {'device-profile.xml' if coverage.get('folder') else 'your certificate'}"
-                                         f" still doesn't list {watch['name']}.",
-                                 next="In tizen-cert, choose Renew for this profile and add the Device ID, then try again")
-        return record["job"]
+            return self.record(alias)["job"]
 
     @staticmethod
     def _other_profile_job(coverage, name):

@@ -174,17 +174,34 @@ separate line that appears once Connect has read the TV identity. When the activ
 certificate doesn't list the TV, the card says so in TV names ("You can't install your
 apps on <TV> yet: your certificate only allows <TVs>."). It falls back to the raw device
 ID only for an ID that no remembered TV has. One button, "Allow installing my apps on
-this TV", adds the TV to your Samsung certificate with tizen-cert (installed if needed);
-Samsung sign-in opens in your browser. While it runs, the card shows a short checklist
-(backed up, tizen-cert started, waiting for Samsung sign-in). The installer often puts
-tizen-cert in `~/.local/bin` (or `%LOCALAPPDATA%\Programs\tizen-cert` on Windows), which may
-not be on PATH, so it is run by absolute path; a failed install shows the installer's own
-output and changes nothing. When tizen-cert exits, the card reads its exit code and the
-certificate again: "Done" only if `device-profile.xml` now lists the TV, otherwise
-"Certificate unchanged" (or the non-zero exit code). `tv cert add TV` waits and reports the same.
+this TV", is the only thing to click; the only other step is the Samsung sign-in that opens
+in your browser. No terminal, profile name or password prompt. Behind it the companion:
+
+- lists every TV the active certificate already allows plus this TV;
+- makes the keys and certificate requests with `openssl`, signs in through a loopback-only
+  listener on `localhost:4794` (Samsung's registered redirect), and asks Samsung's certificate
+  service for a distributor certificate listing those TVs. If the active profile already has a
+  Samsung author certificate it is kept, so installed apps need no reinstall; otherwise a new
+  author certificate is made too, and the card says in one line that apps installed with the
+  old one need one reinstall;
+- backs up the previous files, saves the new ones under `~/SamsungCertificate/tv-companion`,
+  registers the `tv-companion` profile in `profiles.xml` and makes it active;
+- picks a random password: on macOS it goes to the login Keychain the way Tizen Studio stores
+  it (service `certificate-manager`); on Windows and Linux it is stored in `profiles.xml` in
+  Tizen's own encrypted form, which is what the Tizen CLI reads. It is never shown.
+
+While it runs the card shows a checklist ("Waiting for Samsung sign-in…", "Signed in to
+Samsung", "Samsung issued your certificate", …), with a link to reopen the sign-in page. It
+ends with "You can install your apps on <TV>." only when the active certificate's
+`device-profile.xml` now lists the TV; otherwise it shows Samsung's or openssl's real error
+and "Try again". `tv cert add TV` does exactly the same in the terminal. Needs `openssl`
+(macOS and Linux include it; on Windows it comes with Git for Windows) and Tizen Studio's
+Certificate Manager with the Samsung TV extension, which holds Samsung's CA certificates.
+The sign-in and certificate protocol was learned from
+[gifflet/tizen-cert-cli](https://github.com/gifflet/tizen-cert-cli) (MIT) and reimplemented here.
 Every signing profile in `profiles.xml` is checked, not only the active one. If another profile
-(for example a new one made in tizen-cert) already lists the TV, the card says so and offers
-"Use PROFILE for installs" instead of tizen-cert; it runs `tizen security-profiles set-active -n
+already lists the TV, the card says so and offers "Use PROFILE for installs" instead of a
+new sign-in; it runs `tizen security-profiles set-active -n
 PROFILE` and re-reads `profiles.xml`, reporting failure if the active profile did not change.
 The CLI equivalent is `tv cert use TV PROFILE`. Other profiles' device lists are never sent to the page.
 The raw device IDs are listed under TV details, together with a small "Disconnect" link
@@ -271,7 +288,7 @@ or a `tv-xxxxxx` alias; nothing asks for `--yes`, and the TV's real error is pri
 ```sh
 python3 tools/tizen.py tv setup                     # sdb, tizen CLI, signing profiles; installs nothing
 python3 tools/tizen.py tv cert tv-abc123            # does the active certificate cover this TV?
-python3 tools/tizen.py tv cert add tv-abc123        # add this TV to your certificate (tizen-cert)
+python3 tools/tizen.py tv cert add tv-abc123        # add this TV to your certificate (one Samsung sign-in)
 python3 tools/tizen.py tv duid tv-abc123            # print the Device ID
 python3 tools/tizen.py tv apps tv-abc123            # every app ID on the TV
 python3 tools/tizen.py tv install tv-abc123 app.wgt [--sign MyTV]

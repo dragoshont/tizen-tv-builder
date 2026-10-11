@@ -556,7 +556,7 @@ class LiveTests(unittest.TestCase):
         script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text(encoding="utf-8")
         for text in ("`You can't install your apps on ${c.tv_name || \"this TV\"} yet: ${certText(c)}`",
                      "`your certificate only allows ${(c.covers_names", '"Allow installing my apps on this TV"',
-                     "Uses tizen-cert; Samsung sign-in opens in your browser.", 'el("ul", { class: "checklist" }',
+                     "Samsung sign-in opens in your browser; nothing else to type.", 'el("ul", { class: "checklist" }',
                      'el("summary", {}, "TV details"), list, disconnect)', '"Copy device ID"', '["Certificate", c.profile ? `${c.profile} · covers ${(c.covers'):
             self.assertIn(text, script)
         self.assertNotIn("This TV is ${d.duid}", script)

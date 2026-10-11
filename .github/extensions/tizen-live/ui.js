@@ -267,6 +267,9 @@ function renderJob(card, tv) {
     el("li", { class: step.done ? "done" : "waiting" }, el("span", { "aria-hidden": "true" }, step.done ? "✓" : "…"),
       step.text))));
   for (const path of j.paths || []) parts.push(el("p", { class: "subtle" }, "Saved to ", el("code", {}, path)));
+  if (j.code === "waiting" && j.url) parts.push(el("p", { class: "subtle" }, "Browser didn't open? ",
+    el("a", { href: j.url, target: "_blank", rel: "noopener" }, "Open Samsung sign-in")));
+  if (j.note) parts.push(el("p", {}, j.note));
   if (j.backup) parts.push(el("p", { class: "subtle" }, "Old certificate files backed up to ", el("code", {}, j.backup)));
   if (j.command) parts.push(el("p", { class: "subtle" }, "Command: ", el("code", {}, j.command)));
   if (j.next) parts.push(el("p", { class: "subtle" }, `Next: ${j.next}`));
@@ -339,9 +342,12 @@ async function updateTv(card, tv, keep) {
         `${c.profile ? `${c.profile} stays as it is.` : ""}`;
     } else {
       card.certHead.textContent = `You can't install your apps on ${c.tv_name || "this TV"} yet: ${certText(c)}`;
-      card.certCommand.textContent = `Adds this TV to your Samsung certificate${c.profile ? ` (${c.profile})` : ""}. ` +
-        "Uses tizen-cert; Samsung sign-in opens in your browser.";
+      card.certCommand.textContent = "Adds this TV to your Samsung certificate. Samsung sign-in opens in your browser; nothing else to type.";
     }
+    // While waiting, the same button brings the sign-in page back; after a failure it is "Try again".
+    const job = tv.job?.op === "cert" ? tv.job : null;
+    card.certButton.textContent = job?.code === "waiting" ? "Reopen Samsung sign-in"
+      : job && !job.ok && job.retry ? "Try again" : "Allow installing my apps on this TV";
     card.certButton.disabled = card.useProfile.disabled = card.copyDuid.disabled = working || offline;
   }
   renderJob(card, tv);

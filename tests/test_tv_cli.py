@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -73,22 +74,10 @@ class TvCliTests(unittest.TestCase):
             key_path=self.root / "alias.key", lease_root=self.root, canonical=self.root / "canonical.lock",
             certificate_duids=certificate_duids, names=names or {}, save_names=save_names,
             data_root=self.root / "tizen-data", tizen_path=self.tizen_path, which=lambda name: None,
-            launcher=self.launch_tizen_cert, clipboard=lambda text: True,
-            installer=self.install_tizen_cert, cert_locations=(self.root / "bin" / "tizen-cert",),
+            clipboard=lambda text: True, browser=self.launches.append, openssl="/bin/openssl", cert_system="Linux",
+            signin=lambda: test.fail("No sign-in listener"), opener=lambda *args: test.fail("Nothing reaches Samsung"),
             pictures=self.root / "Pictures", session=Session, cdp=FakeCDP, discover=lambda port: ["page-1"])
 
-    def install_tizen_cert(self):
-        binary = self.root / "bin" / "tizen-cert"
-        binary.parent.mkdir(exist_ok=True)
-        binary.write_text("#!/bin/sh\n")
-        binary.chmod(0o755)
-        return 0, f"Installed: {binary} (v1.0.0)"
-
-    def launch_tizen_cert(self, command, status):
-        self.launches.append(command)
-        Path(status).write_text(self.tizen_cert_exit)  # The person closed tizen-cert without renewing.
-
-    tizen_cert_exit = "0\n"
     tizen_path = None
 
     def run_tool(self, argv, timeout=60, limit=None):
@@ -252,21 +241,26 @@ class TvCliTests(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertIn("video plane", out)
 
-    def test_cert_shows_coverage_and_add_backs_up_and_opens_tizen_cert(self):
+    def test_cert_add_waits_for_sign_in_shows_each_step_and_reports_the_real_outcome(self):
         alias = self.alias()
         code, out, _ = self.run_cli("cert", alias)
         self.assertEqual(code, 0)
         self.assertIn("This TV is " + DUID, out)
         self.assertIn("tv cert add " + alias, out)
-        code, out, _ = self.run_cli("cert", "add", alias)
-        self.assertEqual(code, 1, "tizen-cert ended without adding the TV: not a success")
-        self.assertEqual(len(self.launches), 1)
-        self.assertIn(str(self.root / "bin" / "tizen-cert"), self.launches[0])
-        self.assertIn("[done] Installed tizen-cert at", out)
-        self.assertIn("[next] Waiting for Samsung sign-in and for tizen-cert to finish...", out)
-        self.assertIn("Certificate unchanged:", out)
-        steps = [line for line in out.splitlines() if "[done]" in line or "[next]" in line]
-        self.assertTrue(steps and all("→" not in line and "…" not in line for line in steps))
+
+        def add_tvs(duids, progress, browser, **options):
+            progress("signin", "Waiting for Samsung sign-in\u2026", False)
+            browser(tv_fleet.samsung_cert.SIGNIN_URL)
+            progress("signin", "Signed in to Samsung", True)
+            return {"profile": "tv-companion", "backup": None, "reinstall": False}  # Yet the TV isn't listed.
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv, "CERT_POLL", 0.01):
+            code, out, _ = self.run_cli("cert", "add", alias)
+        self.assertEqual(code, 1, "The certificate still doesn't list the TV: not a success")
+        self.assertEqual(self.launches, [tv_fleet.samsung_cert.SIGNIN_URL])
+        self.assertIn("Sign in to Samsung in your browser. If it didn't open, go to:", out)
+        self.assertIn("  [done] Signed in to Samsung", out)
+        self.assertIn("installs still use one that doesn't list", out)
+        self.assertTrue(all("\u2026" not in line for line in out.splitlines() if "[" in line))
         self.assertEqual(self.run_cli("cert", "add")[0], 2)
 
     def test_cert_offers_and_switches_to_a_profile_that_allows_the_tv(self):
@@ -277,7 +271,7 @@ class TvCliTests(unittest.TestCase):
         self.assertIn("Your profile plx-tv-2 allows", out)
         self.assertIn(f"Run: tv cert use {alias} plx-tv-2", out)
         code, out, _ = self.run_cli("cert", "add", alias)
-        self.assertEqual((code, self.launches), (1, []), "No tizen-cert: another profile already allows the TV")
+        self.assertEqual((code, self.launches), (1, []), "No sign-in: another profile already allows the TV")
         self.assertIn(f"Run: tv cert use {alias} plx-tv-2", out)
         code, out, _ = self.run_cli("cert", "use", alias, "plx-tv-2")
         self.assertEqual(code, 0)

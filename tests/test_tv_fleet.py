@@ -3,7 +3,10 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -92,9 +95,10 @@ class FleetTests(unittest.TestCase):
                                        "year": "2018", "developer_mode": "1", "uid": "uuid:" + host},
                     ssdp=lambda: set(), key_path=self.root / "alias.key", lease_root=self.root, canonical=self.canonical,
                     data_root=self.data_root, tizen_path=None, which=lambda name: None,
-                    launcher=lambda command, status: self.launches.append((command, status)),
-                    clipboard=lambda text: True, pictures=self.root / "shots", cert_locations=(),
-                    installer=lambda: self.fail("The tizen-cert installer must not run in this test"))
+                    clipboard=lambda text: True, pictures=self.root / "shots", cert_system="Linux",
+                    browser=lambda url: self.fail("No browser in this test"),
+                    signin=lambda: self.fail("No sign-in listener in this test"),
+                    opener=lambda *args: self.fail("Nothing reaches Samsung in this test"))
         write_profiles(self.data_root, self.certs if certificate else None)
         args.update(kwargs)
         return tv_fleet.Fleet(**args)
@@ -309,68 +313,114 @@ class FleetTests(unittest.TestCase):
         self.assertNotEqual(coverage["tv_name"], DUID)
         fleet.close()
 
-    def test_cert_add_backs_up_privately_copies_the_duid_and_opens_tizen_cert(self):
-        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
-        (self.certs / "distributor.p12").write_bytes(b"key")
-        (self.certs / "distributor.crt").write_bytes(b"crt")
-        copied = []
-        fleet = self.fleet(clipboard=lambda text: copied.append(text) or True, which=lambda name: "/bin/" + name)
+    def cert_fleet(self, add_tvs, **kwargs):
+        """A fleet whose certificate work is `add_tvs`; nothing reaches Samsung, a browser or the Keychain."""
+        self.opened = []
+        fleet = self.fleet(browser=self.opened.append, openssl="/bin/openssl", cert_system="Linux",
+                           cert_home=self.root / "SamsungCertificate", **kwargs)
+        self.calls = []
+
+        def fake(duids, **options):
+            self.calls.append((duids, options))
+            return add_tvs(duids, **options)
+        patcher = mock.patch.object(tv_fleet.samsung_cert, "add_tvs", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         alias = fleet.detect()["tvs"][0]["alias"]
+        return fleet, alias
+
+    def wait_for_cert(self, fleet, alias):
+        for _ in range(200):
+            job = fleet.cert_result(alias)
+            if job and job["code"] != "waiting":
+                return job
+            time.sleep(0.01)
+        self.fail("The certificate job never finished")
+
+    def test_cert_add_keeps_covered_tvs_adds_this_one_and_reports_success_from_a_fresh_read(self):
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+        gate = threading.Event()
+
+        def add_tvs(duids, progress, browser, **options):
+            progress("signin", "Waiting for Samsung sign-in\u2026", False)
+            browser("https://signin.example.invalid")
+            gate.wait(5)
+            progress("signin", "Signed in to Samsung", True)
+            self.certificate.write_text(device_profile(*duids))
+            return {"profile": "tv-companion", "backup": "/backup", "reinstall": False}
+        fleet, alias = self.cert_fleet(add_tvs)
         with self.assertRaises(live.LiveError):
             fleet.cert(alias, {})  # The DUID is read over the developer link first.
         fleet.connect(alias, {})
         fleet.identify(alias, {})
         job = fleet.cert(alias, {})
-        self.assertEqual((job["code"], job["duid"], job["covers"]), ("waiting", DUID, ["OTHERDEVICE0002"]))
-        self.assertEqual((copied, [command for command, _ in self.launches]),
-                         ([DUID], [tv_fleet.terminal_command("/bin/tizen-cert")]))
-        self.assertEqual([(step["text"].split(":")[0], step["done"]) for step in job["steps"]],
-                         [("Backed up your certificate files", True), ("Device ID copied to the clipboard", True),
-                          ("tizen-cert started in Terminal", True), ("In tizen-cert", False),
-                          ("Waiting for Samsung sign-in and for tizen-cert to finish…", False)])
-        self.assertEqual(self.only(fleet)["job"]["code"], "waiting", "Running is not success")
-        backup = Path(job["backup"])
-        self.assertEqual(sorted(p.name for p in backup.iterdir()),
-                         ["device-profile.xml", "distributor.crt", "distributor.p12"])
-        if os.name == "posix":
-            self.assertEqual(backup.stat().st_mode & 0o777, 0o700)
-        Path(self.launches[0][1]).write_text("0\n")  # tizen-cert ended normally, but changed nothing.
-        job = self.only(fleet)["job"]
-        self.assertEqual((job["ok"], job["code"]), (False, "unchanged"))
-        self.assertIn("Certificate unchanged: device-profile.xml still doesn't list", job["message"])
-        self.assertNotIn("steps", job)
-        self.certificate.write_text(device_profile("OTHERDEVICE0002", DUID))
+        self.assertEqual((job["ok"], job["code"], job["duid"]), (True, "waiting", DUID))
+        self.assertEqual(job["next"], "Sign in to Samsung in the browser window that opened")
+        for _ in range(100):
+            if self.opened:
+                break
+            time.sleep(0.01)
+        self.assertEqual(self.only(fleet)["job"]["code"], "waiting", "Waiting is not success")
+        self.assertEqual(self.calls[0][0], ["OTHERDEVICE0002", DUID], "TVs the certificate already allows stay")
+        self.assertEqual(self.calls[0][1]["system"], "Linux")
+        # A second click while waiting brings the sign-in page back; it starts nothing new.
+        self.assertEqual(fleet.cert(alias, {})["code"], "waiting")
+        self.assertEqual((len(self.calls), self.opened[-1]), (1, tv_fleet.samsung_cert.SIGNIN_URL))
+        gate.set()
+        job = self.wait_for_cert(fleet, alias)
+        self.assertEqual((job["ok"], job["code"], job["note"]), (True, "covered", None))
+        self.assertIn("You can install your apps on", job["message"])
+        self.assertEqual(job["steps"][-1], {"text": "Signed in to Samsung", "done": True})
+        self.assertEqual(self.only(fleet)["certificate"]["state"], "covered")
         self.assertEqual(fleet.cert(alias, {})["code"], "covered")
-        self.assertEqual(len(self.launches), 1)
+        self.assertEqual(len(self.calls), 1)
         fleet.close()
 
-    def test_cert_add_without_tizen_cert_runs_the_documented_installer(self):
-        # The installer puts tizen-cert in ~/.local/bin, often not on PATH: run it by absolute path.
-        installed = self.root / "home" / ".local" / "bin" / "tizen-cert"
-        def installer():
-            installed.parent.mkdir(parents=True)
-            installed.write_text("#!/bin/sh\n")
-            installed.chmod(0o755)
-            return 0, f"Downloading...\nInstalled: {installed} (v1.0.0)\nnote: {installed.parent} is not on your PATH."
-        fleet = self.fleet(certificate=False, installer=installer, cert_locations=(installed,))
-        alias = fleet.detect()["tvs"][0]["alias"]
+    def test_cert_add_shows_the_real_error_and_never_claims_success(self):
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+        outcomes = [tv_fleet.samsung_cert.CertError("rate-limited", "Samsung is limiting certificate requests "
+                                                    "right now (HTTP 403)", "Wait a few minutes, then try again"),
+                    RuntimeError("disk full"), None]
+
+        def add_tvs(duids, **options):
+            outcome = outcomes.pop(0)
+            if outcome:
+                raise outcome
+            return {"profile": "tv-companion", "backup": None, "reinstall": True}  # But nothing changed.
+        fleet, alias = self.cert_fleet(add_tvs)
         fleet.connect(alias, {})
         fleet.identify(alias, {})
-        job = fleet.cert(alias, {})
-        self.assertIsNone(job["backup"])
-        self.assertEqual(job["code"], "waiting")
-        self.assertEqual(self.launches[0][0], tv_fleet.terminal_command(installed))
-        self.assertTrue(str(installed) in self.launches[0][0])
-        self.assertEqual(job["command"], self.launches[0][0], "The command is shown before it runs")
-        self.assertEqual(job["steps"][0], {"text": f"Installed tizen-cert at {installed}", "done": True})
-        Path(self.launches[0][1]).write_text("127\n")
-        job = self.only(fleet)["job"]
-        self.assertEqual((job["ok"], job["code"]), (False, "tizen-cert-failed"))
-        self.assertIn("tizen-cert exited with code 127. Certificate unchanged", job["message"])
+        fleet.cert(alias, {})
+        job = self.wait_for_cert(fleet, alias)
+        self.assertEqual((job["ok"], job["code"], job["next"], job["retry"]),
+                         (False, "rate-limited", "Wait a few minutes, then try again", True))
+        self.assertIn("HTTP 403", job["message"])
+        fleet.cert(alias, {})
+        job = self.wait_for_cert(fleet, alias)
+        self.assertEqual((job["ok"], job["code"], job["message"]), (False, "cert-failed", "RuntimeError: disk full"))
+        fleet.cert(alias, {})
+        job = self.wait_for_cert(fleet, alias)
+        self.assertEqual((job["ok"], job["code"]), (False, "unchanged"))
+        self.assertIn("installs still use one that doesn't list", job["message"])
+        fleet.close()
+
+    def test_cert_add_for_a_tv_without_any_certificate_mentions_reinstall_once(self):
+        def add_tvs(duids, **options):
+            self.assertEqual(duids, [DUID], "No certificate yet: only this TV")
+            write_profiles(self.data_root, self.certs)
+            self.certificate.write_text(device_profile(*duids))
+            return {"profile": "tv-companion", "backup": None, "reinstall": True}
+        fleet, alias = self.cert_fleet(add_tvs, certificate=False)
+        fleet.connect(alias, {})
+        fleet.identify(alias, {})
+        fleet.cert(alias, {})
+        job = self.wait_for_cert(fleet, alias)
+        self.assertEqual((job["ok"], job["code"]), (True, "covered"))
+        self.assertEqual(job["note"], "Apps installed with your old certificate need one reinstall.")
         fleet.close()
 
     def two_profiles(self, switch=True):
-        """test-profile (active, without this TV) and plx-tv-2 (a newer tizen-cert profile listing it)."""
+        """test-profile (active, without this TV) and plx-tv-2 (a newer profile listing it)."""
         second = self.root / "certs2"
         second.mkdir()
         (second / "device-profile.xml").write_text(device_profile("OTHERDEVICE0002", DUID))
@@ -395,7 +445,7 @@ class FleetTests(unittest.TestCase):
         profiles.write_text(body("test-profile"))
         return fleet
 
-    def test_another_profile_that_allows_the_tv_is_offered_instead_of_tizen_cert(self):
+    def test_another_profile_that_allows_the_tv_is_offered_instead_of_a_sign_in(self):
         fleet = self.two_profiles()
         alias = fleet.detect()["tvs"][0]["alias"]
         fleet.connect(alias, {})
@@ -407,7 +457,6 @@ class FleetTests(unittest.TestCase):
         job = fleet.cert(alias, {})
         self.assertEqual((job["ok"], job["code"], job["use_profile"]), (False, "other-profile", "plx-tv-2"))
         self.assertIn("plx-tv-2 allows", job["message"])
-        self.assertEqual(self.launches, [], "No tizen-cert when another profile already allows the TV")
         job = fleet.profile(alias, {"profile": "plx-tv-2"})
         self.assertEqual((job["ok"], job["code"]), (True, "profile-active"))
         self.assertEqual(self.tizen_calls, [["security-profiles", "set-active", "-n", "plx-tv-2"]])
@@ -417,18 +466,14 @@ class FleetTests(unittest.TestCase):
             fleet.profile(alias, {"profile": "no-such-profile"})
         fleet.close()
 
-    def test_tizen_cert_making_a_new_profile_is_reported_after_it_exits(self):
+    def test_a_new_profile_that_allows_the_tv_is_offered_after_the_job(self):
         fleet = self.two_profiles()
         (self.root / "certs2" / "device-profile.xml").write_text(device_profile("OTHERDEVICE0002"))
         alias = fleet.detect()["tvs"][0]["alias"]
         fleet.connect(alias, {})
         fleet.identify(alias, {})
-        fleet.which = lambda name: "/bin/tizen-cert" if name == "tizen-cert" else None
-        self.assertEqual(fleet.cert(alias, {})["code"], "waiting")
-        # In tizen-cert the person made plx-tv-2 with this TV, leaving test-profile as it was.
         (self.root / "certs2" / "device-profile.xml").write_text(device_profile("OTHERDEVICE0002", DUID))
-        Path(self.launches[0][1]).write_text("0\n")
-        job = self.only(fleet)["job"]
+        job = fleet.cert(alias, {})
         self.assertEqual((job["code"], job["use_profile"]), ("other-profile", "plx-tv-2"))
         fleet.close()
 
@@ -442,42 +487,6 @@ class FleetTests(unittest.TestCase):
         self.assertIn("still test-profile", job["message"])
         self.assertIn("[ERROR] something went wrong", job["output"])
         fleet.close()
-
-    def test_cert_add_reports_a_failed_installer_and_changes_nothing(self):
-        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
-        fleet = self.fleet(installer=lambda: (1, "curl: (6) Could not resolve host: github.com"))
-        alias = fleet.detect()["tvs"][0]["alias"]
-        fleet.connect(alias, {})
-        fleet.identify(alias, {})
-        job = fleet.cert(alias, {})
-        self.assertEqual((job["ok"], job["code"], self.launches), (False, "install-failed", []))
-        self.assertIn("exited with code 1", job["message"])
-        self.assertIn("Could not resolve host", job["output"])
-        self.assertEqual([p.name for p in self.certs.iterdir() if p.name.startswith("backup-")], [])
-        fleet.close()
-
-    def test_tizen_cert_is_found_where_its_installer_puts_it(self):
-        home = self.root / "home"
-        local = home / ".local" / "bin" / "tizen-cert"
-        local.parent.mkdir(parents=True)
-        local.write_text("#!/bin/sh\n")
-        local.chmod(0o755)
-        places = tv_fleet.tizen_cert_locations(home=home, env={})
-        self.assertEqual(tv_fleet.find_tizen_cert(lambda name: None, places), str(local))
-        self.assertEqual(tv_fleet.find_tizen_cert(lambda name: "/usr/bin/tizen-cert", places), "/usr/bin/tizen-cert")
-        windows = tv_fleet.tizen_cert_locations(home=home, env={"LOCALAPPDATA": "C:/Users/x/AppData/Local"})
-        self.assertEqual(windows[0].parts[-3:], ("Programs", "tizen-cert", "tizen-cert.exe"))
-
-    def test_terminal_records_the_exit_code(self):
-        launched = []
-        status = self.root / "exit-code"
-        tv_fleet.open_terminal("/opt/x/tizen-cert", status, system="Darwin", popen=launched.append)
-        script = Path(launched[0][-1]).read_text()
-        self.assertIn("/opt/x/tizen-cert\ncode=$?", script)
-        self.assertIn(str(status), script)
-        tv_fleet.open_terminal("& 'C:/x/tizen-cert.exe'", status, system="Windows", popen=launched.append)
-        self.assertIn("$LASTEXITCODE", launched[1][-1])
-        self.assertIn(str(status), launched[1][-1])
 
     def test_changes_need_only_a_connection_and_the_tizen_cli(self):
         fleet = self.fleet()
