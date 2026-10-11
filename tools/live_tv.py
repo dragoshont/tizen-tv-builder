@@ -840,7 +840,8 @@ class App:
         metadata(values)
         with self.persist_lock:
             source = self.sources[alias]
-            if not source.lock.acquire(blocking=False):
+            # A frame grab holds the lock briefly; wait for it rather than refusing the edit.
+            if not source.lock.acquire(timeout=5):
                 fail("busy", "Wait for the active command before editing this profile")
             try:
                 # Revalidate path permissions and merge only metadata, never connection/grants.
