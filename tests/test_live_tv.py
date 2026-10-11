@@ -552,6 +552,13 @@ class LiveTests(unittest.TestCase):
         self.assertIn("card.hint.hidden = !live;", update)
         self.assertNotIn("version unavailable", script)
 
+    def test_unnamed_tv_card_is_titled_by_its_address(self):
+        script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text()
+        self.assertIn("return tv.unnamed && address ? `TV at ${address}` : tv.name;", script)
+        update = script[script.index("function updateTv("):script.index("function sourceCard(")]
+        self.assertIn("card.name.textContent = tvTitle(tv);", update)
+        self.assertNotIn("card.name.textContent = tv.name;", script)
+
     def test_endpoint_and_profile_do_not_allow_network_redirection(self):
         for bad in ("http://localhost:12345", "http://192.0.2.1:12345", "https://127.0.0.1:12345",
                     "http://127.0.0.1:12345/path", "http://127.0.0.1:12345?token=fixture",

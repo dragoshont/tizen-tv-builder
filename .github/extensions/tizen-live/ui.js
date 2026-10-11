@@ -33,6 +33,12 @@ async function request(path, data) {
 }
 
 // ---- naming ---------------------------------------------------------------
+// A TV with no known name or model is called by its address, never an invented number.
+function tvTitle(tv) {
+  const address = tv.details?.address;
+  return tv.unnamed && address ? `TV at ${address}` : tv.name;
+}
+
 function sourceName(source) {
   if (source.kind === "emulator") return "Emulator";
   const words = source.id.replace(/[-_]+/g, " ").trim();
@@ -264,7 +270,7 @@ async function updateTv(card, tv, keep) {
       for (let i = 0; i < p.frames.length; i++) {
         const frame = p.frames[i];
         const img = el("img", { src: await image({ id: tv.alias, revision: p.revision }, i),
-          alt: `${tv.name}: ${p.app} screen, layer ${i + 1}`, width: frame.width, height: frame.height });
+          alt: `${tvTitle(tv)}: ${p.app} screen, layer ${i + 1}`, width: frame.width, height: frame.height });
         await img.decode();
         figures.push(el("figure", {}, img));
       }
@@ -275,7 +281,7 @@ async function updateTv(card, tv, keep) {
       previewError = `Could not show the picture: ${problem.message}`;
     }
   }
-  card.name.textContent = tv.name;
+  card.name.textContent = tvTitle(tv);
   const shown = tvStatus(tv), working = Boolean(tv.pending);
   card.pill.textContent = shown.label;
   card.pill.className = `pill ${shown.tone}`;

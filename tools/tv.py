@@ -159,6 +159,12 @@ def default_fleet(certificate_duids=None, names=None, save_names=None, known=Non
                           known=known or {}, save_known=save_known)
 
 
+def title(tv):
+    """The portal's title: a TV with no known name or model is called by its address."""
+    address = (tv.get("details") or {}).get("address")
+    return f"TV at {address}" if tv.get("unnamed") and address else tv["name"]
+
+
 def card_lines(state):
     """One line per TV with the portal's status words, then its details in full."""
     tvs = state.get("tvs", [])
@@ -167,11 +173,12 @@ def card_lines(state):
     if not tvs:
         yield "No TVs found. Turn on Developer Mode on the TV (Apps, then 1 2 3 4 5), then scan again."
         return
-    width = max(len(tv["name"]) for tv in tvs)
+    width = max(len(title(tv)) for tv in tvs)
     for tv in tvs:
-        yield f"{tv['name']:<{width}}  {tv['alias']}  {tv['label']}"
+        yield f"{title(tv):<{width}}  {tv['alias']}  {tv['label']}"
         details = tv.get("details") or {}
-        facts = describe(tv.get("metadata") or {}) + ([details["address"]] if details.get("address") else [])
+        shown = details.get("address") and not title(tv).endswith(details["address"])
+        facts = describe(tv.get("metadata") or {}) + ([details["address"]] if shown else [])
         if tv.get("missing") and tv.get("last_seen"):
             facts.append("last seen " + time.strftime("%H:%M", time.localtime(tv["last_seen"])))
         if facts:
@@ -215,9 +222,10 @@ def guidance_lines(tv):
 def find(state, query):
     """A TV by alias or name, any case."""
     wanted = query.strip().casefold()
-    matches = [t for t in state["tvs"] if wanted in (t["alias"].casefold(), str(t.get("name", "")).casefold())]
+    matches = [t for t in state["tvs"]
+               if wanted in (t["alias"].casefold(), str(t.get("name", "")).casefold(), title(t).casefold())]
     if len(matches) != 1:
-        names = ", ".join(f"{t['name']} ({t['alias']})" for t in state["tvs"]) or "none found"
+        names = ", ".join(f"{title(t)} ({t['alias']})" for t in state["tvs"]) or "none found"
         raise LiveError("unknown", ("Several TVs are called " if matches else "No TV called ") + query +
                         "; TVs: " + names)
     return matches[0]
@@ -312,17 +320,17 @@ def connect(fleet, tv, say):
     alias = tv["alias"]
     if (tv.get("dev_mode") or {}).get("state") == "not-enabled":
         # Same as the portal: a TV that reports Developer Mode off gets the next step, not a Connect.
-        say(f"{tv['name']}: {tv['label']}")
+        say(f"{title(tv)}: {tv['label']}")
         say(tv["dev_mode"].get("explanation") or tv["headline"])
         for line in guidance_lines(tv):
             say(line)
         return None
-    say(f"{tv['name']}: Connecting…")
+    say(f"{title(tv)}: Connecting…")
     try:
         fleet.connect(alias, {})
     except LiveError:
         tv = find(fleet.state(), alias)
-        say(f"{tv['name']}: {tv['label']}")
+        say(f"{title(tv)}: {tv['label']}")
         say(tv["error"] or tv["headline"])
         for line in guidance_lines(tv):
             say(line)
@@ -335,7 +343,7 @@ def connect(fleet, tv, say):
     tv = find(fleet.state(), alias)
     if tv["status"] != "connected":
         release(fleet, alias, say)
-        say(f"{tv['name']}: {tv['label']}")
+        say(f"{title(tv)}: {tv['label']}")
         say(tv["error"] or tv["headline"])
         for line in guidance_lines(tv):
             say(line)
@@ -362,7 +370,7 @@ def act(args, fleet, tv, say):
     alias = connected["alias"]
     try:
         if command in {"connect", "info"}:
-            say(f"{connected['name']}: {connected['label']}")
+            say(f"{title(connected)}: {connected['label']}")
             say(connected["headline"])
             for line in details_lines(connected):
                 say(line)
@@ -389,7 +397,7 @@ def act(args, fleet, tv, say):
                 say(str(error))
                 return 1
             preview = find(fleet.state(), alias)["preview"]
-            say(f"Showing {args.app} on {connected['name']} ({len(preview['frames'])} picture layer(s)). "
+            say(f"Showing {args.app} on {title(connected)} ({len(preview['frames'])} picture layer(s)). "
                 "The app keeps running on the TV.")
             return 0
         if command in {"screenshot", "key"}:
@@ -517,10 +525,10 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
         tv = find(state, args.tv)
         if args.command == "rename":
             tv = find(fleet.rename(tv["alias"], {"name": args.name}), tv["alias"])
-            say(f"Renamed {tv['alias']} to {tv['name']}")
+            say(f"Renamed {tv['alias']} to {title(tv)}")
             return 0
         if args.command == "info" and not (args.connect or args.show_duid):
-            say(f"{tv['name']}: {tv['label']}")
+            say(f"{title(tv)}: {tv['label']}")
             say(tv["headline"])
             for line in details_lines(tv):
                 say(line)

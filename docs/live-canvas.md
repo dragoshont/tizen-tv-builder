@@ -131,7 +131,8 @@ Developer Mode off appear. Several observations of one TV (for example 26101 and
 8001 on the same address) merge into one card by the TV's own ID, which is used
 only to derive the hashed alias and is never shown. The card is named from
 `device.name` and `modelName` (e.g. "Samsung 7 Series (55) · UE55NU7…"),
-otherwise "Samsung TV (2018) #1". Rename (✎) stores your name in the 0600 profile
+otherwise by its address ("TV at 192.0.2.10") until it answers with its name, which is
+then remembered. Rename (✎) stores your name in the 0600 profile
 keyed by the hashed alias, never by address.
 
 Discovery limits: TVs that are off or in deep standby, on another subnet/VLAN or

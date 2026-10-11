@@ -100,6 +100,15 @@ class TvCliTests(unittest.TestCase):
         self.assertRegex(out, r"tv-[0-9a-f]{6}")
         self.assertEqual(self.sdb.mutations(), [])
 
+    def test_unnamed_tv_is_titled_by_its_address_not_a_number(self):
+        state = {"tvs": [{"alias": "tv-abc123", "name": "Samsung TV #1", "unnamed": True, "label": "Not reachable",
+                          "headline": "Turn the TV on, then scan again", "details": {"address": LAN_A}}]}
+        lines = list(tv.card_lines(state))
+        self.assertTrue(lines[0].startswith(f"TV at {LAN_A}"), lines)
+        self.assertIn("Not reachable", lines[0])
+        self.assertNotIn("#1", "\n".join(lines))
+        self.assertIs(tv.find(state, f"TV at {LAN_A}"), state["tvs"][0])
+
     def test_status_is_scan_and_json_matches_portal_state(self):
         code, out, _ = self.run_cli("status", "--json")
         state = json.loads(out)

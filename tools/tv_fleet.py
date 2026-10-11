@@ -716,6 +716,9 @@ class Fleet:
         return {"alias": record["alias"], "name": self.names.get(record["alias"], default),
                 "label": label, "tone": tone, "headline": headline,
                 "default_name": default, "renamed": record["alias"] in self.names,
+                # No name or model known: the portal and CLI title it by its address from details.
+                "unnamed": record["alias"] not in self.names and not any(
+                    info.get(k, "unknown") != "unknown" for k in ("name", "model")),
                 "status": status, "not_connected_reason": reason,
                 "last_seen": self.known.get(record["alias"], {}).get("last_seen"),
                 "reachable": bool(record["reachable"]), "missing": record.get("missing", False),

@@ -490,6 +490,9 @@ class FleetTests(unittest.TestCase):
         fleet = self.fleet(hits=(LAN_A, LAN_B), info=lambda host: None, save_names=saved.append)
         names = sorted(tv["name"] for tv in fleet.detect()["tvs"])
         self.assertEqual(names, ["Samsung TV #1", "Samsung TV #2"])
+        tvs = fleet.state()["tvs"]
+        self.assertTrue(all(tv["unnamed"] for tv in tvs), "Portal and CLI title these 'TV at <address>'")
+        self.assertEqual(sorted(tv["details"]["address"] for tv in tvs), [LAN_A, LAN_B])
         info = lambda host: {"name": "unknown", "model": "unknown", "year": "2018"}
         fleet = self.fleet(info=info, save_names=saved.append)
         alias = fleet.detect()["tvs"][0]["alias"]
@@ -497,6 +500,7 @@ class FleetTests(unittest.TestCase):
         fleet.rename(alias, {"name": "Bedroom TV"})
         self.assertEqual(saved[-1], {alias: "Bedroom TV"})
         self.assertEqual(self.only(fleet)["name"], "Bedroom TV")
+        self.assertFalse(self.only(fleet)["unnamed"])
         restarted = self.fleet(names=saved[-1], info=info)
         restarted.detect()
         self.assertEqual(self.only(restarted)["name"], "Bedroom TV")
