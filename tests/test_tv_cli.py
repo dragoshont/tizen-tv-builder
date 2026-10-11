@@ -260,12 +260,21 @@ class TvCliTests(unittest.TestCase):
         self.assertIn("This TV is " + DUID, out)
         self.assertIn("tv cert add " + alias, out)
 
+        polled = threading.Event()
+        cert_result = tv_fleet.Fleet.cert_result
+
+        def watched(fleet, alias):
+            polled.set()
+            return cert_result(fleet, alias)
+
         def add_tvs(duids, progress, browser, **options):
             progress("signin", "Waiting for Samsung sign-in\u2026", False)
             browser(tv_fleet.samsung_cert.SIGNIN_URL)
+            polled.wait(5)  # A real sign-in takes longer than the CLI's first look.
             progress("signin", "Signed in to Samsung", True)
             return {"profile": "tv-companion", "backup": None, "reinstall": False}  # Yet the TV isn't listed.
-        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv, "CERT_POLL", 0.01):
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv, "CERT_POLL", 0.01), \
+                mock.patch.object(tv_fleet.Fleet, "cert_result", watched):
             code, out, _ = self.run_cli("cert", "add", alias)
         self.assertEqual(code, 1, "The certificate still doesn't list the TV: not a success")
         self.assertEqual(self.launches, [tv_fleet.samsung_cert.SIGNIN_URL])
