@@ -173,6 +173,38 @@ class Download(unittest.TestCase):
         self.assert_clean(str(caught.exception))
 
 
+class FleetAppInfo(FirstRunBase):
+    """The shared, platform-independent answer the CLI prints."""
+
+    def setUp(self):
+        super().setUp()
+        Path(str(self.scenario_path) + ".state").write_text(
+            json.dumps({"connected": [], "installed": [APP], "calls": []}))
+
+    def ask(self, query):
+        fleet = self.fleet()
+        try:
+            alias = self.detected(fleet)["alias"]
+            with self.assertRaises(tv.LiveError):
+                fleet.app_info(alias, {"app": APP})  # Needs a connection first.
+            fleet.connect(alias, {"confirm": alias})
+            return fleet.app_info(alias, {"app": query})
+        finally:
+            fleet.close()
+
+    def test_id_name_missing_and_unreadable(self):
+        self.assertEqual(self.ask(APP)["installed"], "yes")
+        self.assertIsNone(self.ask(APP)["version"])
+        self.assertEqual(self.ask("Nope000000.nope")["installed"], "no")
+        self.assertEqual(self.ask("Fixture App")["reason"], "names-not-listed")
+        self.set_scenario(applist_versions="1.2.3")
+        found = self.ask("title " + APP)
+        self.assertEqual((found["installed"], found["app"], found["version"]), ("yes", APP, "1.2.3"))
+        self.set_scenario(applist="closed")
+        self.assertEqual((self.ask(APP)["installed"], self.ask(APP)["reason"]), ("unknown", "unreadable"))
+
+
+@unittest.skipUnless(os.name == "posix", "Private CLI state folders require POSIX ownership")
 class AppInfo(FirstRunBase):
     def setUp(self):
         super().setUp()
