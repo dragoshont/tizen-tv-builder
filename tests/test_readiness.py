@@ -147,27 +147,61 @@ class ReReview(Base):
     def target(self):
         return flows.identify(SERIAL, TOOL, Runner(Clock()))["fingerprint"]
 
-    def test_truncated_sdk_output_cannot_confirm_app_absence(self):
-        for padding in (600, 512 * 1024):
-            output = b"error: device offline\n" + b" " * padding + b"AbCdEfGhIj is not running"
-            with self.subTest(padding=padding):
-                clock = Clock()
-                session = flows.Session(SERIAL, "AbCdEfGhIj.App",
-                                        **session_args(flows.run_tool, clock))
-                done = subprocess.CompletedProcess([], 1, stdout=output)
-                with patch.object(flows.subprocess, "run", return_value=done):
-                    session.kill()
-                self.assertEqual(session.receipt["steps"][0]["result"], "failed")
-                self.assertEqual(session.receipt["steps"][0]["reason"], "sdk_output_truncated")
-                self.assertFalse(flows.verdict(session.receipt)["passed"])
+    def kill_with(self, returncode, stdout):
         clock = Clock()
-        session = flows.Session(SERIAL, "AbCdEfGhIj.App",
-                                **session_args(flows.run_tool, clock))
-        done = subprocess.CompletedProcess([], 1, stdout=b"AbCdEfGhIj is not running")
+        session = flows.Session(SERIAL, "AbCdEfGhIj.App", **session_args(flows.run_tool, clock))
+        done = subprocess.CompletedProcess([], returncode, stdout=stdout)
         with patch.object(flows.subprocess, "run", return_value=done):
             session.kill()
-        self.assertEqual(session.receipt["steps"][0]["result"], "not-running")
-        self.assertTrue(flows.verdict(session.receipt)["passed"])
+        return session.receipt["steps"][0], flows.verdict(session.receipt)["passed"]
+
+    def test_truncated_sdk_output_cannot_confirm_app_absence(self):
+        absent = b"Pkgid: AbCdEfGhIj is already Terminated\nspend time for pkgcmd is [111]ms\n"
+        for code, padding in ((1, 600), (1, 512 * 1024), (0, 512 * 1024)):
+            with self.subTest(returncode=code, padding=padding):
+                step, passed = self.kill_with(code, b"error: device offline\n" + b" " * padding + absent)
+                self.assertEqual(step["result"], "failed")
+                self.assertFalse(passed)
+
+    def test_zero_exit_kill_is_classified_by_observed_sdk_wording(self):
+        timing = b"spend time for pkgcmd is [111]ms\n"
+        cases = (
+            (b"processing result : General error [-1] failed", "failed", "sdk_kill_error"),
+            (b"processing result : General error [-1] failed\n" + timing, "failed", "sdk_kill_error"),
+            (b"Pkgid: AbCdEfGhIj is already Terminated\n" + timing, "not-running", None),
+            (b"Pkgid: AbCdEfGhIj is already Terminated\r\n", "not-running", None),
+            (b"Pkgid: AbCdEfGhIj is Terminated\n" + timing, "ok", None),
+            (b"Pkgid: AbCdEfGhIj is Terminated\n", "ok", None),
+            (b"Pkgid: AbCdEfGhIj is already Terminated\n" + timing + b"error: device offline\n",
+             "failed", "sdk_kill_unrecognized"),
+            (b"error: device offline\nPkgid: AbCdEfGhIj is Terminated\n", "failed", "sdk_kill_unrecognized"),
+            (b"Pkgid: AbCdEfGhIj is Terminated\nprocessing result : General error [-1] failed\n",
+             "failed", "sdk_kill_error"),
+            (b"Pkgid: XyXyXyXyXy is already Terminated\n", "failed", "sdk_kill_unrecognized"),
+            (b"Pkgid: AbCdEfGhIjK is Terminated\n", "failed", "sdk_kill_unrecognized"),
+            (b"Pkgid: AbCdEfGhIj.App is Terminated\n", "failed", "sdk_kill_unrecognized"),
+            (b"Pkgid: AbCdEfGhIj is Terminated\n" + timing + timing, "failed", "sdk_kill_unrecognized"),
+            (b"Pkgid: AbCdEfGhIj is Terminated\nspend time for pkgcmd is [1x]ms\n", "failed",
+             "sdk_kill_unrecognized"),
+            (b"  Pkgid: AbCdEfGhIj is Terminated\n", "failed", "sdk_kill_unrecognized"),
+            (b"killed", "failed", "sdk_kill_unrecognized"),
+            (b"", "failed", "sdk_kill_unrecognized"),
+            (timing, "failed", "sdk_kill_unrecognized"),
+        )
+        for stdout, result, reason in cases:
+            with self.subTest(stdout=stdout):
+                step, passed = self.kill_with(0, stdout)
+                self.assertEqual(step["result"], result)
+                self.assertEqual(step.get("reason"), reason)
+                self.assertEqual(passed, result != "failed")
+
+    def test_nonzero_exit_kill_never_confirms_absence(self):
+        for stdout in (b"Pkgid: AbCdEfGhIj is already Terminated\n", b"AbCdEfGhIj is not running",
+                       b"AbCdEfGhIj.App does not exist", b"Pkgid: AbCdEfGhIj is Terminated\n"):
+            with self.subTest(stdout=stdout):
+                step, passed = self.kill_with(1, stdout)
+                self.assertEqual((step["result"], step["reason"]), ("failed", "sdk"))
+                self.assertFalse(passed)
 
     def test_failed_capture_fails_the_receipt(self):
         clock, runner = Clock(), Runner()
@@ -177,7 +211,7 @@ class ReReview(Base):
         self.assertFalse(receipt["passed"])
         self.assertIn("capture", receipt["failed_steps"])
 
-    def test_only_confirmed_absent_app_counts_as_not_running(self):
+    def test_kill_runner_errors_always_fail(self):
         class Kill(Runner):
             error = None
             def __call__(self, argv, timeout=60):
@@ -185,28 +219,19 @@ class ReReview(Base):
                     self.calls.append(argv[1:])
                     raise self.error
                 return super().__call__(argv, timeout)
-        for error, expected in ((LiveError("sdk_timeout", "SDK command timed out"), "failed"),
-                                (LiveError("sdk", "SDK command failed: error: device offline"), "failed"),
-                                (LiveError("sdk", "SDK command failed: error: device does not exist"), "failed"),
-                                (LiveError("sdk", "SDK command failed: error: target not found"), "failed"),
-                                (LiveError("sdk", "SDK command failed: process is not running"), "failed"),
-                                (LiveError("sdk", "SDK command failed: XyXyXyXyXy is not running"), "failed"),
-                                (LiveError("sdk", "SDK command failed: AbCdEfGhIjK is not running"), "failed"),
-                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running\nerror: device offline"), "failed"),
-                                (LiveError("sdk", "SDK command failed: error: connection failed\nAbCdEfGhIj is not running"), "failed"),
-                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running; error: timed out"), "failed"),
-                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running\nerror: unknown failure"), "failed"),
-                                (LiveError("sdk", "SDK command failed: AbCdEfGhIjXApp does not exist"), "failed"),
-                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running"), "not-running"),
-                                (LiveError("sdk", "SDK command failed:  \tAbCdEfGhIj is not installed \r\n"), "not-running"),
-                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj.App does not exist"), "not-running")):
+        for error in (LiveError("sdk_timeout", "SDK command timed out"),
+                      LiveError("sdk_output_truncated", "SDK command failed (output truncated)"),
+                      LiveError("sdk", "SDK command failed: error: device offline"),
+                      LiveError("sdk", "SDK command failed: Pkgid: AbCdEfGhIj is already Terminated"),
+                      LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running")):
             with self.subTest(error=error.code, message=str(error)):
                 clock, runner = Clock(), Kill()
                 session = flows.Session(SERIAL, "AbCdEfGhIj.App", **session_args(runner, clock))
                 runner.error = error
                 session.teardown()
-                self.assertEqual([s["result"] for s in session.receipt["steps"] if s["step"] == "kill"], [expected])
-                self.assertEqual(flows.verdict(session.receipt)["passed"], expected == "not-running")
+                kills = [s for s in session.receipt["steps"] if s["step"] == "kill"]
+                self.assertEqual([(s["result"], s["reason"]) for s in kills], [("failed", error.code)])
+                self.assertFalse(flows.verdict(session.receipt)["passed"])
 
     def test_invalid_raw_samples_are_invalid_not_aggregated(self):
         self.assertEqual(flows._median([400, "invalid", 400]), "invalid")

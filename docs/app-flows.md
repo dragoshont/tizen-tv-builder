@@ -62,11 +62,15 @@ python3 tools/tizen.py retail --serial TV_IP:26101 --authorized \
   verdict. `--output` gets real PNG captures only (unsupported capture is recorded in
   the receipt) and a redacted `dlog-tail.txt`.
 - `passed` is false (exit `2`) if any required step, capture or teardown failed or the
-  budget did not pass; `failed_steps` names them. Kill counts as `not-running` only
-  when the entire SDK output names the exact app ID or package as absent (wording
-  unverified on a real TV); any additional error text, generic device/process errors,
-  a timeout or lost connection are `failed`. Truncated failure output is explicitly
-  marked `sdk_output_truncated` and cannot confirm app absence.
+  budget did not pass; `failed_steps` names them. `sdb shell 0 kill <package>` exits
+  `0` even when it fails, so the exit status proves nothing. The output must be exactly
+  one of the wordings observed on a Tizen 3.0 retail TV, optionally followed by one
+  `spend time for pkgcmd is [N]ms` line: `Pkgid: <package> is Terminated` (`ok`) or
+  `Pkgid: <package> is already Terminated` (`not-running`).
+  `processing result : General error [-1] failed` is `failed` (`sdk_kill_error`).
+  Any other, mixed, extra or truncated output is `failed` (`sdk_kill_unrecognized`).
+  A nonzero exit, a timeout or a lost connection is always `failed`. Other firmware
+  may use different wording; that fails closed until it has been observed.
   Any missing or non-numeric run sample makes that median
   `invalid`. Budget limits and measurements must be
   finite, non-negative numbers no greater than `2 ** 53` milliseconds; anything else

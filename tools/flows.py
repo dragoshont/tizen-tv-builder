@@ -106,12 +106,27 @@ def evaluate(metrics, tier, budgets=None):
             "passed": all(v["result"] == "pass" for v in verdict.values())}
 
 
-def _app_absent(message, app):
-    """Accept only a complete absence response, never mixed SDK failures."""
-    ids = "|".join(re.escape(i) for i in sorted({app, app.split(".")[0]}, key=len, reverse=True))
-    output = message.removeprefix("SDK command failed: ").strip()
-    return re.fullmatch(rf"(?:{ids})[ \t]+(?:is[ \t]+not[ \t]+running|is[ \t]+not[ \t]+installed|does[ \t]+not[ \t]+exist)",
-                        output) is not None
+KILL_TIMING = r"spend time for pkgcmd is \[\d{1,9}\]ms"
+KILL_ERROR = "processing result : General error [-1] failed"
+
+
+def _kill_result(output, package):
+    """Classify zero-exit `shell 0 kill <package>` output by exact observed SDK wording only.
+
+    Observed on a Tizen 3.0 retail TV (exit 0 in every case), each optionally followed by one
+    timing line: `Pkgid: <package> is Terminated`, `Pkgid: <package> is already Terminated`
+    and `processing result : General error [-1] failed`. Anything else, mixed or extra, fails.
+    """
+    lines = output.replace("\r\n", "\n").removesuffix("\n").split("\n")
+    if len(lines) == 2 and re.fullmatch(KILL_TIMING, lines[1]):
+        lines = lines[:1]
+    if len(lines) == 1:
+        match = re.fullmatch(rf"Pkgid: {re.escape(package)} is (already )?Terminated", lines[0])
+        if match:
+            return ("not-running", None) if match.group(1) else ("ok", None)
+    if any(KILL_ERROR in line for line in lines):
+        return "failed", "sdk_kill_error"
+    return "failed", "sdk_kill_unrecognized"
 
 
 def _median(values):
@@ -160,15 +175,20 @@ class Session:
         self.step("install", package_sha256=report["sha256"], signed=report["signed"])
 
     def kill(self):
-        """Only an SDK answer that the app is absent counts as not-running; timeouts/offline are failures."""
+        """Exit status cannot prove kill success; only exact observed SDK wording is accepted."""
+        package = self.app.split(".")[0]
         try:
-            self.sdb("shell", "0", "kill", self.app.split(".")[0])
-            self.step("kill")
+            output = self.sdb("shell", "0", "kill", package)
         except LiveError as error:
-            if error.code == "sdk" and _app_absent(str(error), self.app):
-                self.step("kill", "not-running")
-            else:
-                self.step("kill", "failed", reason=error.code)
+            self.step("kill", "failed", reason=error.code)
+            return
+        result, reason = _kill_result(output, package)
+        if result == "ok":
+            self.step("kill")
+        elif reason:
+            self.step("kill", result, reason=reason)
+        else:
+            self.step("kill", result)
 
     def launch(self):
         """Kill-before-debug, debug launch, owned forward and page readiness. Returns ms."""

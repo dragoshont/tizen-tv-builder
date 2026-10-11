@@ -76,7 +76,7 @@ class Runner:
         if rest[:3] == ["shell", "0", "getduid"]:
             return self.duid + "\n"
         if rest[:3] == ["shell", "0", "kill"]:
-            return "killed"
+            return f"Pkgid: {rest[3]} is Terminated\nspend time for pkgcmd is [109]ms\n"
         if rest[:3] == ["shell", "0", "debug"]:
             return "... successfully launched pid = 1 with debug 1 port: 42001"
         if rest == ["forward", "--list"]:
