@@ -1257,7 +1257,10 @@ class Fleet:
         record = self._change(alias, data, {"app"})
         app = self._app(data["app"])
         failed, text = self._tizen(["run", "-p", app, "-t", self._device_name(record["serial"])])
-        if failed or not re.search(r"successfully launched", text, re.I):
+        # Tizen 3 (2017) prints the TV's own log: "app_id[APP] resumed" when APP was already running,
+        # then "Could not launch the null application." and a nonzero exit. The app is up; that counts.
+        resumed = re.search(r"app_id\[" + re.escape(app) + r"\] (resumed|launched)", text)
+        if not resumed and (failed or not re.search(r"successfully launched", text, re.I)):
             return self._finish(record, {"op": "launch", "ok": False, "code": "launch-failed",
                                          "message": "The TV did not start " + app + " (is it installed?)",
                                          "output": text[-400:], "next": f"tv install {alias} APP.wgt", "app": app})
