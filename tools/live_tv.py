@@ -412,8 +412,10 @@ class CDP:
                 continue
             if "error" in value:
                 code = value["error"].get("code") if isinstance(value["error"], dict) else None
+                detail = value["error"].get("message") if isinstance(value["error"], dict) else None
+                detail = f" ({detail[:120]})" if isinstance(detail, str) and detail else ""
                 fail("unsupported" if code == -32601 else "rpc",
-                     method + (" is unsupported" if code == -32601 else " was rejected by this target"))
+                     method + (" is unsupported" if code == -32601 else " was rejected by this target" + detail))
             result = value.get("result")
             if not isinstance(result, dict):
                 fail("protocol", "Inspector result is malformed")
@@ -727,13 +729,22 @@ class Source:
                                  for side in ("width", "height"))]
             if not 1 <= len(paint) <= 8:
                 fail("limit", "Expected one to eight paint layers; incomplete over-limit captures are refused")
+            refused = []
             for layer in paint:
                 if time.monotonic() - started > 15 or time.monotonic() >= self.expires:
                     fail("timeout", "Native capture total budget exceeded")
                 layer_id = layer.get("layerId")
                 if not isinstance(layer_id, str) or len(layer_id) > 100:
                     fail("capture", "Paint layer identity is invalid")
-                snapshot = rpc("LayerTree.makeSnapshot", {"layerId": layer_id}).get("snapshotId")
+                try:
+                    snapshot = rpc("LayerTree.makeSnapshot", {"layerId": layer_id}).get("snapshotId")
+                except LiveError as error:
+                    # Layers come and go between the list and the snapshot (a spinner is re-created
+                    # with a new id); the TV then refuses that one layer. Skip it, not the capture.
+                    if error.code != "rpc":
+                        raise
+                    refused.append(str(error))
+                    continue
                 if not isinstance(snapshot, str) or not snapshot or len(snapshot) > 200:
                     fail("capture", "Snapshot identity is invalid")
                 try:
@@ -761,6 +772,8 @@ class Source:
                 except (LiveError, OSError, ValueError):
                     self.cleanup = "LayerTree cleanup unconfirmed; disconnected, no automatic retry"
                     raise
+        if not frames:
+            fail("rpc", refused[0] if refused else "No paint layer could be captured")
         self.frames = frames
         self.revision = hashlib.sha256(b"".join(f["raw"] for f in frames)).hexdigest()[:24]
         self.captured = time.time()

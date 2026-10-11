@@ -652,6 +652,8 @@ class LiveTests(unittest.TestCase):
         # Layer list as reported by a QE65Q80C (Tizen 9.0) for a running web app: the 0x0 root is
         # flagged drawsContent, yet makeSnapshot on it answers -32000 "Layer does not draw content".
         class EmptyRootCDP(FakeCDP):
+            gone = {"10"}
+
             def layer_list(self):
                 return [{"layerId": "10", "drawsContent": True, "width": 0, "height": 0, "offsetX": 0, "offsetY": 0},
                         {"layerId": "11", "parentLayerId": "10", "drawsContent": False, "width": 1920, "height": 1080},
@@ -664,7 +666,7 @@ class LiveTests(unittest.TestCase):
                         {"layerId": "9", "parentLayerId": "10", "drawsContent": False, "width": 1920, "height": 1080}]
 
             def rpc(self, method, params=None, timeout=3):
-                if method == "LayerTree.makeSnapshot" and params["layerId"] == "10":
+                if method == "LayerTree.makeSnapshot" and params["layerId"] in self.gone:
                     self.calls.append((method, params))
                     raise live.LiveError("rpc", method + " was rejected by this target")
                 return super().rpc(method, params, timeout)
@@ -677,6 +679,13 @@ class LiveTests(unittest.TestCase):
                 self.assertEqual(len(result["frames"]), 3)
                 snapped = [p["layerId"] for m, p in source.client.calls if m == "LayerTree.makeSnapshot"]
                 self.assertEqual(snapped, ["12", "13", "14"])
+                # The spinner layer is re-created between list and snapshot: that one layer is skipped.
+                source.client.gone = {"10", "13"}
+                self.assertEqual(len(source.operate("capture", {})["frames"]), 2)
+                source.client.gone = {"10", "12", "13", "14"}
+                with self.assertRaisesRegex(live.LiveError, "rejected"):
+                    source.operate("capture", {})
+                self.assertTrue(source.stale)
             finally:
                 source.disconnect()
 
