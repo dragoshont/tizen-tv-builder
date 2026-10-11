@@ -159,14 +159,27 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(self.only(again)["status"], "developer")
         again.close()
 
-    def test_same_portal_still_serializes_its_own_connect(self):
+    def test_connect_again_is_a_no_op_not_busy(self):
         fleet = self.fleet()
         alias = fleet.detect()["tvs"][0]["alias"]
         fleet.connect(alias, {"confirm": ""})
-        with self.assertRaises(live.LiveError) as caught:
-            fleet.connect(alias, {"confirm": ""})
-        self.assertEqual(caught.exception.code, "busy")
+        calls = len(self.sdb.calls)
+        state = fleet.connect(alias, {"confirm": ""})
+        self.assertEqual(len(self.sdb.calls), calls, "No second sdb connect")
+        self.assertEqual(state["tvs"][0]["status"], "developer")
         fleet.close()
+
+    def test_configured_source_takes_no_lock_file_and_ignores_foreign_locks(self):
+        lane = self.root / "tizen-tv-tv-abc123.lock"
+        other = live.Lease(lane)
+        other.acquire()
+        try:
+            source = live.Source({"id": "tv-abc123", "lease_path": str(lane), "lease_seconds": 60})
+            source.lease.acquire()
+            source.lease.release()
+            self.assertTrue((lane / "owner.json").is_file(), "Another session's lock is never removed")
+        finally:
+            other.release()
 
     def test_already_connected_tv_is_never_disconnected_by_portal(self):
         self.sdb.devices = {f"{LAN_A}:26101": "device"}
@@ -267,6 +280,41 @@ class FleetTests(unittest.TestCase):
         self.assertIs(kwargs["lease"], fleet.records[alias]["lease"])
         job = self.only(fleet)["job"]
         self.assertEqual(job["status"], "passed")
+        self.assertPrivate(fleet.state())
+        fleet.close()
+
+    def test_known_tv_missed_by_one_scan_stays_as_not_found(self):
+        hits, answering = [LAN_A, LAN_B], {LAN_A, LAN_B}
+
+        def info(host):
+            if host not in answering:
+                raise OSError("timed out")
+            return {"name": "[TV] Samsung", "model": "UE55NU7400", "year": "2019", "developer_mode": "1", "uid": "uuid:" + host}
+        fleet = self.fleet(hits=hits, info=info)
+        fleet.detect()
+        before = {tv["alias"]: tv["name"] for tv in fleet.state()["tvs"]}
+        held, bedroom = sorted(before)
+        held = next(tv["alias"] for tv in fleet.state()["tvs"] if tv["alias"] != bedroom)
+        fleet.connect(held, {"confirm": ""})
+        identity = fleet.records[held]["serial"]
+        lost = fleet.records[bedroom]["serial"]
+        hits[:] = [LAN_A] if lost.startswith(LAN_B) else [LAN_B]
+        fleet.detect()
+        tvs = {tv["alias"]: tv for tv in fleet.state()["tvs"]}
+        self.assertEqual(set(tvs), set(before), "A TV missing from one scan keeps its card")
+        self.assertEqual((tvs[bedroom]["label"], tvs[bedroom]["missing"], tvs[bedroom]["status"]),
+                         ("Not found", True, "not-connected"))
+        self.assertEqual(tvs[bedroom]["name"], before[bedroom])
+        self.assertEqual(fleet.records[held]["serial"], identity, "The held TV is never retargeted")
+        self.assertEqual(tvs[held]["status"], "developer")
+        # It returns while its REST info times out: same card, not a second serial-keyed one.
+        hits[:] = [LAN_A, LAN_B]
+        answering.clear()
+        fleet.detect()
+        tvs = {tv["alias"]: tv for tv in fleet.state()["tvs"]}
+        self.assertEqual(set(tvs), set(before))
+        self.assertFalse(tvs[bedroom]["missing"])
+        self.assertEqual(tvs[bedroom]["name"], before[bedroom])
         self.assertPrivate(fleet.state())
         fleet.close()
 

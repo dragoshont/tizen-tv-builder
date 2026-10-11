@@ -115,7 +115,7 @@ function usablePreview(card, preview) {
 function remotePanel() {
   const button = (key, label, text) => el("button", { type: "button", data: { key }, "aria-label": label }, text);
   const why = el("p", { class: "why" });
-  const hint = el("p", { class: "hint" }, "Keyboard: arrows, Enter = OK, Backspace = Back");
+  const hint = el("p", { class: "hint" }, "Keyboard: arrows, Backspace = Back");
   const remote = el("div", { class: "remote", tabIndex: 0, role: "group", "aria-label": "Remote" },
     el("h3", {}, "Remote"),
     el("div", { class: "dpad" }, button("up", "Up", "▲"), button("left", "Left", "◀"), button("ok", "OK", "OK"),
@@ -292,7 +292,7 @@ async function updateTv(card, tv, keep) {
   card.screenText.parentElement.hidden = live;
   card.previewReady = live;
   for (const key of card.keys) key.disabled = busy || !live || !p.input_allowed || (key.dataset.key === "ok" && !p.activation_allowed);
-  card.hint.textContent = live && !p.activation_allowed ? "Keyboard: arrows, Backspace = Back" : "Keyboard: arrows, Enter = OK, Backspace = Back";
+  card.hint.textContent = live && p.activation_allowed ? "Keyboard: arrows, Enter = OK, Backspace = Back" : "Keyboard: arrows, Backspace = Back";
   card.why.textContent = !live ? "The remote turns on once an app is open for preview."
     : !p.activation_allowed ? "Arrows and Back go to the app. OK is off: this app has no audited safe buttons." : busy ? "Sending…" : "Ready.";
   card.age.textContent = live && p.captured_at ? `Picture from ${new Date(p.captured_at * 1000).toLocaleTimeString()} · the app's own drawing, not the whole TV` : "";
@@ -396,7 +396,7 @@ async function updateSource(card, s, keep) {
   for (const key of card.keys) {
     key.disabled = busy || !ready || !s.input_allowed || (key.dataset.key === "ok" && !s.activation_allowed);
   }
-  card.hint.textContent = ready && !s.activation_allowed ? "Keyboard: arrows, Backspace = Back" : "Keyboard: arrows, Enter = OK, Backspace = Back";
+  card.hint.textContent = ready && s.activation_allowed ? "Keyboard: arrows, Enter = OK, Backspace = Back" : "Keyboard: arrows, Backspace = Back";
   card.why.textContent = offline ? "Connection lost. Keys are off until the page reconnects."
     : !ready ? "Choose Connect on this card to turn the remote on."
     : !s.activation_allowed ? "OK is off: this app has no audited safe buttons." : busy ? "Sending…" : "Ready.";

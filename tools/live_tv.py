@@ -398,14 +398,26 @@ def png(data):
     return raw, width, height
 
 
+class MemoryLink:
+    """A connection held in this process only. It reserves nothing on disk, so no other
+    session's lock file can block it and a restart needs no cleanup."""
+    identity = "in-memory"
+
+    def acquire(self):
+        pass
+
+    def release(self):
+        pass
+
+
 class Source:
     keymap = KEYS
     def __init__(self, config, factory=CDP, lease=None):
         self.config = config
         self.factory = factory
         self.lock = threading.Lock()
-        # A fleet preview shares the per-TV lease the fleet already holds.
-        self.lease = lease or Lease(config["lease_path"])
+        # Stateless: no lock file reserves the TV. lease_path stays a validated, unused config field.
+        self.lease = lease or MemoryLink()
         self.client = None
         self.expires = 0
         self.frames = []

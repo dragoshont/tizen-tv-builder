@@ -2,7 +2,7 @@
   color-scheme: dark;
   --bg: #2c2c2e; --panel: #1b1b1d; --panel-2: #222224; --line: #424248;
   --text: #f7fafc; --muted: #b8bfcc; --accent: #f7fafc; --accent-press: #d2d2d7;
-  --ok: #30d158; --warn: #ffd60a; --bad: #ff453a; --busy: #bf5af2;
+  --ok: #30d158; --warn: #ffd60a; --bad: #ff453a;
   --radius: 14px; --gap: 16px;
   font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, Roboto, "Helvetica Neue", sans-serif;
 }
@@ -30,7 +30,7 @@ p { margin: 0; }
 .row-name { font-weight: 600; overflow-wrap: anywhere; }
 .row-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .row-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-.row-status.connected::before { background: var(--ok); } .row-status.busy::before { background: var(--busy); }
+.row-status.connected::before { background: var(--ok); }
 .row-status.lost::before { background: var(--bad); } .row-status.working::before { background: var(--warn); }
 .row-meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .dev { margin: 4px 0; font-size: 13px; } .dev strong { margin-right: 6px; }
@@ -44,7 +44,6 @@ main { min-width: 0; }
 .devices { display: grid; gap: 20px; }
 .device { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: var(--gap);
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
-.device.busy { opacity: 0.85; }
 .device-main { display: grid; gap: 12px; align-content: start; min-width: 0; }
 .title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .title-row h2 { font-size: 19px; overflow-wrap: anywhere; }
@@ -53,7 +52,6 @@ main { min-width: 0; }
   font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); }
 .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .pill.connected::before { background: var(--ok); } .pill.connected { color: #b9f6c8; }
-.pill.busy::before { background: var(--busy); } .pill.busy { color: #e6c8ff; }
 .pill.lost::before { background: var(--bad); } .pill.lost { color: #ffc2bd; }
 .pill.working::before { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.3; } }

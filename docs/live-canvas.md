@@ -179,7 +179,10 @@ returned layers is not enough. Nothing else earns that label, and the page fails
 closed (keys stay off) if the helper reports Connected without a decodable,
 current picture. **Developer Mode ready** means the developer link works
 but no preview is attached ("Preview not connected"). **Not connected** covers
-the rest.
+the rest. A TV found earlier that one scan misses keeps its card, name and
+alias, labelled **Not found** until a later scan sees it again; a held connection
+is never retargeted. If the TV's info request times out when it returns, it keeps
+the same card rather than gaining a second one.
 
 Connections are stateless. Connect has no confirmation dialog: it launches no app
 and sends no keys. It runs `sdb connect` and Identify and keeps that link in this

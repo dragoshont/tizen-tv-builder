@@ -195,19 +195,7 @@ def explain(output, fallback_code, fallback_message, fallback_next):
     return fallback_code, fallback_message, fallback_next
 
 
-class _Link:
-    """This process's own developer link to one TV. In memory only: no lock file reserves the TV,
-    so other sessions' leftover locks never block it and a restart needs no cleanup."""
-    identity = "in-memory"
-
-    def acquire(self):
-        pass
-
-    def release(self):
-        pass
-
-
-_HeldLease = _Link
+_Link = _HeldLease = live_tv.MemoryLink
 
 
 PREVIEW_SECONDS = 900
@@ -341,6 +329,10 @@ class Fleet:
                     info = infos.get(serial) or {}
                     uid = info.get("uid")
                     alias = self.alias("uid:" + uid if uid else "serial:" + serial)
+                    if not uid:
+                        # Its info timed out this time: keep the card this TV already has, not a second one.
+                        alias = next((a for a, r in self.records.items() if r.get("serial") == serial
+                                      and a not in seen and r.get("api")), alias)
                     if alias in seen:
                         # The same physical TV seen twice (e.g. two addresses): merge, keep the best path.
                         record = self.records[alias]
@@ -361,15 +353,15 @@ class Fleet:
                         continue  # Never retarget a TV this portal is holding.
                     record.update(serial=serial, host=entry["host"], reachable=entry["reachable"],
                                   sdb_state=entry["sdb_state"], loopback=bool(entry.get("loopback")),
-                                  api=bool(infos.get(serial)),
-                                  info={k: info.get(k, "unknown") for k in INFO_FIELDS},
                                   missing=False)
-                for alias, record in list(self.records.items()):
+                    if info or not record.get("api"):
+                        record.update(api=bool(info), info={k: info.get(k, "unknown") for k in INFO_FIELDS})
+                for alias, record in self.records.items():
                     if alias not in seen:
+                        # One missed scan must not make a known TV vanish: keep it, truthfully "Not found".
+                        record["missing"] = True
                         if record["lease"] is None:
-                            del self.records[alias]
-                        else:
-                            record["missing"] = True
+                            record.update(reachable=False, sdb_state=None)
                 self.scan = {"status": "done", "networks": len(networks), "found": len(seen),
                              "sdb": "unavailable" if devices is None else "ok", "finished_at": int(time.time())}
             return self.state()
@@ -562,12 +554,14 @@ class Fleet:
         self._require_sdk()
         with self.lock:
             record = self.record(alias)
-            if record["lease"] is not None:
-                fail("busy", "This portal is already connected to that TV")
-            if not record.get("host"):
+            already = record["lease"] is not None
+            if not already and not record.get("host"):
                 fail("invalid", "This TV has no network address to connect to")
-            lease = _Link()
-            record["lease"], record["error"], record["guidance"] = lease, None, None
+            if not already:
+                record["lease"], record["error"], record["guidance"] = _Link(), None, None
+        if already:
+            return self.state()  # Already connected: Connect is a no-op, not an error.
+        lease = record["lease"]
         serial = record["serial"]
         attempted = False
         try:

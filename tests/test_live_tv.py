@@ -234,11 +234,16 @@ class LiveTests(unittest.TestCase):
 
     def test_cleanup_failure_revokes_input_and_keeps_truthful_status(self):
         with tempfile.TemporaryDirectory() as temporary:
-            source = live.Source(source_config(Path(temporary)), FakeCDP)
+            class FailingLink(live.MemoryLink):
+                armed = False
+                def release(self):
+                    if self.armed:
+                        raise live.LiveError("cleanup", "release refused")
+            link = FailingLink()
+            source = live.Source(source_config(Path(temporary)), FakeCDP, lease=link)
             source.operate("connect", {"authorized": True, "pixels": True, "input": True})
             source.timer.cancel()
-            owner = Path(source.config["lease_path"]) / "owner.json"
-            owner.write_text('{"token":"different"}')
+            link.armed = True
             with self.assertRaises(live.LiveError):
                 source.disconnect()
             self.assertFalse(source.input_allowed)
