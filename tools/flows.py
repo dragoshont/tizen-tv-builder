@@ -105,10 +105,11 @@ def evaluate(metrics, tier, budgets=None):
 
 
 def _app_absent(message, app):
-    """True only when the SDK names this package/app ID itself as not running or absent."""
+    """Accept only a complete absence response, never mixed SDK failures."""
     ids = "|".join(re.escape(i) for i in sorted({app, app.split(".")[0]}, key=len, reverse=True))
-    return re.search(rf"(?<![\w.])(?:{ids})(?![\w.])\s+(?:is\s+not\s+running|is\s+not\s+installed|does\s+not\s+exist)\b",
-                     message) is not None
+    output = message.removeprefix("SDK command failed: ").strip()
+    return re.fullmatch(rf"(?:{ids})[ \t]+(?:is[ \t]+not[ \t]+running|is[ \t]+not[ \t]+installed|does[ \t]+not[ \t]+exist)",
+                        output) is not None
 
 
 def _median(values):

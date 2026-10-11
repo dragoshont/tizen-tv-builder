@@ -170,7 +170,13 @@ class ReReview(Base):
                                 (LiveError("sdk", "SDK command failed: process is not running"), "failed"),
                                 (LiveError("sdk", "SDK command failed: XyXyXyXyXy is not running"), "failed"),
                                 (LiveError("sdk", "SDK command failed: AbCdEfGhIjK is not running"), "failed"),
+                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running\nerror: device offline"), "failed"),
+                                (LiveError("sdk", "SDK command failed: error: connection failed\nAbCdEfGhIj is not running"), "failed"),
+                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running; error: timed out"), "failed"),
+                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running\nerror: unknown failure"), "failed"),
+                                (LiveError("sdk", "SDK command failed: AbCdEfGhIjXApp does not exist"), "failed"),
                                 (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running"), "not-running"),
+                                (LiveError("sdk", "SDK command failed:  \tAbCdEfGhIj is not installed \r\n"), "not-running"),
                                 (LiveError("sdk", "SDK command failed: AbCdEfGhIj.App does not exist"), "not-running")):
             with self.subTest(error=error.code, message=str(error)):
                 clock, runner = Clock(), Kill()
