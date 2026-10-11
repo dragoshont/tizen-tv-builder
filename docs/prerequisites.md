@@ -74,8 +74,9 @@ before an approved upgrade; no emulator installation is required for this guide.
 3. Resolve Windows firewall/network access normally with the owner; never
    disable security protections as an emulator/connectivity recipe.
 4. The standalone command `py -3 tools/workbench.py --sdb $Sdb` supports a
-   Windows executable path by design, but execution on Windows and a real
-   Windows-to-TV run have **not** been verified by this toolkit.
+   Windows executable path. Hosted Windows Server loopback and native private
+   recording checks passed; desktop Windows 10/11 and a real Windows-to-TV run
+   remain unverified. See [the dated CI receipt](workbench.md).
 
 Windows x64/Ryzen is not an emulator pass. Samsung's upstream troubleshooting
 lead uses Windows Hypervisor Platform, not retired Intel-only HAXM as an AMD

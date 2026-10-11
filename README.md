@@ -100,7 +100,8 @@ For a standalone remote, inspector and native paint preview, run
 first-run flow checks installed tools and guides explicit TV/app debug setup.
 It detects connected TVs and installed apps, and shows a complete Samsung-style
 remote with app-supported keys. See [workbench setup](docs/workbench.md):
-this is unreleased, and Windows/device acceptance is pending.
+this is unreleased. Hosted Windows checks passed; desktop Windows and TV
+acceptance remain pending.
 
 **Record** saves one genuine app paint layer as PNG frames or a still.
 An already-installed optional ffmpeg enables optimized GIF, MP4 and WebM

@@ -30,7 +30,8 @@ Paths with spaces are passed as process arguments, never through a shell.
 
 The workbench's SDB path is cross-platform; the builder's existing
 package/install wrappers and Copilot canvas remain POSIX-only. Windows host
-execution and real Windows-to-TV behavior have not been tested on Windows.
+execution passed on a hosted Windows Server image; desktop Windows 10/11 and
+real Windows-to-TV behavior remain untested.
 
 ## First-run workflow
 
@@ -187,6 +188,12 @@ only a loopback server, checks authenticated routes, records original fixture
 PNGs through the real Windows ACL backend, exports PNGs and cleans up. It
 installs no SDK and performs no TV discovery or account calls. A green run is
 hosted Windows image evidence, not desktop Windows 10/11 or TV acceptance.
+
+On 2026-10-11, [run 38127747264](https://github.com/dragoshont/tizen-tv-builder/actions/runs/38127747264)
+passed at source `48862db` on Windows Server 2025 (`windows-2025-vs2026`):
+108 tests completed, with seven POSIX-only SDK/canvas contracts explicitly
+skipped. Authenticated setup/state/record, native private ACL/fixture PNG/export,
+and owned process/file cleanup all passed. No TV or SDK was contacted.
 
 ## Find another TV
 

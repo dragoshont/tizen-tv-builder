@@ -93,21 +93,24 @@ Windows uses only built-in system tools and Win32 APIs, without installations:
   private inheritable full-control grant. Both commands have five-second deadlines
   and 16-KiB output limits. Tool output/SIDs/private paths are never logged.
 - `GetSecurityInfo` verifies the owner, protected DACL and exactly one full-control
-  current-user ACE, before and after icacls. New files use binary exclusive `xb`
-  creation and inherit the private ACL; their owner/DACL and handle/path identity
+  current-user ACE, before and after icacls. New files use exclusive native
+  `CreateFileW` with the current-SID owner and protected private DACL at creation;
+  their owner/DACL and handle/path identity
   are verified before writing any bytes. Reads also reject reparse files,
   hardlinks and identity mismatch. Encoding receives hash-verified native bytes
   over stdin, never paths the encoder might follow.
 - ACL/API/command failures are explicit; there is no permissive chmod-only or
-  generic Windows fallback. An elevated token whose default file owner differs
-  from the observed current SID is refused, not silently granted broader access.
+  generic Windows fallback. Elevated tokens receive the explicit current-SID
+  file owner rather than their potentially different default owner; mismatches
+  are still refused, never silently granted broader access.
   An ACL setup failure can leave an empty private output folder; it contains no
   captured pixels. Administrators' ability to take ownership is an OS boundary,
   not a guarantee this recorder can remove.
 
-Windows execution and native filesystem acceptance are **pending**: host tests
-mock Windows commands/APIs and verify fail-closed decisions, not actual Windows
-ACL behavior. Restrictive ancestor handle sharing can refuse folders already
+Native Windows ACL/file/PNG export and loopback lifecycle passed on hosted Windows
+Server 2025 at source `48862db`; see the [dated CI evidence](workbench.md).
+Desktop Windows 10/11 and Windows-to-TV acceptance remain pending. Mock tests
+separately verify failure decisions. Restrictive ancestor handle sharing can refuse folders already
 held for incompatible writes; choose a private existing parent rather than
 weakening the checks. Outputs remain after close for the local user; no bulk
 cleanup or deletion of private recordings is performed.
