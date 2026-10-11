@@ -181,6 +181,13 @@ setup, successive native captures, input effects and Windows execution still
 need separate acceptance. Do not publish a new plugin release or certify a
 model from this host-only candidate.
 
+The private branch's `workbench-windows.yml` workflow runs the full suite and
+`tests/windows_workbench_smoke.py` on `windows-latest`. The native gate starts
+only a loopback server, checks authenticated routes, records original fixture
+PNGs through the real Windows ACL backend, exports PNGs and cleans up. It
+installs no SDK and performs no TV discovery or account calls. A green run is
+hosted Windows image evidence, not desktop Windows 10/11 or TV acceptance.
+
 ## Find another TV
 
 **Find nearby TVs** sends bounded SSDP searches for DIAL, Samsung

@@ -28,7 +28,7 @@ def payload_paths(paths):
                     for part in Path(name).parts):
                 raise ValueError("Private/generated paths are not release content")
             selected.append(name)
-        elif name not in {".gitignore"}:
+        elif name not in {".gitignore", ".github/workflows/workbench-windows.yml"}:
             raise ValueError("Unclassified tracked file; explicitly review release scope: " + name)
     required = ROOT_FILES | {"skills/tizen-tv-builder/SKILL.md",
                              "com.github.copilot/agents/tizen-tv-builder.agent.md",
