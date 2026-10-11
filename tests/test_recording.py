@@ -161,7 +161,16 @@ class RecordingTests(unittest.TestCase):
     def test_capture_failure_disconnects_and_redacts_transport(self):
         source = Source()
         source.reject = True
-        result = self.completed(source=source)
+        result = self.recorder(source=source)
+        try:
+            result.start()
+        except recording.RecordingError as error:
+            # A slow host may exhaust this short lease before setup finishes.
+            self.assertEqual(error.code, "disconnected")
+            self.assertEqual(source.calls, 0)
+        else:
+            result.thread.join(3)
+            self.assertFalse(result.thread.is_alive())
         self.assertEqual(result.status()["state"], "failed")
         self.assertIsNone(source.client)
         self.assertNotIn("PRIVATE", json.dumps(result.receipt()))
