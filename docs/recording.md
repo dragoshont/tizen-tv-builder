@@ -192,3 +192,9 @@ cleanup, tampered-frame refusal and encoder process bounds. Tests use named
 checkout-local scratch folders with only the repository-root boundary mocked;
 they do not connect to devices, capture accounts or install tools. Host tests are
 not hardware or visual-quality evidence.
+
+The dated [bounded TV observation](workbench.md#bounded-retail-observation-2026-10-11)
+additionally exercised nine genuine native paint frames and PNG/GIF/MP4/WebM
+exports. WebM explicitly uses `yuv420p`: automatic negotiation from renderer
+PNG colour/alpha formats can select unsupported VP9 input. Encoded video
+formats do not preserve the PNG alpha channel and still omit AVPlay video.

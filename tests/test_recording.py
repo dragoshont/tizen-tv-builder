@@ -254,6 +254,8 @@ class RecordingTests(unittest.TestCase):
         result = self.completed(encoder=encoder)
         for format, codec in (("mp4", "libx264"), ("webm", "libvpx-vp9"), ("webp", "libwebp")):
             result.export(format, still=format == "webp")
+            if format == "webm":
+                self.assertIn("yuv420p", result.encoder.args)
             self.assertIn(codec, encoder.args)
         with self.assertRaises(recording.RecordingError):
             result.export("webp")

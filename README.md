@@ -197,8 +197,9 @@ requires this canvas when available, or an explicit unavailable/blocked result.
 - [Changelog](CHANGELOG.md): version changes. No version number means all TVs are supported.
 
 Run the host suite with `python3 -m unittest discover -s tests -v`.
-We have exercised offline tests and a real unsigned SDK build. This toolkit has
-not completed its own retail-TV acceptance run. Emulator and desktop results are
+We have exercised offline tests, a real unsigned SDK build, hosted Windows
+checks and [bounded retail paint recording](docs/workbench.md#bounded-retail-observation-2026-10-11).
+Full retail install/input/media acceptance remains incomplete. Emulator and desktop results are
 not TV results. Native binaries, root/firmware work, DRM bypass and automatic
 account writes are out of scope.
 

@@ -147,7 +147,7 @@ competing sessions can hide discovery; some detail/list transitions produced
 protocol errors with no proven root cause. Historical target UE55MU6172,
 Tizen 3.0 / firmware T-KTMDEUC-1410.1 is upstream evidence, not this tool's pass.
 The full-device thread explicitly retained ownership for its remaining phases,
-so this branch has performed no device operations.
+and this branch waited for its explicit all-phases-complete release.
 
 ## Host checks
 
@@ -178,9 +178,39 @@ private. The file/folder names carry `app-layer-N`; see
 
 Host fixtures prove contracts, not hardware compatibility. The Mac browser
 onboarding can be checked with no connected TV. Real debug-launch/forward
-setup, successive native captures, input effects and Windows execution still
-need separate acceptance. Do not publish a new plugin release or certify a
+setup and successive native captures now have the bounded evidence below;
+input effects and desktop Windows execution still need separate acceptance.
+Do not publish a new plugin release or certify a
 model from this host-only candidate.
+
+## Bounded retail observation, 2026-10-11
+
+After the device owner explicitly released the lane, TV Workbench connected to
+the established UE55MU6172 target (historical Tizen 3.0, firmware
+T-KTMDEUC-1410.1, Chrome 47/protocol 1.1). The existing installed development
+app was source `ea0d7c9b`; no installation, account or playback actions were run.
+The toolkit base was `ca4db2b`, with the subsequently committed WebM pixel-format
+fix exercised in the confirmation run.
+
+Observed: kill-before-debug, a fresh returned debug port, exactly one page,
+owned forward and uncompressed CDP connection succeeded. Two native LayerTree
+captures each returned one paint layer (492/476 ms in the confirmation run).
+A 12-second recording admitted nine genuine frames; PNG, GIF, MP4 and WebM
+exports completed. The first WebM attempt exposed incompatible native PNG
+pixel-format negotiation; explicitly encoding `yuv420p` fixed it, also checked
+offline with the saved native bytes. No video plane or full panel was captured.
+
+Unaudited OK was correctly refused. The settled focused button did not match
+the available read-only label allowlist, so arrow/Back/media injection effects
+were **skipped**, not fabricated or bypassed. App-key support and physical
+remote/system/IME behavior remain different acceptance gates. TV network
+discovery on this LAN was not exercised.
+
+Both runs stopped their source, removed only their own forward, disconnected
+their own loopback SDB connection and stopped their relay. The absent lane and
+closed relay listener were independently checked. Private PNGs/recordings and
+receipts remain outside git. This narrow observation is not all-model support,
+signing/install acceptance or Store approval.
 
 The private branch's `workbench-windows.yml` workflow runs the full suite and
 `tests/windows_workbench_smoke.py` on `windows-latest`. The native gate starts

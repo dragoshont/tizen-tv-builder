@@ -678,7 +678,8 @@ class Recorder:
                              "-pix_fmt", "yuv420p", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4"]
                 elif format == "webm":
                     args += ["-vf", scale, "-c:v", "libvpx-vp9", "-deadline", "realtime",
-                             "-cpu-used", "6", "-crf", "36", "-b:v", "0", "-f", "webm"]
+                             "-cpu-used", "6", "-crf", "36", "-b:v", "0",
+                             "-pix_fmt", "yuv420p", "-f", "webm"]
                 else:
                     args += ["-vf", scale, "-c:v", "libwebp", "-quality", "80", "-f", "image2pipe"]
                 args += ["pipe:1"]
