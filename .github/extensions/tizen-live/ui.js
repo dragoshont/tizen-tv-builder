@@ -163,11 +163,13 @@ function tvCard(alias) {
     tvCommand("preview", alias, { app: appId, restart: true });
   });
   refreshPicture.addEventListener("click", () => command(alias, "capture", {}));
-  for (const key of keys) key.addEventListener("click", () => command(alias, "key", { key: key.dataset.key }));
+  for (const key of keys) key.addEventListener("click", () => {
+    if (card.previewReady && !offline) command(alias, "key", { key: key.dataset.key });
+  });
   remote.addEventListener("keydown", (event) => {
     if (!handledShortcut(event)) return;
     event.preventDefault();
-    const p = sourceById(alias), ready = Boolean(p?.ready) && p.input_allowed;
+    const p = sourceById(alias), ready = card.previewReady && Boolean(p?.ready) && p.input_allowed;
     const key = shortcut(event, ready, busy);
     if (!key) return;
     if (key === "ok" && !p.activation_allowed) { error("OK is limited to safe, audited buttons on this app."); return; }
@@ -196,7 +198,26 @@ function tvCard(alias) {
 async function updateTv(card, tv, keep) {
   // Fail closed: "Connected" needs a usable picture here, whatever the helper reports.
   const p = tv.preview;
-  const live = tv.status === "connected" && Boolean(p?.ready) && (p.frames || []).length > 0 && !p.stale && !offline;
+  card.previewReady = false;
+  let live = tv.status === "connected" && Boolean(p?.ready) && (p.frames || []).length > 0 && !p.stale && !offline;
+  let previewError = "";
+  if (live && (card.revision !== p.revision || !card.frames.childElementCount)) {
+    const figures = [];
+    try {
+      for (let i = 0; i < p.frames.length; i++) {
+        const frame = p.frames[i];
+        const img = el("img", { src: await image({ id: tv.alias, revision: p.revision }, i),
+          alt: `${tv.name} app screen, layer ${i + 1}; may be incomplete`, width: frame.width, height: frame.height });
+        await img.decode();
+        figures.push(el("figure", {}, img));
+      }
+      card.frames.replaceChildren(...figures);
+      card.revision = p.revision;
+    } catch (problem) {
+      live = false;
+      previewError = `Could not display the app preview: ${problem.message}. Open the app for preview again to retry.`;
+    }
+  }
   const status = tv.status === "connected" && !live ? (tv.held ? "developer" : "not-connected") : tv.status;
   card.name.textContent = tv.name;
   const working = Boolean(tv.pending);
@@ -205,10 +226,10 @@ async function updateTv(card, tv, keep) {
   card.pill.textContent = label;
   card.pill.className = `pill ${working ? "working" : status === "connected" ? "connected" : status === "developer" ? "ready" : status === "busy" ? "busy" : ""}`;
   card.root.classList.toggle("busy", status === "busy");
-  const reason = tv.error || (status === "busy" ? tv.busy_reason : status === "not-connected" ? tv.not_connected_reason
+  const reason = previewError || tv.error || (status === "busy" ? tv.busy_reason : status === "not-connected" ? tv.not_connected_reason
     : status === "developer" ? "Preview not connected" : "") || "";
   card.reason.textContent = reason;
-  card.reason.className = `reason${tv.error ? " problem" : ""}`;
+  card.reason.className = `reason${previewError || tv.error ? " problem" : ""}`;
   const free = !working && status !== "busy";
   card.connect.hidden = status !== "not-connected";
   card.connect.textContent = tv.error ? "Retry" : "Connect";
@@ -258,10 +279,12 @@ async function updateTv(card, tv, keep) {
   card.refreshPicture.hidden = !live;
   card.refreshPicture.disabled = busy || !live;
   card.screenText.textContent = offline ? "Connection lost to this page's helper. No picture is shown; reopen the portal to retry."
+    : previewError ? previewError
     : status === "busy" ? "Busy: another session is using this TV. Nothing is shown."
     : status === "not-connected" ? "Not connected. Choose Connect to start."
     : live ? "" : "Preview not connected. Open an app to see its screen. Its own drawing is shown, not the whole TV or video.";
   card.screenText.parentElement.hidden = live;
+  card.previewReady = live;
   for (const key of card.keys) key.disabled = busy || !live || !p.input_allowed || (key.dataset.key === "ok" && !p.activation_allowed);
   card.why.textContent = status === "busy" ? "Busy: another session is using this TV."
     : !live ? "The remote turns on once an app is open for preview."
@@ -269,15 +292,6 @@ async function updateTv(card, tv, keep) {
   card.age.textContent = live && p.captured_at ? `Picture from ${new Date(p.captured_at * 1000).toLocaleTimeString()} · the app's own drawing, not the whole TV` : "";
   if (!live) { card.frames.replaceChildren(); card.revision = null; return; }
   for (let i = 0; i < p.frames.length; i++) keep.add(`${tv.alias}/${i}/${p.revision}`);
-  if (card.revision === p.revision && card.frames.childElementCount) return;
-  const figures = [];
-  for (let i = 0; i < p.frames.length; i++) {
-    const frame = p.frames[i];
-    figures.push(el("figure", {}, el("img", { src: await image({ id: tv.alias, revision: p.revision }, i),
-      alt: `${tv.name} app screen, layer ${i + 1}; may be incomplete`, width: frame.width, height: frame.height })));
-  }
-  card.frames.replaceChildren(...figures);
-  card.revision = p.revision;
 }
 
 // ---- configured TVs/emulator with live view --------------------------------------
