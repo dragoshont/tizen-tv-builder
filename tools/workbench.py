@@ -3,6 +3,7 @@
 import argparse
 import http.client
 import json
+from urllib.parse import urlsplit
 import os
 from pathlib import Path
 import re
@@ -171,14 +172,39 @@ def _seen(data):
     if not data:
         return "the target list is empty"
     known = {"page", "background_page", "service_worker", "worker", "iframe", "other"}
-    counts = {}
+    counts, shapes = {}, []
     for item in data:
         kind = item.get("type") if isinstance(item, dict) else None
         kind = kind if kind in known else "unknown"
         if kind == "page":
             kind = "page with an unusable id"
+            if len(shapes) < 3:
+                shapes.append(_id_shape(item))
         counts[kind] = counts.get(kind, 0) + 1
-    return "seen " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
+    seen = "seen " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
+    return seen + ("; id shape: " + " | ".join(shapes) if shapes else "")
+
+
+def _id_shape(item):
+    """Type, length and character classes of a page id; punctuation is listed, letters/digits never are."""
+    value = item.get("id")
+    if not isinstance(value, str):
+        return type(value).__name__
+    classes = [name for name, test in (("upper", str.isupper), ("lower", str.islower), ("digit", str.isdigit))
+               if any(c.isascii() and test(c) for c in value)]
+    punctuation = sorted({c for c in value if c.isascii() and c.isprintable() and not c.isalnum() and c != " "})
+    if punctuation:
+        classes.append(" ".join(repr(c) for c in punctuation))
+    if " " in value:
+        classes.append("space")
+    if any(not c.isascii() for c in value):
+        classes.append("non-ASCII")
+    if any(c.isascii() and not c.isprintable() for c in value):
+        classes.append("control")
+    url = item.get("webSocketDebuggerUrl")
+    path = urlsplit(url).path if isinstance(url, str) else ""
+    ends = "socket path ends with id" if path.endswith("/" + value) else "socket path differs from id"
+    return f"str len {len(value)}: {', '.join(classes) or 'empty'}; {ends}"
 
 
 def pages(port):

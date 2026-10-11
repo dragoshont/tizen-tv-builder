@@ -62,6 +62,22 @@ class PageDiscoveryTests(unittest.TestCase):
         self.assertIn("other", message)
         self.assertIn("1 page with an unusable id", message)
 
+    def test_unusable_page_id_shape_is_described_without_the_id(self):
+        inspector = Inspector([[{"type": "page", "id": "SECRETid:42.x",
+                                 "webSocketDebuggerUrl": "ws://192.0.2.1:7011/devtools/page/SECRETid:42.x"},
+                                {"type": "page", "id": 7}]])
+        self.addCleanup(inspector.close)
+        with self.assertRaises(LiveError) as caught:
+            workbench.pages(inspector.port)
+        message = str(caught.exception)
+        self.assertNotIn("SECRET", message)
+        self.assertNotIn("192.0.2.1", message)
+        self.assertIn("str len 13", message)
+        self.assertIn("upper, lower, digit", message)
+        self.assertIn("'.' ':'", message)
+        self.assertIn("socket path ends with id", message)
+        self.assertIn("int", message)
+
     def test_wait_retries_while_the_engine_registers_its_page(self):
         inspector = Inspector([[], [{"type": "other", "id": "w"}], [{"type": "page", "id": "PAGE-1"}]])
         self.addCleanup(inspector.close)
