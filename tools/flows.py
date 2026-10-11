@@ -6,6 +6,7 @@ flows are tested against fakes. Real emulator and TV runs are only claimed when 
 import base64
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -72,16 +73,25 @@ def tier_for(platform_version):
     return "mid" if (major, minor) <= (5, 0) else "current"
 
 
+def _milliseconds(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+
+
 def evaluate(metrics, tier, budgets=None):
     budgets = budgets or json.loads(BUDGETS.read_text())
     if tier not in budgets["tiers"]:
         fail("invalid", "Unknown budget tier")
     limits = budgets["tiers"][tier]["budgets_ms"]
+    if not isinstance(metrics, dict):
+        fail("invalid", "Metrics must be a JSON object of milliseconds")
     verdict = {}
     for name, limit in limits.items():
+        if not _milliseconds(limit):
+            fail("invalid", f"Budget {name} must be a finite, non-negative number of milliseconds")
         value = metrics.get(name)
-        verdict[name] = {"budget_ms": limit, "measured_ms": value,
-                         "result": "unmeasured" if value is None else "pass" if value <= limit else "fail"}
+        result = "unmeasured" if value is None else "invalid" if not _milliseconds(value) \
+            else "pass" if value <= limit else "fail"
+        verdict[name] = {"budget_ms": limit, "measured_ms": value, "result": result}
     return {"tier": tier, "metrics": verdict,
             "passed": all(v["result"] == "pass" for v in verdict.values())}
 
@@ -121,6 +131,8 @@ class Session:
         report = appkit.check_package(package)
         if not report["passed"]:
             fail("package", "Package check failed; run `tizen.py check-package`")
+        if report["app"] != self.app:
+            fail("package", f"Package is for {report['app'] or 'an unset app ID'}, not --app {self.app}; nothing installed")
         self.runner([self.tizen_path, "install", "-n", package.name, "-s", self.serial, "--",
                      str(package.resolve().parent)], 180)
         self.step("install", package_sha256=report["sha256"], signed=report["signed"])
@@ -294,6 +306,16 @@ def identify(serial, sdb=None, runner=run_tool):
             "tier": tier_for(platform)}
 
 
+FAILED_STEPS = {"partial", "failed", "error"}
+
+
+def verdict(receipt):
+    """Top-level pass: every required step ran, the budget (if any) passed and teardown completed."""
+    budget = (receipt.get("perf") or {}).get("budget")
+    failed = [s["step"] for s in receipt.get("steps", []) if s.get("result") in FAILED_STEPS]
+    return {"passed": not failed and (budget is None or budget.get("passed") is True), "failed_steps": failed}
+
+
 def _flow(session, package, keys, runs, tier, capture, logs, uninstall):
     try:
         if package:
@@ -316,8 +338,12 @@ def retail(serial, target, app, package=None, keys=(), runs=1, tier=None, captur
     device_serial(serial)
     if not re.fullmatch(r"tv-[0-9a-f]{16}", target or ""):
         fail("invalid", "--target must be the fingerprint printed by `tizen.py identify`")
-    if package and not appkit.check_package(package, require_signed=True)["passed"]:
-        fail("package", "Retail install needs an author+distributor signed package that passes check-package")
+    if package:
+        report = appkit.check_package(package, require_signed=True)
+        if not report["passed"]:
+            fail("package", "Retail install needs author+distributor signatures that pass `check-package --require-signed`")
+        if report["app"] != application_id(app):
+            fail("package", f"Package is for {report['app'] or 'an unset app ID'}, not --app {app}; nothing installed")
     lease = Lease(lease_path or lane())
     lease.acquire()
     receipt = {"flow": "retail", "target": target}
@@ -334,6 +360,7 @@ def retail(serial, target, app, package=None, keys=(), runs=1, tier=None, captur
         session = Session(serial, app, output=output, **session_args)
         receipt["perf"] = _flow(session, package, keys, runs, tier or found["tier"], capture, False, uninstall)
         receipt.update(session.receipt)
+        receipt.update(verdict(receipt))
         return receipt
     finally:
         lease.release()
@@ -387,6 +414,7 @@ def emulator(vm, app, package=None, keys=(), runs=1, tier="current", capture=Tru
         session = Session(serial, app, output=output, **session_args)
         receipt["perf"] = _flow(session, package, keys, runs, tier, capture, logs, uninstall)
         receipt.update(session.receipt)
+        receipt.update(verdict(receipt))
         return receipt
     finally:
         console.close()

@@ -24,10 +24,14 @@ Read [Common contract](../common.md); it supplies permission and privacy holds.
 6. In finally/teardown, stop your input/feed, disconnect, release your identified
    forward, then release your lease. Verify cleanup; report uncertainty.
 
-TTL is a crash backstop, not permission to keep the set idle. A stale-looking
-directory is not proof its owner is gone. Escalate recovery to the owner; never
-automatically delete it. Reacquire for the next run. Host-local lease paths must
-not be copied into another host as though they coordinate all computers.
+The toolkit lease (`tools/live_tv.py`) has no expiry: it is a directory holding
+`owner.json` (pid, token), and release removes it only after checking that same
+token and directory identity. A crash can leave it behind. A stale-looking lease
+is not proof its owner is gone, so recovery is manual and owner-approved:
+confirm the recorded pid is not running on this host, that no worker, inspector
+forward or feed is still active, and ask the owner. Only then remove `owner.json`
+and the directory. Never delete it automatically. Reacquire for the next run.
+Host-local lease paths do not coordinate other computers.
 
 Evidence: [upstream Samsung inspector ownership](https://github.com/dragoshont/plx-native/blob/dragoshont-samsung-tizen-feasibility/docs/samsung-web-inspector.md).
 Upstream LG lease scripts are conceptual evidence only, not Samsung commands.

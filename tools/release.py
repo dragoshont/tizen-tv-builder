@@ -15,6 +15,8 @@ ROOT_FILES = {"plugin.json", ".github/plugin/marketplace.json", "README.md", "AG
               "LICENSE", "CHANGELOG.md", "PRODUCT.md", "DESIGN.md"}
 CANVAS_FILES = {".github/extensions/tizen-live/" + name for name in
                 ("extension.mjs", "index.html", "ui.js", "ui.css", "controls.mjs")}
+# Runtime data read by tools (flows.BUDGETS); shipped, unlike docs JSON in general.
+DATA_FILES = {"docs/budgets.json"}
 TREES = ("skills/", "com.github.copilot/agents/", "docs/", "tools/", "tests/", "examples/hello-tv/")
 SUFFIXES = {".md", ".py", ".html", ".xml", ".mjs", ".js", ".css"}
 
@@ -22,7 +24,7 @@ SUFFIXES = {".md", ".py", ".html", ".xml", ".mjs", ".js", ".css"}
 def payload_paths(paths):
     selected = []
     for name in paths:
-        if name in ROOT_FILES | CANVAS_FILES or (name.startswith(TREES) and Path(name).suffix in SUFFIXES):
+        if name in ROOT_FILES | CANVAS_FILES | DATA_FILES or (name.startswith(TREES) and Path(name).suffix in SUFFIXES):
             if name not in ROOT_FILES | CANVAS_FILES and any(
                     part.startswith(".") or part in {"private", "receipts", "node_modules"}
                     for part in Path(name).parts):

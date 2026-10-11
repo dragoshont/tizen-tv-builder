@@ -44,6 +44,7 @@ SECRETS = [
 ]
 PRIVATE_FILES = {".p12", ".pfx", ".keystore", ".jks", ".pem", ".key", ".crt", ".cer", ".mobileprovision"}
 MAX_TEXT = 4 * 1024 * 1024
+TEXT_TYPES = {".js", ".mjs", ".html", ".htm", ".css", ".json", ".xml", ".txt", ".svg"}
 FIXED_TIME = (2020, 1, 1, 0, 0, 0)
 
 
@@ -125,9 +126,11 @@ def _scripts(source):
         relative = path.relative_to(source)
         if any(part.startswith(".") or part in {"private", "receipts", "node_modules"} for part in relative.parts):
             continue
-        if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_TEXT:
+        if not path.is_file() or path.is_symlink():
             continue
         suffix = path.suffix.lower()
+        if path.stat().st_size > MAX_TEXT:
+            continue
         if suffix == ".js":
             yield relative.as_posix(), path.read_text(encoding="utf-8", errors="replace"), 1
         elif suffix in {".html", ".htm"}:
@@ -219,6 +222,9 @@ def audit(source, app_id=None):
             continue
         if path.suffix.lower() in PRIVATE_FILES:
             findings.append(_finding("error", "secret-file", "Certificate/key material inside the app source", relative.as_posix()))
+        elif path.suffix.lower() in TEXT_TYPES and path.stat().st_size > MAX_TEXT:
+            findings.append(_finding("error", "file-too-large", "Text/script file too large to audit; split or minify it",
+                                     relative.as_posix()))
         elif path.suffix.lower() in ASSETS | {".xml", ".json", ".txt"} and path.stat().st_size <= MAX_TEXT \
                 and path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".otf"}:
             findings.extend(scan_text(relative.as_posix(), path.read_text(encoding="utf-8", errors="replace")))
@@ -259,6 +265,55 @@ DIGESTS = {"http://www.w3.org/2001/04/xmlenc#sha256": "sha256",
            "http://www.w3.org/2001/04/xmlenc#sha512": "sha512"}
 
 
+def _safe_entry(name):
+    """Canonical relative POSIX names only: no drive, colon, root, backslash, empty/dot segments or controls."""
+    body = name[:-1] if name.endswith("/") else name
+    parts = body.split("/")
+    return bool(body) and ":" not in name and "\\" not in name and not name.startswith("/") \
+        and not any(ord(c) < 32 or ord(c) == 127 for c in name) \
+        and all(part not in ("", ".", "..") and part == part.rstrip(" .") for part in parts)
+
+
+SIGNATURE_METHODS = {"http://www.w3.org/2001/04/xmldsig-more#rsa-sha256", "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512",
+                     "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256", "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha512",
+                     "http://www.w3.org/2001/04/xmldsig-more#rsa-sha384", "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha384"}
+ROLES = {"author-signature.xml": "role-author", "signature1.xml": "role-distributor"}
+
+
+def _base64(text):
+    try:
+        return base64.b64decode("".join((text or "").split()), validate=True)
+    except ValueError:
+        return b""
+
+
+def _structure(name, root):
+    """XMLDSig shape a TV installer needs. Never a cryptographic or chain verification."""
+    problems = []
+    info = root.findall(DS + "SignedInfo")
+    if root.tag != DS + "Signature" or len(info) != 1:
+        return ["signature-root"]
+    info = info[0]
+    if info.find(DS + "CanonicalizationMethod") is None:
+        problems.append("canonicalization-method")
+    method = info.find(DS + "SignatureMethod")
+    if method is None or method.get("Algorithm") not in SIGNATURE_METHODS:
+        problems.append("signature-method")
+    if len(_base64(getattr(root.find(DS + "SignatureValue"), "text", ""))) < 32:
+        problems.append("signature-value")
+    certificates = [_base64(c.text) for c in root.iter(DS + "X509Certificate")]
+    if not certificates or not all(c[:1] == b"\x30" and len(c) > 64 for c in certificates):
+        problems.append("certificate")
+    ids = {e.get("Id") for e in root.iter() if e.get("Id")}
+    fragments = [r.get("URI", "")[1:] for r in info.iter(DS + "Reference") if r.get("URI", "").startswith("#")]
+    if not fragments or any(f not in ids for f in fragments):
+        problems.append("properties-reference")
+    roles = [e.get("URI", "") for e in root.iter() if e.tag.endswith("}Role")]
+    if not any(uri.endswith("#" + ROLES[name]) for uri in roles):
+        problems.append("role")
+    return problems
+
+
 def check_package(path, require_signed=False):
     """Structural/digest check of a .wgt. Certificate trust and crypto signature are NOT verified."""
     path = Path(path)
@@ -271,7 +326,7 @@ def check_package(path, require_signed=False):
         names = []
         for info in infos:
             name = info.filename
-            if name.startswith("/") or ".." in Path(name).parts or "\\" in name or (info.external_attr >> 16) & 0o170000 == 0o120000:
+            if not _safe_entry(name) or (info.external_attr >> 16) & 0o170000 == 0o120000:
                 raise ValueError("Package contains an unsafe entry")
             if not name.endswith("/"):
                 names.append(name)
@@ -302,27 +357,35 @@ def check_package(path, require_signed=False):
                     base64.b64encode(hashlib.new(algorithm, content[target]).digest()).decode() != "".join((value.text or "").split()):
                 mismatched.append(target or "<empty>")
         signed_files = {unquote(r.get("URI", "")) for r in root.iter(DS + "Reference")}
-        expected = {n for n in names if n not in {"author-signature.xml"} and not re.fullmatch(r"signature\d+\.xml", n)}
+        expected = {n for n in names if not re.fullmatch(r"signature\d+\.xml", n)
+                    and (n != "author-signature.xml" or name != "author-signature.xml")}
         signatures[name] = {"references": references, "digest_mismatches": mismatched,
                             "unreferenced": sorted(expected - signed_files),
+                            "structure_problems": _structure(name, root),
                             "certificates": len(list(root.iter(DS + "X509Certificate")))}
     with tempfile.TemporaryDirectory(prefix="tizen-check-") as temporary:
         root = Path(temporary)
+        base = root.resolve()
         for name, data in content.items():
-            target = root / name
+            target = root.joinpath(*name.split("/"))
+            if not target.resolve().is_relative_to(base) or target.resolve() == base:
+                raise ValueError("Package contains an unsafe entry")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
         report = audit(root)
     signed = "author-signature.xml" in signatures and "signature1.xml" in signatures
     consistent = signed and all(not s["digest_mismatches"] and not s["unreferenced"] for s in signatures.values())
+    complete = consistent and all(not s["structure_problems"] for s in signatures.values())
     problems = [f for f in report["findings"] if f["level"] == "error"]
-    if require_signed and not consistent:
-        problems.append(_finding("error", "signature", "Author and distributor signature digests must cover every file"))
+    if require_signed and not complete:
+        problems.append(_finding("error", "signature", "Author and distributor signatures must be structurally complete "
+                                                       "and their digests must cover every file"))
     return {"package": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "app": report["app"], "files": len(names), "signed": signed,
-            "signature_digests_consistent": consistent, "signatures": signatures,
-            "audit": report["findings"], "passed": not problems,
-            "scope": "digests only; certificate chain, DUID and signature crypto not verified"}
+            "signature_digests_consistent": consistent, "signature_structure_complete": complete,
+            "signatures": signatures, "audit": report["findings"], "passed": not problems,
+            "scope": "structure and file digests only; signatures are not cryptographically verified and "
+                     "certificate chain/DUID are not checked (the TV verifies them at install)"}
 
 
 TEMPLATE_CONFIG = """<?xml version="1.0" encoding="UTF-8"?>

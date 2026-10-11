@@ -10,7 +10,7 @@ python3 tools/tizen.py new ./MyTv --name "My TV"      # unique 10-char package I
 node --test MyTv/tests/focus.test.js                   # template host tests
 python3 tools/tizen.py audit MyTv/app                   # IDs, privileges, ES5, credential leaks
 python3 tools/tizen.py pack MyTv/app --output my.wgt    # deterministic unsigned package
-python3 tools/tizen.py check-package my.wgt             # manifest + signature consistency
+python3 tools/tizen.py check-package my.wgt             # manifest, audit and safe-archive check
 ```
 
 `audit` errors (missing privilege for a used API, ES2015 syntax, a credential-like
@@ -25,11 +25,21 @@ as using `internet`; `typeof fetch` feature detection does not. A private addres
 inside a prose string (`"…such as http://192.168.1.10:32400"`) is treated as an
 example; one assigned as a value is still a warning.
 
-After signing with Tizen Studio, prove the signature covers every file:
+After signing with Tizen Studio, check the signature files are complete and their
+digests cover every file:
 
 ```sh
 python3 tools/tizen.py check-package MyTv.wgt --require-signed
 ```
+
+This is a structural and digest check, not signature verification. It requires an
+author and a distributor signature, each with SignedInfo, a known SignatureMethod,
+a SignatureValue, an X.509 certificate, the correct role and resolvable property
+references, and the distributor must also cover `author-signature.xml`. It does not
+verify the RSA/ECDSA value, the certificate chain or the DUID; the TV does that at
+install. Archives with drive letters, colons, rooted, `.`/`..`, empty or symlink
+entries are refused before extraction. Text and script files over 4 MiB fail the
+audit instead of being packaged unscanned.
 
 ## Retail TV: install, measure, capture, clean up
 
@@ -44,10 +54,14 @@ python3 tools/tizen.py retail --serial TV_IP:26101 --authorized \
 
 - Takes the lane (`/tmp/plx-samsung-device.lock`, tempdir on Windows) and refuses if held.
 - `--target` is the fingerprint from `identify` (a hash of the DUID); a different TV is refused before install.
-- Requires a signed package. Kill-before-debug, owned forward only, removed afterwards.
+- Requires a package that passes `--require-signed` and whose app ID equals `--app`;
+  a mismatch is refused before the lane is taken or anything is installed. Kill-before-debug, owned forward only, removed afterwards.
 - Prints a JSON receipt: cold start, first frame, first Home per run and the budget
   verdict. `--output` gets real PNG captures only (unsupported capture is recorded in
   the receipt) and a redacted `dlog-tail.txt`.
+- `passed` is false (exit `2`) if any required step or teardown failed or the budget
+  did not pass; `failed_steps` names them. Budget limits and measurements must be
+  finite, non-negative numbers; anything else is `invalid`.
 - `identify` never prints the DUID; use Device Manager / `sdb shell 0 getduid` privately.
 
 ## Emulator

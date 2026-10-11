@@ -11,7 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import appkit
 
 
-def signature(files, wrap=False, encode=True):
+FAKE_CERT = base64.b64encode(b"\x30\x82\x01\x0a" + b"\x00" * 266).decode()
+
+
+def signature(files, wrap=False, encode=True, role="author", omit=None):
+    """SDK-shaped XMLDSig structure with fake values: structural tests only, never cryptographic."""
     refs = []
     for name, data in files.items():
         digest = base64.b64encode(hashlib.sha512(data).digest()).decode()
@@ -20,8 +24,24 @@ def signature(files, wrap=False, encode=True):
         uri = name.replace("/", "%2F") if encode else name
         refs.append('<Reference URI="%s"><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha512"/>'
                     '<DigestValue>%s</DigestValue></Reference>' % (uri, digest))
-    return ('<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo>%s'
-            '<Reference URI="#prop"/></SignedInfo></Signature>' % "".join(refs)).encode()
+    parts = {
+        "SignatureMethod": '<SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>',
+        "SignatureValue": "<SignatureValue>%s</SignatureValue>" % base64.b64encode(b"s" * 256).decode(),
+        "X509Certificate": "<KeyInfo><X509Data><X509Certificate>%s</X509Certificate></X509Data></KeyInfo>" % FAKE_CERT,
+        "Object": '<Object Id="prop"><SignatureProperties xmlns:dsp="http://www.w3.org/2009/xmldsig-properties">'
+                  '<SignatureProperty Id="role" Target="#S"><dsp:Role URI="http://www.w3.org/ns/widgets-digsig#role-%s"/>'
+                  '</SignatureProperty></SignatureProperties></Object>' % role,
+    }
+    if omit == "role":
+        parts["Object"] = parts["Object"].replace("role-" + role, "role-none")
+    elif omit:
+        parts[omit] = ""
+    return ('<Signature xmlns="http://www.w3.org/2000/09/xmldsig#" Id="S"><SignedInfo>'
+            '<CanonicalizationMethod Algorithm="http://www.w3.org/2006/12/xml-c14n11"/>%s%s'
+            '<Reference URI="#prop"><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha512"/>'
+            '<DigestValue>AAAA</DigestValue></Reference></SignedInfo>%s%s%s</Signature>'
+            % (parts["SignatureMethod"], "".join(refs), parts["SignatureValue"], parts["X509Certificate"],
+               parts["Object"])).encode()
 
 
 class AppKitTests(unittest.TestCase):
@@ -147,8 +167,8 @@ class AppKitTests(unittest.TestCase):
 
     def signed_entries(self, **options):
         files = self.app_files()
-        author = signature(files, **options)
-        distributor = signature(dict(files, **{"author-signature.xml": author}), **options)
+        author = signature(files, role="author", **options)
+        distributor = signature(dict(files, **{"author-signature.xml": author}), role="distributor", **options)
         return dict(files, **{"author-signature.xml": author, "signature1.xml": distributor})
 
     def test_sdk_style_signatures_with_encoded_uris_and_wrapped_digests_verify(self):
