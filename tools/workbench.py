@@ -426,8 +426,6 @@ class Workbench(App):
                     fail("grant", "Authorize saving private app-layer captures first")
                 if len(self.sources) != 1:
                     fail("disconnected", "Connect one app preview before recording")
-                if self.recorder is not None:
-                    self.recorder.close()
                 if self.encoder is None:
                     self.encoder = Encoder()
                 if not isinstance(data["output_parent"], str):
@@ -436,9 +434,12 @@ class Workbench(App):
                 if not parent.is_absolute() or not parent.is_dir():
                     fail("invalid", "Choose an existing absolute output folder")
                 name = f"app-layer-{data['layer']}-{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
-                self.recorder = Recorder(next(iter(self.sources.values())), parent / name,
-                                         fps=data["fps"], size=(data["width"], data["height"]),
-                                         duration=data["duration"], layer_index=data["layer"], encoder=self.encoder)
+                recorder = Recorder(next(iter(self.sources.values())), parent / name,
+                                    fps=data["fps"], size=(data["width"], data["height"]),
+                                    duration=data["duration"], layer_index=data["layer"], encoder=self.encoder)
+                if self.recorder is not None:
+                    self.recorder.close()
+                self.recorder = recorder
                 return self.recorder.start()
             if operation == "stop":
                 exact(data, {"operation", "format"})

@@ -278,6 +278,18 @@ class RemoteTests(unittest.TestCase):
 
 
 class RecordingIntegrationTests(unittest.TestCase):
+    def test_invalid_new_output_preserves_previous_recording(self):
+        app = workbench.Workbench()
+        app.sources = {"fixture": SimpleNamespace()}
+        app.encoder = SimpleNamespace()
+        previous = SimpleNamespace(close=lambda: self.fail("Previous recording was closed"))
+        app.recorder = previous
+        with self.assertRaises(live_tv.LiveError):
+            app.record({"operation": "start", "authorized_save": True,
+                        "output_parent": "relative", "fps": 2, "width": 960,
+                        "height": 540, "duration": 10, "layer": 0})
+        self.assertIs(app.recorder, previous)
+
     def test_browser_record_deadline_covers_stop_and_encode_bounds(self):
         script = (workbench.ASSETS / "ui.js").read_text()
         self.assertIn('path === "/api/record" ? 90000 : 30000', script)
