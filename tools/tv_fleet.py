@@ -684,7 +684,7 @@ class Fleet:
 
     def _attach(self, record, preview):
         local = preview["session"].forward[0]
-        page = self.discover(local)[0]
+        page = flows.wait_pages(self.discover, local)[0]
         config = {"id": record["alias"], "kind": "tv", "endpoint": f"http://127.0.0.1:{local}",
                   "target_id": page, "lease_path": str(self.lease_path(record["alias"])),
                   "lease_seconds": PREVIEW_SECONDS, "metadata": {}, "safe_activation_ids": []}

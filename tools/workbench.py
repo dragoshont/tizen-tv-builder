@@ -166,6 +166,21 @@ def run_sdb(tool, args):
     return output.decode("utf-8", errors="replace")
 
 
+def _seen(data):
+    """Describe a target list by known types and counts only; ids and URLs are not echoed."""
+    if not data:
+        return "the target list is empty"
+    known = {"page", "background_page", "service_worker", "worker", "iframe", "other"}
+    counts = {}
+    for item in data:
+        kind = item.get("type") if isinstance(item, dict) else None
+        kind = kind if kind in known else "unknown"
+        if kind == "page":
+            kind = "page with an unusable id"
+        counts[kind] = counts.get(kind, 0) + 1
+    return "seen " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
+
+
 def pages(port):
     connection = _DeadlineConnection("127.0.0.1", port, time.monotonic() + 4)
     try:
@@ -182,7 +197,7 @@ def pages(port):
         result = [p["id"] for p in data if isinstance(p, dict) and p.get("type") == "page"
                   and isinstance(p.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", p["id"])]
         if not result:
-            fail("discovery", "No debug page found. Close competing inspectors or relaunch with the SDK")
+            fail("discovery", "No debug page target yet: " + _seen(data))
         return result
     finally:
         connection.close()

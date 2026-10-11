@@ -144,6 +144,20 @@ def _median(values):
     return values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
 
 
+def wait_pages(discover, port, seconds=15, clock=time.monotonic, sleep=time.sleep):
+    """The inspector port opens before the engine registers its page; poll briefly, then say what was seen."""
+    deadline = clock() + seconds
+    while True:
+        try:
+            return discover(port)
+        except LiveError as error:
+            if error.code != "discovery" or clock() + 0.25 > deadline:
+                if error.code == "discovery":
+                    fail("discovery", f"The app started but no page target appeared within {seconds} s ({error})")
+                raise
+        sleep(0.25)
+
+
 class Session:
     """One app on one serial. Owns at most one forward and remembers only what it created."""
 
@@ -211,7 +225,7 @@ class Session:
         if not any(line.split() == [self.serial, f"tcp:{local}", f"tcp:{remote}"]
                    for line in self.sdb("forward", "--list").splitlines()):
             fail("cleanup", "Created forward could not be confirmed")
-        page = self.discover(local)[0]
+        page = wait_pages(self.discover, local, clock=self.clock, sleep=self.sleep)[0]
         self.client = self.factory(local, page)
         deadline = started + 30
         while True:
