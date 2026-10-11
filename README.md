@@ -2,6 +2,26 @@
 
 Build a Samsung TV app without relearning the same lessons every time.
 
+## Start the Samsung TV Developer Companion
+
+```
+python3 tools/tizen.py portal
+```
+
+- It prints `http://127.0.0.1:47811/`; open that in your browser. Ctrl+C stops it.
+  Run the same command again to restart. `--port N` picks another port.
+- Requirements: Python 3.10+, Tizen Studio's `sdb` and `tizen` CLI.
+- On the TV: Apps → 1 2 3 4 5 → Developer mode On → Host PC IP = this computer →
+  restart the TV.
+- Then: Scan → pick a TV → Connect → Open screen on your app.
+
+**New here?** Four steps: clone this repository, run `python3 tools/tizen.py setup` (prepares
+this computer, installing Tizen Studio's CLI if missing), turn on Developer Mode on the TV, then
+`python3 tools/tizen.py scan` and `python3 tools/tizen.py install APP.wgt TV`.
+[Getting started](docs/getting-started.md) is the one from-zero guide: TV
+Developer Mode, the one-click certificate, install, open, screenshot and uninstall, as
+`tv` commands and as portal steps, plus making your own app.
+
 This is a small toolkit for the things that slow you down: old browser engines,
 certificates, packaging, deployment and debugging. It comes with a coding agent
 that knows the workflow and the mistakes we have already found.
@@ -10,6 +30,20 @@ Use it for a Plex client, an Immich app or your own project. It is not another
 media client. It does not promise that one app will work on every TV from 2015
 to today. We keep [the model-year table](docs/compatibility.md), what was actually
 tested, and what is still unknown.
+
+**Start a new app:** follow [getting started](docs/getting-started.md)
+([prerequisites](docs/prerequisites.md) has the SDK details). Humans and
+agents use the same commands and checks; [AGENTS.md](AGENTS.md) indexes the
+focused workflows and lessons.
+
+The checkout includes focused agent skills for
+[device leases](skills/samsung-tv-lease/SKILL.md),
+[connecting a new TV](skills/samsung-tv-connect/SKILL.md),
+[debug launch](skills/samsung-tv-debug/SKILL.md),
+[inspection and input](skills/samsung-tv-inspect/SKILL.md),
+[certificates/signing](skills/samsung-tv-certificates/SKILL.md) and
+[starting an app](skills/samsung-tv-new-app/SKILL.md).
+These additions are unreleased; the published 0.1.0 plugin is unchanged.
 
 ## Install the plugin
 
@@ -35,6 +69,10 @@ That describes the published **0.1.0** package. The checkout now also contains a
 **unreleased live-canvas candidate**, held for parent/device acceptance. Do not
 replace your installed plugin or publish it yet. See [live canvas setup](docs/live-canvas.md)
 for the standalone adapter, explicit private profile and SDK opening steps.
+It also adds unreleased TV commands with no setup: `python3 tools/tizen.py tv scan`,
+`tv list`, `tv check TV`, `tv connect TV`, `tv info TV` (the portal's detail panel), first-run `tv setup`, `tv cert`, `tv install`,
+`tv launch`, `tv remove` and `tv portal` (the same features in a
+loopback web page). See [live canvas setup](docs/live-canvas.md#same-features-from-the-terminal-tizenpy-tv).
 
 For a fixed version, download the release instead:
 
@@ -80,11 +118,30 @@ supervisor or a new project just to use these tools.
 
 ## Use the tools yourself
 
+For a standalone remote, inspector and native paint preview, run
+`python3 tools/workbench.py` on macOS or `py -3 tools/workbench.py` on Windows.
+**TV Workbench** opens in your browser without Plex, Copilot or npm. Its
+first-run flow checks installed tools and guides explicit TV/app debug setup.
+It detects connected TVs and installed apps, and shows a complete Samsung-style
+remote with app-supported keys. See [workbench setup](docs/workbench.md):
+this is unreleased. Hosted Windows checks passed; desktop Windows and TV
+acceptance remain pending.
+
+**Record** saves one genuine app paint layer as PNG frames or a still.
+An already-installed optional ffmpeg enables optimized GIF, MP4 and WebM
+exports—no encoder is bundled or silently installed. FPS, size, length and
+the private output folder are in **Recording & export**.
+See [recording formats and setup](docs/recording.md).
+
+**New app in one command:** `python3 tools/tizen.py new ./MyTv --name "My TV"`, then
+`audit`, `pack` and `check-package` without an SDK. Retail TV and emulator runs with
+per-tier start-up budgets: see [app flows](docs/app-flows.md).
+
 The plugin includes the Python tools, docs and a small hello app. Run the commands
 below from an extracted release or a repository checkout. To get a checkout:
 
 ```sh
-gh repo clone dragoshont/tizen-tv-builder
+git clone https://github.com/dragoshont/tizen-tv-builder.git
 cd tizen-tv-builder
 python3 tools/tizen.py --version
 python3 tools/tizen.py doctor
@@ -106,27 +163,15 @@ manifest validation and HTTP inspector discovery do not launch SDK processes.
 
 ## First install on a TV
 
-First identify the exact model, region, firmware and year. Enable Developer Mode
-using [Samsung's device instructions](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html).
-Connect with Device Manager; this toolkit does not connect for you.
+Follow [getting started](docs/getting-started.md): `python3 tools/tizen.py scan`, TV
+Developer Mode, `python3 tools/tizen.py tv cert add NAME` (one Samsung sign-in in your
+browser, no other prompts), then `python3 tools/tizen.py install APP.wgt NAME` (a file or an
+`https://` link). Then `python3 tools/tizen.py apps NAME`, `python3 tools/tizen.py info NAME --app APP`,
+`python3 tools/tizen.py open NAME APP` and `python3 tools/tizen.py screenshot NAME --app APP`. Keep
+certificates, passwords and device IDs private.
 
-Create a **Samsung TV** certificate profile in Certificate Manager: author
-certificate, distributor certificate, and the target TV's DUID. Then use Device
-Manager's **Permit to install applications** for that TV. Follow
-[Samsung's certificate guide](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html).
-Keep certificates, passwords and DUIDs private.
-
-With permission for the exact TV and these operations:
-
-```sh
-python3 tools/tizen.py package /path/to/app --profile YOUR_PROFILE --output /private/path/app.wgt
-python3 tools/tizen.py install /private/path/app.wgt --serial TV_IPV4:26101 --authorized
-python3 tools/tizen.py run --app PACKAGEID0.Application --serial TV_IPV4:26101 --authorized
-```
-
-Replace the placeholders. Package IDs must be ten letters/digits; use the app ID
-from `config.xml`. Only one worker should own that Samsung TV. `--authorized`
-acknowledges permission; it is not a lock and cannot prove consent.
+The lower-level `package`, `install` and `run` commands remain for agents and scripted
+acceptance runs; they need `--serial` and `--authorized`, see [app flows](docs/app-flows.md).
 
 Packaging stages common web assets and excludes known private/generated paths.
 It is **not a secret scanner**. A token in a JS file is still a token. Review what
@@ -168,8 +213,9 @@ requires this canvas when available, or an explicit unavailable/blocked result.
 - [Changelog](CHANGELOG.md): version changes. No version number means all TVs are supported.
 
 Run the host suite with `python3 -m unittest discover -s tests -v`.
-We have exercised offline tests and a real unsigned SDK build. This toolkit has
-not completed its own retail-TV acceptance run. Emulator and desktop results are
+We have exercised offline tests, a real unsigned SDK build, hosted Windows
+checks and [bounded retail paint recording](docs/workbench.md#bounded-retail-observation-2026-10-11).
+Full retail install/input/media acceptance remains incomplete. Emulator and desktop results are
 not TV results. Native binaries, root/firmware work, DRM bypass and automatic
 account writes are out of scope.
 

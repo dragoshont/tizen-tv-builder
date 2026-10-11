@@ -38,6 +38,14 @@ class LiveError(Exception):
         self.code = code
 
 
+# Tizen 5.0 (2019) Inspector advertises "(" + 32 hex + ")" page ids, proven on device.
+TARGET_ID = re.compile(r"(?:[A-Za-z0-9_-]{1,100}|\([A-Fa-f0-9]{32}\))")
+
+
+def target_id_ok(value):
+    return isinstance(value, str) and TARGET_ID.fullmatch(value) is not None
+
+
 def fail(code, message):
     raise LiveError(code, message)
 
@@ -48,7 +56,11 @@ def exact(data, keys):
 
 
 def number(value, low, high):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and low <= value <= high
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    return low <= value <= high
 
 
 def endpoint(value):
@@ -75,7 +87,45 @@ def metadata(value):
     return value
 
 
+def read_names(data):
+    if "tv_names" not in data:
+        return {}
+    names = data["tv_names"]
+    if not isinstance(names, dict) or len(names) > 32 or any(
+            not isinstance(key, str) or not re.fullmatch(r"tv-[0-9a-f]{6}", key) or not isinstance(value, str)
+            or not 1 <= len(value.strip()) <= 60 or len(value) > 60
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)
+            for key, value in names.items()):
+        fail("invalid", "TV names must map scanned aliases to short plain names")
+    return names
+
+
+KNOWN_FIELDS = {"name": r"[^\x00-\x1f\x7f]{1,64}", "model": r"[A-Za-z0-9_.()/ -]{1,32}",
+                "os": r"[0-9]{1,2}(\.[0-9]{1,3}){0,2}", "duid": r"[A-Za-z0-9._-]{1,64}",
+                "serial_alias": r"tv-[0-9a-f]{6}"}
+
+
+def read_known(data):
+    """Last-known facts per scanned alias (private profile): never a network address."""
+    if "known_tvs" not in data:
+        return {}
+    known = data["known_tvs"]
+    if not isinstance(known, dict) or len(known) > 32:
+        fail("invalid", "Known TVs must map up to 32 scanned aliases to their last-known facts")
+    for key, value in known.items():
+        if not isinstance(key, str) or not re.fullmatch(r"tv-[0-9a-f]{6}", key) or not isinstance(value, dict) \
+                or set(value) - set(KNOWN_FIELDS) - {"last_seen"} or any(
+                    not isinstance(value[k], str) or not re.fullmatch(p, value[k])
+                    for k, p in KNOWN_FIELDS.items() if k in value) or (
+                    "last_seen" in value and (type(value["last_seen"]) is not int or value["last_seen"] < 0)) or any(
+                    isinstance(v, str) and re.search(r"\b\d{1,3}(\.\d{1,3}){3}\b", v) for v in value.values()):
+            fail("invalid", "Known TVs hold name, model, os, duid, serial_alias and last_seen only")
+    return known
+
+
 def read_profile(path):
+    if os.name != "posix":
+        fail("platform", "Private canvas profiles require POSIX ownership; use TV Workbench on Windows")
     path = Path(path)
     if not path.is_absolute() or path.is_symlink() or not path.is_file():
         fail("invalid", "Profile must be an existing absolute private file, not a symlink")
@@ -90,10 +140,18 @@ def read_profile(path):
         if len(raw) > 65536:
             fail("invalid", "Profile exceeds its size limit")
         data = json.loads(raw)
-    exact(data, {"sources"})
+    if not isinstance(data, dict) or "sources" not in data or set(data) - {"sources", "certificate_duids", "tv_names", "known_tvs"}:
+        fail("invalid", "Profile allows sources, certificate_duids, tv_names and known_tvs only")
+    if "certificate_duids" in data:
+        duids = data["certificate_duids"]
+        if not isinstance(duids, str) or not 1 <= len(duids) <= 1024 or not Path(duids).is_absolute() or \
+                Path(duids).resolve().is_relative_to(ROOT):
+            fail("invalid", "Certificate DUID list must be an absolute private path outside the repository")
+    read_names(data)
+    read_known(data)
     sources = data["sources"]
-    if not isinstance(sources, list) or not 1 <= len(sources) <= 2:
-        fail("invalid", "Configure one TV, or a TV and an explicit emulator comparison")
+    if not isinstance(sources, list) or len(sources) > 8:
+        fail("invalid", "Configure up to eight TVs plus at most one emulator")
     ids = set()
     kinds = set()
     for source in sources:
@@ -101,20 +159,21 @@ def read_profile(path):
                        "safe_activation_ids"})
         if not isinstance(source["id"], str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", source["id"]):
             fail("invalid", "Source needs a stable non-secret alias")
-        if source["id"] in ids or not isinstance(source["kind"], str) or source["kind"] not in {"tv", "emulator"} or source["kind"] in kinds:
-            fail("invalid", "Source aliases and kinds must be unique")
+        if source["id"] in ids or not isinstance(source["kind"], str) or source["kind"] not in {"tv", "emulator"} or \
+                (source["kind"] == "emulator" and "emulator" in kinds):
+            fail("invalid", "Source aliases must be unique, with at most one emulator")
         ids.add(source["id"])
         kinds.add(source["kind"])
         endpoint(source["endpoint"])
-        if not isinstance(source["target_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source["target_id"]):
+        if not target_id_ok(source["target_id"]):
             fail("invalid", "Choose an explicit inspector page target ID")
         if not isinstance(source["lease_path"], str):
             fail("invalid", "Lease path must be a string")
         lease = Path(source["lease_path"])
         if not lease.is_absolute() or lease.is_symlink() or lease.resolve().is_relative_to(ROOT):
             fail("invalid", "Lease path must be an absolute private canonical lane outside the repository")
-        if source["kind"] == "tv" and str(lease) != "/tmp/plx-samsung-device.lock":
-            fail("invalid", "Native TV requires the canonical /tmp/plx-samsung-device.lock lane")
+        if source["kind"] == "tv" and str(lease) not in {"/tmp/plx-samsung-device.lock", f"/tmp/tizen-tv-{source['id']}.lock"}:
+            fail("invalid", "Native TV requires the canonical lock or its own /tmp/tizen-tv-<id>.lock")
         if not number(source["lease_seconds"], 10, 120):
             fail("invalid", "Bounded run duration must be 10 to 120 seconds; this is not lease TTL")
         metadata(source["metadata"])
@@ -183,6 +242,14 @@ class CDP:
         self.sock = None
         self.next_id = 0
         self.layers = None
+        self.phase = "target discovery (/json/list)"
+        try:
+            self._open(port, target)
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            error.inspector_step = self.phase
+            raise
+
+    def _open(self, port, target):
         deadline = time.monotonic() + 4
         connection = _DeadlineConnection("127.0.0.1", port, deadline)
         response = None
@@ -199,7 +266,10 @@ class CDP:
                 raw.extend(chunk)
                 if len(raw) > 1024 * 1024:
                     fail("limit", "Inspector discovery exceeds one MiB")
-            pages = json.loads(raw)
+            try:
+                pages = json.loads(raw)
+            except ValueError as error:
+                fail("discovery", f"Inspector target list is not valid JSON ({error})")
             if not isinstance(pages, list):
                 fail("discovery", "Inspector target list is malformed")
             matches = [p for p in pages if isinstance(p, dict) and p.get("id") == target and p.get("type") == "page"]
@@ -217,6 +287,7 @@ class CDP:
             if response:
                 response.close()
             connection.close()
+        self.phase = "WebSocket handshake"
         sock = socket.create_connection(("127.0.0.1", port), timeout=4)
         self.sock = sock
         try:
@@ -231,10 +302,12 @@ class CDP:
                 headers.extend(self.read(1))
                 if len(headers) > 16384:
                     fail("limit", "WebSocket handshake is too large")
-            lines = headers.decode("ascii").split("\r\n")
+            lines = headers.decode("latin-1").split("\r\n")
             values = {}
             for line in lines[1:]:
                 if line:
+                    if ":" not in line:
+                        fail("protocol", f"WebSocket handshake header line has no colon: {line[:80]!r}")
                     name, value = line.split(":", 1)
                     if name.lower() in values:
                         fail("protocol", "Duplicate handshake header")
@@ -245,7 +318,8 @@ class CDP:
                     or values.get("upgrade", "").lower() != "websocket"
                     or "upgrade" not in [v.strip() for v in values.get("connection", "").lower().split(",")]
                     or "sec-websocket-extensions" in values):
-                fail("protocol", "WebSocket handshake rejected or attempted compression")
+                fail("protocol", "WebSocket handshake rejected or attempted compression (status line "
+                     f"{lines[0][:80]!r}, extensions {values.get('sec-websocket-extensions')!r})")
         except BaseException:
             self.close()
             raise
@@ -257,7 +331,10 @@ class CDP:
             if remaining <= 0:
                 fail("timeout", "Inspector RPC total deadline exceeded")
             self.sock.settimeout(remaining)
-            chunk = self.sock.recv(size - len(data))
+            try:
+                chunk = self.sock.recv(size - len(data))
+            except socket.timeout:
+                fail("timeout", f"No answer from the inspector in time ({getattr(self, 'phase', 'inspector request')})")
             if not chunk:
                 fail("disconnected", "Inspector disconnected")
             data.extend(chunk)
@@ -306,7 +383,10 @@ class CDP:
                 fail("protocol", "Only UTF-8 text messages are supported")
             data.extend(payload)
             if final:
-                value = json.loads(data.decode("utf-8"))
+                try:
+                    value = json.loads(data.decode("utf-8"))
+                except ValueError as error:
+                    fail("protocol", f"Inspector sent a message that is not valid JSON/UTF-8 ({getattr(self, 'phase', 'inspector request')}): {error}")
                 if not isinstance(value, dict):
                     fail("protocol", "Inspector message must be an object")
                 return value
@@ -323,6 +403,7 @@ class CDP:
     def rpc(self, method, params=None, timeout=3):
         self.next_id += 1
         call_id = self.next_id
+        self.phase = f"waiting for the {method} reply"
         self.deadline = time.monotonic() + timeout
         self.send(json.dumps({"id": call_id, "method": method, "params": params or {}}).encode())
         while True:
@@ -339,6 +420,7 @@ class CDP:
             return result
 
     def layer_list(self):
+        self.phase = "waiting for LayerTree.layerTreeDidChange"
         self.deadline = time.monotonic() + 3
         while self.layers is None:
             self.receive()
@@ -363,12 +445,33 @@ def png(data):
     return raw, width, height
 
 
+def inspector_failure(error, client=None):
+    """The real cause: the step that failed, the exception class and its message."""
+    step = getattr(error, "inspector_step", None) or getattr(client, "phase", None) or "inspector request"
+    detail = str(error).strip() or "no message"
+    return f"Inspector failed during {step}: {type(error).__name__}: {detail}"
+
+
+class MemoryLink:
+    """A connection held in this process only. It reserves nothing on disk, so no other
+    session's lock file can block it and a restart needs no cleanup."""
+    identity = "in-memory"
+
+    def acquire(self):
+        pass
+
+    def release(self):
+        pass
+
+
 class Source:
-    def __init__(self, config, factory=CDP):
+    keymap = KEYS
+    def __init__(self, config, factory=CDP, lease=None):
         self.config = config
         self.factory = factory
         self.lock = threading.Lock()
-        self.lease = Lease(config["lease_path"])
+        # Stateless: no lock file reserves the TV. lease_path stays a validated, unused config field.
+        self.lease = lease or MemoryLink()
         self.client = None
         self.expires = 0
         self.frames = []
@@ -398,7 +501,7 @@ class Source:
                 "capture_age_seconds": max(0, round(time.time() - self.captured)) if self.captured else None,
                 "stale": self.stale, "command_ms": self.command_ms,
                 "capture_ms": self.capture_ms, "streaming": self.streaming,
-                "interval": self.interval, "activation_allowed": bool(self.config["safe_activation_ids"]),
+                "interval": self.interval, "activation_allowed": bool(self.config["safe_activation_ids"] or self.config.get("user_activation")),
                 "run_limit_seconds": self.config["lease_seconds"],
                 "input_fidelity": "CDP synthesized; physical remote parity unverified",
                 "capabilities": {"capture": "LayerTree protocol probe required",
@@ -531,9 +634,9 @@ class Source:
                     fail("grant", "User-controlled input was not authorized")
                 if operation == "key":
                     exact(data, {"key"})
-                    if not isinstance(data["key"], str) or data["key"] not in KEYS:
+                    if not isinstance(data["key"], str) or data["key"] not in self.keymap:
                         fail("invalid", "Only D-pad, OK and Back keys are permitted")
-                    code, key = KEYS[data["key"]]
+                    code, key = self.keymap[data["key"]]
                     if data["key"] == "ok":
                         self.activation()
                     self.discard()
@@ -557,7 +660,7 @@ class Source:
             return self.summary()
         except (LiveError, OSError, ValueError, http.client.HTTPException) as error:
             code = error.code if isinstance(error, LiveError) else "transport"
-            message = str(error) if isinstance(error, LiveError) else "Inspector transport or response was invalid"
+            message = str(error) if isinstance(error, LiveError) else inspector_failure(error, self.client)
             self.error = message
             self.discard()
             if code not in {"invalid", "grant", "guard", "busy", "device_lock_held"}:
@@ -579,6 +682,8 @@ class Source:
                 return
 
     def activation(self, x=None, y=None):
+        if self.config.get("user_activation"):
+            return  # The developer opened this app; OK goes to it like a real remote's OK.
         ids = self.config["safe_activation_ids"]
         if not ids:
             fail("guard", "OK/click require audited safe activation IDs; household writes are not authorized")
@@ -678,36 +783,72 @@ class Source:
 
 
 class App:
-    def __init__(self, path, config, factory=CDP):
+    def __init__(self, path, config, factory=CDP, fleet=None):
         self.path = path
         self.config = config
         self.sources = {s["id"]: Source(s, factory) for s in config["sources"]}
-        self.token = secrets.token_urlsafe(32)
         self.persist_lock = threading.Lock()
+        self.fleet = fleet
+
+    def source(self, ident):
+        if ident in self.sources:
+            return self.sources[ident]
+        return self.fleet.preview_source(ident) if self.fleet is not None else None
 
     def state(self):
-        return {"sources": [source.summary() for source in self.sources.values()]}
+        result = {"sources": [source.summary() for source in self.sources.values()]}
+        if self.fleet is not None:
+            result.update(self.fleet.state())
+        return result
+
+    def _write_profile(self, current):
+        temporary = self.path.with_name(self.path.name + "." + secrets.token_hex(8))
+        try:
+            with temporary.open("x") as stream:
+                os.chmod(temporary, 0o600)
+                stream.write(json.dumps(current, indent=2) + "\n")
+            temporary.replace(self.path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def save_names(self, names):
+        # Names are keyed by scanned hashed aliases only; never by network address.
+        with self.persist_lock:
+            _, current = read_profile(self.path)
+            merged = dict(names)
+            current["tv_names"] = merged
+            read_names({"tv_names": merged})
+            self._write_profile(current)
+            self.config["tv_names"] = merged
+        return merged
+
+    def save_known(self, known):
+        # Last-known name/model/OS/DUID per hashed alias, in the private 0600 profile only.
+        clean = {a: {k: v for k, v in f.items() if k in KNOWN_FIELDS and re.fullmatch(KNOWN_FIELDS[k], str(v))}
+                 | ({"last_seen": f["last_seen"]} if type(f.get("last_seen")) is int else {})
+                 for a, f in list(known.items())[:32]}
+        read_known({"known_tvs": clean})
+        with self.persist_lock:
+            _, current = read_profile(self.path)
+            current["known_tvs"] = clean
+            self._write_profile(current)
+            self.config["known_tvs"] = clean
+        return clean
 
     def save_metadata(self, alias, values):
         metadata(values)
         with self.persist_lock:
             source = self.sources[alias]
-            if not source.lock.acquire(blocking=False):
+            # A frame grab holds the lock briefly; wait for it rather than refusing the edit.
+            if not source.lock.acquire(timeout=5):
                 fail("busy", "Wait for the active command before editing this profile")
             try:
                 # Revalidate path permissions and merge only metadata, never connection/grants.
                 _, current = read_profile(self.path)
                 entry = next(s for s in current["sources"] if s["id"] == alias)
                 entry["metadata"] = values
-                temporary = self.path.with_name(self.path.name + "." + secrets.token_hex(8))
-                try:
-                    with temporary.open("x") as stream:
-                        os.chmod(temporary, 0o600)
-                        stream.write(json.dumps(current, indent=2) + "\n")
-                    temporary.replace(self.path)
-                finally:
-                    if temporary.exists():
-                        temporary.unlink()
+                self._write_profile(current)
                 source.config["metadata"] = values
             finally:
                 source.lock.release()
@@ -715,6 +856,11 @@ class App:
 
     def close(self):
         failed = False
+        if self.fleet is not None:
+            try:
+                self.fleet.close()
+            except LiveError:
+                failed = True
         for source in self.sources.values():
             with source.lock:
                 try:
@@ -746,7 +892,8 @@ def handler(app):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy",
                              "default-src 'none'; script-src 'self'; style-src 'self'; "
-                             "img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'")
+                             "img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'" +
+                             ("; frame-ancestors " + app.frame_ancestors if hasattr(app, "frame_ancestors") else ""))
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
@@ -764,11 +911,27 @@ def handler(app):
                 fail("origin", "Cross-origin requests are forbidden")
             if not public_static and self.headers.get("Sec-Fetch-Site") == "cross-site":
                 fail("origin", "Cross-site requests are forbidden")
-            if private and not secrets.compare_digest(self.headers.get("Authorization", ""), "Bearer " + app.token):
-                fail("auth", "Private canvas authentication is required")
+            if not private:
+                return
+            token = getattr(app, "token", None)
+            if token is not None:
+                if not secrets.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
+                    fail("auth", "Private canvas authentication is required")
+                return
+            # Unauthenticated portal (user decision): loopback Host plus same-origin proof.
+            # Browsers send Origin on every POST and Sec-Fetch-Site on every fetch, so another
+            # web page, including another localhost port (same-site), cannot drive or read it.
+            if self.headers.get("Sec-Fetch-Site") not in {None, "same-origin", "none"}:
+                fail("origin", "Only this portal page may use its API")
+            if self.command == "POST" and origin != "http://" + host:
+                fail("origin", "Requests must come from this portal page")
 
         def do_GET(self):
             try:
+                if self.path == "/favicon.ico" and hasattr(app, "frame_ancestors"):
+                    self.check(public_static=True)
+                    self.reply(204, b"", "image/x-icon")
+                    return
                 static = {"/": ("index.html", "text/html; charset=utf-8"),
                           "/ui.js": ("ui.js", "text/javascript"),
                           "/controls.mjs": ("controls.mjs", "text/javascript"),
@@ -778,16 +941,23 @@ def handler(app):
                     # profile, token or pixels; authenticated API routes stay strict.
                     self.check(public_static=True)
                     name, mime = static[self.path]
-                    self.reply(200, (ASSETS / name).read_bytes(), mime)
+                    assets = ASSETS if name == "controls.mjs" else getattr(app, "assets", ASSETS)
+                    self.reply(200, (assets / name).read_bytes(), mime)
                     return
                 self.check(private=True)
                 if self.path == "/api/state":
                     self.reply(200, app.state())
                     return
+                if self.path == "/api/setup" and hasattr(app, "setup_status"):
+                    self.reply(200, app.setup_status())
+                    return
+                if self.path == "/api/record" and hasattr(app, "record_status"):
+                    self.reply(200, app.record_status())
+                    return
                 match = re.fullmatch(r"/api/frame/([a-z][a-z0-9-]{0,31})/([0-7])/([a-f0-9]{24})", self.path)
-                if not match or match[1] not in app.sources:
+                source = app.source(match[1]) if match else None
+                if source is None:
                     fail("route", "Unknown route")
-                source = app.sources[match[1]]
                 with source.lock:
                     if source.revision != match[3] or int(match[2]) >= len(source.frames):
                         fail("stale", "Capture no longer exists; refresh")
@@ -816,13 +986,42 @@ def handler(app):
                         fail("invalid", "Request body was truncated")
                     raw.extend(chunk)
                 data = json.loads(raw)
+                if self.path == "/api/setup" and hasattr(app, "setup"):
+                    self.reply(200, app.setup(data))
+                    return
+                if self.path == "/api/record" and hasattr(app, "record"):
+                    self.reply(200, app.record(data))
+                    return
+                if self.path == "/api/detect" and app.fleet is not None:
+                    self.reply(200, app.fleet.submit("detect", None, data))
+                    return
+                if self.path == "/api/wizard" and app.fleet is not None:
+                    self.reply(200, app.fleet.wizard(data))
+                    return
+                if self.path == "/api/install-sdk" and app.fleet is not None:
+                    self.reply(200, app.fleet.install_sdk(data))
+                    return
+                if self.path == "/api/choose-package" and app.fleet is not None:
+                    if data != {}:
+                        fail("invalid", "No options are accepted")
+                    self.reply(200, app.fleet.choose())
+                    return
+                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|rename|preview|apps|install|remove|launch|screenshot|cert|profile|sample)/(tv-[0-9a-f]{6})", self.path)
+                if match and app.fleet is not None:
+                    self.reply(200, app.fleet.submit(match[1], match[2], data))
+                    return
                 match = re.fullmatch(r"/api/(connect|disconnect|capture|key|click|metadata|stream)/([a-z][a-z0-9-]{0,31})", self.path)
-                if not match or match[2] not in app.sources:
+                source = app.source(match[2]) if match else None
+                if source is None:
                     fail("route", "Unknown route")
                 if match[1] == "metadata":
+                    if match[2] not in app.sources:
+                        fail("route", "Unknown route")
                     result = app.save_metadata(match[2], data)
+                elif match[2] not in app.sources and match[1] == "connect":
+                    fail("route", "Use the TV's Open preview action")
                 else:
-                    result = app.sources[match[2]].operate(match[1], data)
+                    result = source.operate(match[1], data)
                 self.reply(200, result)
             except (LiveError, OSError, ValueError, TypeError) as error:
                 self.report(error)
@@ -842,15 +1041,32 @@ def handler(app):
     return Handler
 
 
-def serve(profile, owner_stdin=False):
+def bind(handler_class, port=0):
+    if port:
+        try:
+            return BoundedServer(("127.0.0.1", port), handler_class)
+        except OSError:
+            pass  # Preferred port taken (often an earlier portal); use any free loopback port.
+    return BoundedServer(("127.0.0.1", 0), handler_class)
+
+
+def serve(profile, owner_stdin=False, port=0, announce=None):
     path, config = read_profile(profile)
+    import tv_fleet
     app = App(path, config)
-    server = BoundedServer(("127.0.0.1", 0), handler(app))
+    app.fleet = tv_fleet.Fleet(certificate_duids=config.get("certificate_duids"),
+                               names=config.get("tv_names", {}), save_names=app.save_names,
+                               known=config.get("known_tvs", {}), save_known=app.save_known)
+    server = bind(handler(app), port)
     server.daemon_threads = True
     server.timeout = 0.2
     server.request_queue_size = 8
-    # The URL contains private authentication in its fragment, never query/log/HTTP referrer.
-    print(json.dumps({"url": f"http://127.0.0.1:{server.server_port}/#{app.token}"}), flush=True)
+    # Loopback-only and unauthenticated by design; see docs/live-canvas.md for the local-user risk.
+    url = f"http://127.0.0.1:{server.server_port}/"
+    if announce:
+        announce(url)
+    else:
+        print(json.dumps({"url": url}), flush=True)
     if owner_stdin:
         def monitor_owner():
             sys.stdin.buffer.read()  # EOF when the SDK provider exits, even if it is killed.

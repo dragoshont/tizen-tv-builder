@@ -1,0 +1,135 @@
+<!doctype html>
+<!-- THESIS: A development instrument, not a simulated television.
+OWN-WORLD: Apple-like utility; cool silver, graphite, system type and tactile keys.
+STORY: Prepare an authorized app, inspect its real paint, send guarded input.
+FIRST VIEWPORT: Setup sidebar, large honest preview, narrow physical remote.
+FORM: Brief-pinned utility composition; no concept roll or invented demo pixels. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TV Workbench</title>
+  <link rel="stylesheet" href="/ui.css">
+</head>
+<body>
+  <header class="toolbar">
+    <h1>TV Workbench</h1>
+    <p>Samsung web-app development</p>
+    <span id="connection" role="status">Not connected</span>
+  </header>
+  <div id="error" role="alert" hidden><span id="error-text"></span> <a id="error-help" target="_blank" rel="noopener" hidden>How to fix</a><button id="error-close" class="link" aria-label="Dismiss">×</button></div>
+  <main>
+    <aside class="setup" aria-label="Device setup">
+      <h2>Connect</h2>
+      <p id="tools" role="status">Checking installed tools...</p>
+      <button id="discover" class="primary">Find TV &amp; apps</button>
+      <button id="find-network">Find nearby TVs</button>
+      <label for="tv">TV</label><select id="tv" disabled><option>No TV selected</option></select>
+      <label for="installed-app">App</label><select id="installed-app" disabled><option>Find apps first</option></select>
+      <button id="debug" class="primary">Open app</button>
+      <fieldset id="grants"><legend>Preview</legend>
+        <label class="check"><input id="authorized" type="checkbox"> Authorize this app and exclusive TV use</label>
+        <label class="check"><input id="pixels" type="checkbox"> Show private app pixels</label>
+        <label class="check"><input id="input" type="checkbox"> Enable remote</label>
+        <label class="check"><input id="extended-input" type="checkbox"> Allow app actions, including playback</label>
+      </fieldset>
+      <div class="actions"><button class="primary" id="connect" disabled>Connect preview</button><button id="disconnect" disabled>Disconnect</button></div>
+      <p id="setup-message" role="status"></p>
+      <details id="onboarding"><summary>Add a TV</summary>
+        <label for="manual-ip">TV IP (TV: Settings › General › Network › Network Status › IP Settings)</label>
+        <input id="manual-ip" placeholder="192.168.x.x" autocomplete="off" spellcheck="false">
+        <button id="confirm-tv">Check TV</button>
+        <label for="serial">TV IPv4 address and SDB port</label>
+        <input id="serial" placeholder="TV_IPV4:26101" autocomplete="off" spellcheck="false">
+        <button id="connect-tv">Connect TV</button>
+        <label for="app-id">Installed application ID</label>
+        <input id="app-id" placeholder="PACKAGEID0.Application" autocomplete="off" spellcheck="false">
+        <label class="check"><input id="legacy" type="checkbox"> Legacy debug timeout 0</label>
+        <details><summary>Existing inspector</summary>
+          <label for="port">Existing loopback port</label>
+          <input id="port" type="number" min="1024" max="65535" placeholder="12345">
+          <label class="check"><input id="attach-grant" type="checkbox"> I authorize discovery through this existing forward.</label>
+          <button id="attach">Discover pages</button>
+        </details>
+        <label for="page">Debug page</label><select id="page" disabled><option>No pages discovered</option></select>
+        <label for="safe-ids">Audited safe OK targets (optional)</label>
+        <input id="safe-ids" placeholder="menuButton, browseButton" autocomplete="off" spellcheck="false">
+        <button id="select-page" disabled>Use this page</button>
+        <label for="duration">Session length (seconds)</label>
+        <input id="duration" type="number" min="10" max="120" value="120">
+        <button id="release" disabled>Release forward</button>
+      </details>
+      <details id="first-time"><summary>First time?</summary><ol class="steps">
+        <li><a href="https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html" target="_blank" rel="noopener">Install Tizen Studio + TV extension</a></li>
+        <li>TV: Apps › type <kbd>12345</kbd> › Developer Mode On › Host PC IP = <span id="host-ip">this computer</span> › restart TV</li>
+        <li>Find nearby TVs, pick yours</li>
+        <li><a href="https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html" target="_blank" rel="noopener">Create a certificate</a> for that TV and install your app</li>
+      </ol></details>
+    </aside>
+    <section class="preview" aria-label="Native renderer preview">
+      <div class="preview-toolbar"><h2>App preview</h2><div class="actions"><button id="capture" disabled>Refresh</button><button id="stream" disabled>Start feed</button><button id="record" disabled title="Record one app paint layer">Record</button></div></div>
+      <p id="status" role="status" aria-live="polite">Choose a TV and app to begin.</p>
+      <div id="views" tabindex="0" aria-label="Preview keyboard surface"><div class="empty"><div class="empty-screen" aria-hidden="true"></div><h3>Ready for your app</h3><p>Find your TV, choose an app, then connect.</p></div></div>
+      <details class="diagnostics"><summary>Inspector details</summary>
+        <p id="diagnostics">No inspector session. This is not an arbitrary console, DOM editor or network recorder.</p>
+        <p class="hint">Native renderer paint layers, not a panel recording. AVPlay video and TV menus are outside this view. Layers are replayed separately.</p>
+        <label for="interval">Capture interval (seconds)</label><input id="interval" type="number" min="10" max="60" value="10">
+        <p class="hint">Discrete captures, not video. Pause stops future captures; an in-flight capture finishes.</p>
+      </details>
+      <details><summary>Recording &amp; export</summary>
+        <p id="record-status" role="status">No recording yet.</p>
+        <label class="check"><input id="save-grant" type="checkbox"> Save private app-layer captures to this computer</label>
+        <label for="record-output">Output folder</label><input id="record-output" autocomplete="off" spellcheck="false">
+        <div class="record-settings">
+          <label>FPS<input id="record-fps" type="number" min="0.1" max="15" step="0.1" value="2"></label>
+          <label>Length (s)<input id="record-duration" type="number" min="1" max="120" value="30"></label>
+          <label>Width<input id="record-width" type="number" min="2" max="1280" value="960"></label>
+          <label>Height<input id="record-height" type="number" min="2" max="720" value="540"></label>
+          <label>Layer<input id="record-layer" type="number" min="0" max="7" value="0"></label>
+          <label>Format<select id="record-format"><option value="png">PNG sequence</option><option value="gif">Animated GIF</option><option value="mp4">MP4</option><option value="webm">WebM</option><option value="webp">WebP still</option></select></label>
+        </div>
+        <p id="encoder-status" class="hint"></p>
+        <div class="actions"><button id="export" disabled>Export</button><button id="still" disabled>Save PNG still</button></div>
+        <p id="record-receipt" class="hint"></p>
+      </details>
+    </section>
+    <aside class="remote-panel" aria-label="Remote control">
+      <h2>Remote</h2>
+      <fieldset id="remote" tabindex="0" aria-label="TV remote keyboard surface"><legend class="sr-only">Guarded CDP remote</legend>
+        <div class="remote-body">
+          <div class="remote-row"><button data-key="power" class="power" disabled aria-label="Power" title="Not exposed to this app">⏻</button><button data-key="source" disabled title="Not exposed to this app">Source</button></div>
+          <div class="numbers" aria-label="Number keys">
+            <button data-key="digit-1" disabled>1</button><button data-key="digit-2" disabled>2</button><button data-key="digit-3" disabled>3</button>
+            <button data-key="digit-4" disabled>4</button><button data-key="digit-5" disabled>5</button><button data-key="digit-6" disabled>6</button>
+            <button data-key="digit-7" disabled>7</button><button data-key="digit-8" disabled>8</button><button data-key="digit-9" disabled>9</button>
+            <button data-key="guide" disabled title="Not exposed to this app">Guide</button><button data-key="digit-0" disabled>0</button><button data-key="info" disabled title="Not exposed to this app">Info</button>
+          </div>
+          <div class="rockers">
+            <div class="rocker"><button data-key="volume-up" disabled aria-label="Volume up">+</button><span>VOL</span><button data-key="volume-down" disabled aria-label="Volume down">−</button></div>
+            <button data-key="mute" disabled title="Not exposed to this app">Mute</button>
+            <div class="rocker"><button data-key="channel-up" disabled aria-label="Channel up">+</button><span>CH</span><button data-key="channel-down" disabled aria-label="Channel down">−</button></div>
+          </div>
+          <div class="remote-row"><button data-key="menu" disabled>Menu</button><button data-key="home" disabled>Home</button></div>
+          <div class="dpad">
+            <button data-key="up" aria-label="Up" disabled>↑</button>
+            <button data-key="left" aria-label="Left" disabled>←</button>
+            <button data-key="ok" class="ok" aria-describedby="ok-note" disabled>OK</button>
+            <button data-key="right" aria-label="Right" disabled>→</button>
+            <button data-key="down" aria-label="Down" disabled>↓</button>
+          </div>
+          <div class="remote-row"><button data-key="back" disabled>Back</button><button data-key="exit" disabled>Exit</button></div>
+          <button data-key="settings" disabled>Settings</button>
+          <div class="colours">
+            <button class="red" data-key="red" aria-label="Red key" disabled>A</button><button class="green" data-key="green" aria-label="Green key" disabled>B</button><button class="yellow" data-key="yellow" aria-label="Yellow key" disabled>C</button><button class="blue" data-key="blue" aria-label="Blue key" disabled>D</button>
+          </div>
+          <div class="media"><button data-key="rewind" disabled aria-label="Rewind">◀◀</button><button data-key="play-pause" disabled aria-label="Play or pause">▶Ⅱ</button><button data-key="forward" disabled aria-label="Fast forward">▶▶</button>
+            <button data-key="play" disabled aria-label="Play">▶</button><button data-key="pause" disabled aria-label="Pause">Ⅱ</button><button data-key="stop" disabled aria-label="Stop">■</button>
+          </div>
+        </div>
+      </fieldset>
+      <details><summary>Remote &amp; shortcuts</summary><p class="hint">Focus the remote: arrows navigate, Enter / Space = OK, Backspace = Back. App keys are discovered from Tizen; dimmed keys are unavailable or not authorized.</p><p id="ok-note" class="hint">OK requires audited safe controls. Extended app actions can change playback. CDP sends app key events, not physical TV system commands.</p></details>
+    </aside>
+  </main>
+  <script type="module" src="/ui.js"></script>
+</body>
+</html>

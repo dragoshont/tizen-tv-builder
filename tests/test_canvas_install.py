@@ -17,8 +17,16 @@ class CanvasInstallTests(unittest.TestCase):
             result = installer.install(destination)
             self.assertEqual(result["installed"], "tizen-live")
             for name in ("extension.mjs", "index.html", "ui.js", "ui.css", "controls.mjs",
-                         "backend/live_tv.py", "backend/tizen.py", "plugin.json"):
-                self.assertTrue((destination / name).is_file())
+                         "backend/live_tv.py", "backend/tizen.py", "backend/tv.py", "backend/tv_fleet.py", "backend/flows.py",
+                         "backend/network_tv.py", "backend/samsung_models.py", "backend/samsung_cert.py", "backend/workbench.py", "backend/recording.py",
+                         "backend/appkit.py", "backend/tv_setup.py", "examples/hello-tv/config.xml", "docs/budgets.json", "plugin.json"):
+                self.assertTrue((destination / name).is_file(), name)
+            # Scan must import from the installed copy alone, without this checkout on sys.path.
+            import subprocess, sys
+            probe = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
+                                    "import tv_fleet, flows, tv_setup; print(flows.BUDGETS.is_file() and tv_setup.SAMPLE.is_dir())",
+                                    str(destination / "backend")], capture_output=True, text=True, timeout=30)
+            self.assertEqual((probe.returncode, probe.stdout.strip()), (0, "True"), probe.stderr[-400:])
             self.assertEqual(json.loads((destination / "plugin.json").read_text())["name"], "tizen-tv-builder")
             with self.assertRaisesRegex(ValueError, "never overwrite"):
                 installer.install(destination)

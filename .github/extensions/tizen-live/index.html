@@ -3,53 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Live TV inspector</title>
+  <meta name="color-scheme" content="dark">
+  <title>Samsung TV Developer Companion</title>
   <link rel="stylesheet" href="/ui.css">
 </head>
 <body>
-  <header><h1>Live TV inspector</h1><p>Inspect successive native paint layers, with their capture time and source clearly labelled.</p></header>
-  <div id="error" role="alert" hidden></div>
-  <main>
-    <section class="workbench" aria-label="Source and remote controls">
-      <label for="source">Active source</label><select id="source"></select>
-      <p id="identity"></p>
-      <fieldset id="grants"><legend>Before connecting</legend>
-        <label><input id="authorized" type="checkbox"> I have permission for this source and its exclusive lane.</label>
-        <label><input id="pixels" type="checkbox"> Display private native pixels here. They may contain account data.</label>
-        <label><input id="input" type="checkbox"> Send user-controlled input. No household playback or progress writes.</label>
-      </fieldset>
-      <label for="duration">Bounded connected run (seconds, not lease TTL)</label>
-      <input id="duration" type="number" min="10" max="120" step="1" value="120">
-      <p class="note">Auto-disconnect releases the lane; existing locks are never renewed or broken automatically.</p>
-      <div class="actions"><button id="connect">Connect</button><button id="disconnect" disabled>Disconnect</button></div>
-      <p id="status" role="status" aria-live="polite">Disconnected. No TV has been contacted.</p>
-      <div class="actions"><button id="capture" disabled>Refresh frame</button>
-        <button id="stream" disabled>Start feed</button></div>
-      <label for="interval">Feed interval (seconds)</label>
-      <input id="interval" type="number" min="10" max="60" step="1" value="10">
-      <p class="note">The feed reuses unchanged images between discrete captures.</p>
-      <fieldset id="remote" tabindex="0" aria-label="TV remote keyboard surface"><legend>CDP input — physical remote parity unverified</legend>
-        <div class="dpad"><button data-key="up" aria-label="Up">↑</button>
-          <button data-key="left" aria-label="Left">←</button><button data-key="ok">OK</button>
-          <button data-key="right" aria-label="Right">→</button><button data-key="down" aria-label="Down">↓</button></div>
-        <button data-key="back">Back</button>
-      </fieldset>
-      <p class="note">Focus the remote: arrow keys move, Space or Enter = OK, Backspace = Back.
-        Held keys are ignored. Shortcuts do not run while editing metadata.</p>
-      <p class="note">OK and clicks require audited non-write element IDs. No Home, Exit, volume or text entry.</p>
-      <details><summary>Optional TV metadata</summary>
-        <form id="metadata"><p>Saved per source, not per panel. Not detected automatically.</p>
-          <div id="fields"></div><button type="submit">Save metadata</button>
-        </form>
-      </details>
-    </section>
-    <section class="screens" aria-label="Native source captures">
-      <label class="compare"><input id="compare" type="checkbox"> Compare TV and explicit emulator side by side</label>
-      <div id="views" tabindex="0" aria-label="Native capture keyboard surface"></div>
-      <p class="note">A paint layer may omit other controls, overlays or the video plane. Click mapping is enabled
-        only for a fresh, viewport-aligned layer and an audited safe control. A successful input RPC does not prove its visible effect.</p>
-    </section>
-  </main>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Samsung TV Developer Companion</h1>
+      <p class="subtle">Find your TVs, open any app's screen, install, debug and use the remote.</p>
+    </div>
+    <button id="setup-tv" class="secondary" type="button" aria-controls="wizard" aria-expanded="false">Set up a new TV</button>
+  </header>
+  <div id="error" class="banner" role="alert" hidden></div>
+  <div class="layout">
+    <aside class="rail" aria-labelledby="tvs-title">
+      <div class="scan">
+        <button id="scan" class="primary large" type="button">Scan network for TVs</button>
+        <p id="scan-status" class="subtle" role="status" aria-live="polite">Not scanned yet. Scanning only looks; it changes nothing on any TV.</p>
+      </div>
+      <h2 id="tvs-title" class="section-title">Your TVs</h2>
+      <ul id="tv-list" class="tv-list" aria-label="Your TVs"></ul>
+      <p id="empty" class="empty-state" hidden>No TVs yet. Choose <strong>Set up a new TV</strong> for step-by-step help.</p>
+    </aside>
+    <main aria-label="Selected TV">
+      <section id="wizard" class="wizard" aria-labelledby="wizard-title" hidden>
+        <div class="wizard-head">
+          <div>
+            <h2 id="wizard-title" tabindex="-1">Set up a new TV</h2>
+            <p id="wizard-sub" class="subtle">From a TV you've never touched to your app on its screen.</p>
+          </div>
+          <button id="wizard-close" class="secondary" type="button">Close</button>
+        </div>
+        <ol id="wizard-steps" class="steps" aria-live="polite"></ol>
+        <p id="wizard-finish" class="wizard-finish" hidden>All set. Choose <strong>Done</strong> to use the remote and save screenshots.</p>
+      </section>
+      <div id="tvs" class="devices"></div>
+      <p id="pick" class="empty-state" hidden>Choose a TV on the left to see it here.</p>
+    </main>
+  </div>
+  <dialog id="rename" aria-labelledby="rename-title">
+    <form method="dialog">
+      <h2 id="rename-title">Rename TV</h2>
+      <label>Name <input id="rename-name" maxlength="60" autocomplete="off"></label>
+      <p class="subtle">Saved privately on this computer. Leave empty to use the TV's own name.</p>
+      <div class="row end">
+        <button value="cancel" type="submit" class="secondary">Cancel</button>
+        <button value="ok" type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
   <script type="module" src="/ui.js"></script>
 </body>
 </html>

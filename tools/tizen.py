@@ -53,7 +53,8 @@ def safe_path(root, relative):
     return candidate
 
 
-def validate(source):
+def validate(source, app_id=None, allow_unset_id=False):
+    """app_id is supplied when the source omits it and staging injects it; it must match if both exist."""
     source = Path(source)
     if not source.is_dir() or source.is_symlink():
         raise ValueError("Source must be a real directory")
@@ -68,9 +69,18 @@ def validate(source):
     if len(apps) != 1:
         raise ValueError("Expected exactly one tizen:application")
     app = apps[0]
-    app_id = application_id(app.get("id", ""))
-    if app.get("package") != app_id.split(".")[0]:
-        raise ValueError("Application package and ID disagree")
+    declared = app.get("id") is not None or app.get("package") is not None
+    if declared:
+        declared_id = application_id(app.get("id", ""))
+        if app.get("package") != declared_id.split(".")[0]:
+            raise ValueError("Application package and ID disagree")
+        if app_id is not None and application_id(app_id) != declared_id:
+            raise ValueError("--id and the manifest application ID disagree")
+        app_id = declared_id
+    elif app_id is not None:
+        app_id = application_id(app_id)
+    elif not allow_unset_id:
+        application_id("")
     if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", app.get("required_version", "")):
         raise ValueError("Explicit required_version is required")
     profile = root.find(TIZEN + "profile")
@@ -224,14 +234,77 @@ def inspect(port):
             "capture": "not tested by HTTP discovery"}
 
 
+TV_COMMANDS = {"scan", "apps", "info", "open", "screenshot", "remove", "uninstall", "cert", "portal"}
+TV_HELP = """Start here:
+  setup [--check]                       Prepare this computer (sdb, tizen CLI); installs them if missing
+
+TV commands (TV = IP address, name or tv-xxxxxx alias):
+  scan                                  Find Samsung TVs on your network
+  install PACKAGE_OR_HTTPS_URL TV       Sign a .wgt (file or https:// link) with your profile and install it
+  info TV [--app APP]                   TV details; --app: is APP (ID or name) installed, and which version
+  apps TV                               Every app ID on the TV
+  open TV APP                           Open an app's screen (restarts the app)
+  screenshot TV --app APP [--out DIR]   Save the app's picture as PNG
+  remove TV APP                         Uninstall exactly APP (alias: uninstall); not installed = nothing to do
+  cert add TV [TV ...]                  Allow these TVs in your signing certificate, one Samsung sign-in
+  cert reset PROFILE [PROFILE ...] --yes   Remove exactly these signing profiles (backed up first)
+  portal                                Open the Samsung TV Developer Companion in your browser
+  tv COMMAND ...                        Every TV command, e.g. tv setup (guided, to your app on a TV), tv cert add TV, tv key, tv uninstall
+
+Legacy device commands keep their form: install --serial SERIAL PACKAGE, run, debug, forward, unforward."""
+INSTALL_USAGE = ("Use: install PACKAGE_OR_HTTPS_URL TV [--sign PROFILE]  "
+                 "(legacy serial install: install --serial SERIAL PACKAGE)")
+
+
+INSTALL_HELP = """usage: install PACKAGE_OR_HTTPS_URL TV [--sign PROFILE]
+       install --serial SERIAL [--authorized] PACKAGE   (legacy, by sdb serial)
+
+PACKAGE_OR_HTTPS_URL  a .wgt file, or an https:// link to one (downloaded to a private
+                      folder, checked, installed, then deleted)
+TV                    the TV's IP address, name or tv-xxxxxx alias
+--sign PROFILE        signing profile (default: the active one)"""
+
+
+class InstallShape(ValueError):
+    pass
+
+
+def tv_argv(argv):
+    """The `tv` arguments for a TV command, or None for every other (build/legacy) command."""
+    if argv[:1] == ["tv"]:
+        return argv[1:]
+    if argv[:1] and argv[0] in TV_COMMANDS:
+        return argv
+    if argv[:1] != ["install"] or any(a == "--serial" or a.startswith("--serial=") or a == "--authorized"
+                                      for a in argv[1:]):
+        return None
+    if {"-h", "--help"} & set(argv[1:]):
+        raise InstallShape(INSTALL_HELP)
+    words, options, before, rest = [], [], [], iter(argv[1:])
+    for word in rest:
+        if word == "--profile":
+            before += [word, next(rest, "")]
+        elif word == "--sign":
+            options += [word, next(rest, "")]
+        elif word.startswith("-"):
+            options.append(word)
+        else:
+            words.append(word)
+    if len(words) != 2:
+        raise InstallShape(INSTALL_USAGE)
+    return before + ["install", words[1], words[0]] + options
+
+
 def parser():
-    cli = argparse.ArgumentParser(description=__doc__)
+    cli = argparse.ArgumentParser(description=__doc__, epilog=TV_HELP,
+                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     version = json.loads((Path(__file__).resolve().parents[1] / "plugin.json").read_text())["version"]
     cli.add_argument("--version", action="version", version="tizen-tv-builder " + version)
     cli.add_argument("--tizen")
     cli.add_argument("--sdb")
     sub = cli.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor")
+    sub.add_parser("tv", help="Samsung TV Developer Companion: tv scan | connect | apps | open | screenshot | key | install | uninstall | cert add | portal", add_help=False)
     for name in ("validate", "build", "package"):
         command = sub.add_parser(name)
         command.add_argument("source", type=Path)
@@ -252,6 +325,41 @@ def parser():
             command.add_argument("--port", type=int, required=True)
     command = sub.add_parser("inspect")
     command.add_argument("--port", type=int, required=True)
+    command = sub.add_parser("new", help="Create a starter app with a fresh package ID")
+    command.add_argument("target", type=Path)
+    command.add_argument("--name", required=True)
+    command.add_argument("--package")
+    command = sub.add_parser("audit", help="Manifest IDs, privileges vs API use, ES5 and credential scan")
+    command.add_argument("source", type=Path)
+    command.add_argument("--id", help="PACKAGE.Application when config.xml omits it (injected at staging)")
+    command = sub.add_parser("pack", help="Deterministic unsigned .wgt (CI receipt, not installable)")
+    command.add_argument("source", type=Path)
+    command.add_argument("--output", type=Path, required=True)
+    command = sub.add_parser("check-package", help="Structure and signature digests of a .wgt")
+    command.add_argument("package", type=Path)
+    command.add_argument("--require-signed", action="store_true")
+    command = sub.add_parser("budgets", help="Evaluate measured metrics against a tier budget")
+    command.add_argument("--tier", required=True, choices=("legacy", "mid", "current"))
+    command.add_argument("--metrics", type=Path, required=True, help="JSON with coldStartMs/firstFrameMs/firstHomeMs")
+    for name in ("identify", "retail"):
+        command = sub.add_parser(name)
+        command.add_argument("--serial", required=True)
+        command.add_argument("--authorized", action="store_true")
+        if name == "retail":
+            command.add_argument("--target", required=True, help="Fingerprint from `identify`")
+            command.add_argument("--app", required=True)
+    command = sub.add_parser("emulator", help="Launch a VM, run the flow, stop the VM it launched")
+    command.add_argument("--vm", required=True)
+    command.add_argument("--app", required=True)
+    command.add_argument("--em-cli")
+    for command in (sub.choices["retail"], sub.choices["emulator"]):
+        command.add_argument("--package", type=Path)
+        command.add_argument("--keys", default="", help="Comma-separated keys: up,down,left,right,ok,back")
+        command.add_argument("--runs", type=int, default=1)
+        command.add_argument("--tier", choices=("legacy", "mid", "current"))
+        command.add_argument("--output", type=Path, help="Existing folder for capture and log tail")
+        command.add_argument("--uninstall", action="store_true")
+        command.add_argument("--legacy-timeout", action="store_true", help="Append 0 to debug launch (Tizen 3)")
     return cli
 
 
@@ -264,6 +372,8 @@ def run(args):
         application_id(args.app)
     if hasattr(args, "port") and not 1024 <= args.port <= 65535:
         raise ValueError("Debug port must be between 1024 and 65535")
+    if args.command in ("new", "audit", "pack", "check-package", "budgets", "identify", "retail", "emulator"):
+        return _app_command(args)
     if args.command == "doctor":
         tools = {}
         for name in ("tizen", "sdb"):
@@ -276,6 +386,11 @@ def run(args):
         return validate(args.source)
     if args.command in ("build", "package"):
         validate(args.source)
+        import appkit
+        errors = [f for f in appkit.audit(args.source)["findings"] if f["level"] == "error"]
+        if errors:
+            raise ValueError("App audit failed; run `tizen.py audit` for details: "
+                             + "; ".join(f"{f['code']} {f.get('where', '')}".strip() for f in errors[:5]))
         if args.command == "package":
             if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.profile) or args.profile.startswith("-"):
                 raise ValueError("Invalid certificate profile name")
@@ -323,6 +438,36 @@ def run(args):
     return {"sdk_response": output, "acceptance": "command result only; verify actual device behavior"}
 
 
+def _app_command(args):
+    import appkit
+    if args.command == "new":
+        return appkit.scaffold(args.target, args.name, args.package)
+    if args.command == "audit":
+        return appkit.audit(args.source, app_id=args.id)
+    if args.command == "pack":
+        return appkit.pack(args.source, args.output)
+    if args.command == "check-package":
+        return appkit.check_package(args.package, args.require_signed)
+    import flows
+    from live_tv import LiveError
+    try:
+        if args.command == "budgets":
+            return flows.evaluate(json.loads(args.metrics.read_text()), args.tier)
+        if args.command == "identify":
+            return flows.identify(args.serial, args.sdb)
+        options = {"package": args.package, "keys": [k.strip().lower() for k in args.keys.split(",") if k.strip()], "runs": args.runs,
+                   "tier": args.tier, "output": args.output, "uninstall": args.uninstall,
+                   "sdb": args.sdb, "tizen": args.tizen, "legacy": args.legacy_timeout}
+        options = {k: v for k, v in options.items() if v is not None}
+        if args.output and not args.output.is_dir():
+            raise ValueError("--output must be an existing folder")
+        if args.command == "retail":
+            return flows.retail(args.serial, args.target, args.app, **options)
+        return flows.emulator(args.vm, args.app, em_cli=args.em_cli, **options)
+    except LiveError as error:
+        raise ValueError(str(error)) from None
+
+
 class _Cancelled(KeyboardInterrupt):
     def __init__(self, signum):
         super().__init__()
@@ -333,13 +478,31 @@ def _cancel(signum, frame):
     raise _Cancelled(signum)
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        forwarded = tv_argv(argv)
+    except InstallShape as error:
+        if str(error) == INSTALL_HELP:
+            print(INSTALL_HELP)
+            return 0
+        print("ERROR: " + str(error), file=sys.stderr)
+        return 2
+    if forwarded is not None or argv[:1] == ["setup"]:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import tv
+        if forwarded is None:
+            return tv.computer_setup(argv[1:])
+        return tv.main(forwarded)
     previous_sigterm = signal.signal(signal.SIGTERM, _cancel)
     try:
-        print(json.dumps(run(parser().parse_args()), indent=2))
+        result = run(parser().parse_args(argv))
+        print(json.dumps(result, indent=2))
+        if isinstance(result, dict) and result.get("passed") is False:
+            return 2
     except (ValueError, OSError, ET.ParseError, http.client.HTTPException, subprocess.TimeoutExpired) as error:
         print("ERROR: " + redact(str(error)), file=sys.stderr)
-        return 1
+        return 2
     except KeyboardInterrupt as error:
         print("ERROR: cancelled", file=sys.stderr)
         return 128 + getattr(error, "signum", signal.SIGINT)

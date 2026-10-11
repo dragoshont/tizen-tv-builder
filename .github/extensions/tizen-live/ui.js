@@ -1,17 +1,24 @@
-const token = location.hash.slice(1);
-history.replaceState(null, "", location.pathname);
+import { shortcut, handledShortcut, coordinate } from "/controls.mjs";
+
 const $ = (id) => document.getElementById(id);
-let state = { sources: [] }, busy = false, active = "", stopped = false;
-const urls = new Map();
-const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+const headers = { "Content-Type": "application/json" };
 const fields = ["model", "year", "os_version", "firmware"];
-for (const name of fields) {
-  const label = document.createElement("label"); label.textContent = name.replaceAll("_", " ");
-  const input = document.createElement("input"); input.type = "text"; input.maxLength = 100; input.id = `meta-${name}`;
-  const provenance = document.createElement("select"); provenance.id = `from-${name}`;
-  provenance.setAttribute("aria-label", `${name} provenance`);
-  for (const value of ["unknown", "user-provided"]) provenance.add(new Option(value, value));
-  label.append(input, provenance); $("fields").append(label);
+const fieldLabels = { model: "Model", year: "Year", os_version: "Tizen version", firmware: "Firmware" };
+const urls = new Map(), cards = new Map();
+let state = { sources: [], tvs: [], scan: { status: "never" }, sdk: "available" };
+let busy = false, stopped = false, offline = false, selected = null;
+const rows = new Map();
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === "class") node.className = value;
+    else if (key === "data") Object.assign(node.dataset, value);
+    else if (key in node) node[key] = value;
+    else node.setAttribute(key, value);
+  }
+  node.append(...children.filter((c) => c !== null && c !== undefined));
+  return node;
 }
 function error(message) { $("error").hidden = !message; $("error").textContent = message || ""; }
 async function request(path, data) {
@@ -24,159 +31,715 @@ async function request(path, data) {
     return result;
   } finally { clearTimeout(timeout); }
 }
-function selected() { return state.sources.find((s) => s.id === active); }
-function editMetadata() {
-  const source = selected(); if (!source) return;
-  for (const name of fields) {
-    $(`meta-${name}`).value = source.metadata[name]?.value || "";
-    $(`from-${name}`).value = source.metadata[name]?.provenance === "unknown" ? "unknown" : "user-provided";
-  }
+
+// ---- naming ---------------------------------------------------------------
+// A TV with no known name or model is called by its address, never an invented number.
+function tvTitle(tv) {
+  const address = tv.details?.address;
+  return tv.unnamed && address ? `TV at ${address}` : tv.name;
 }
-async function command(operation, data) {
+
+function sourceName(source) {
+  if (source.kind === "emulator") return "Emulator";
+  const words = source.id.replace(/[-_]+/g, " ").trim();
+  let name = words.charAt(0).toUpperCase() + words.slice(1);
+  if (!/\btv\b/i.test(name)) name += " TV";
+  const year = source.metadata?.year?.value;
+  return year ? `${name} (${year})` : name;
+}
+
+// ---- dialogs ----------------------------------------------------------------
+function renamePrompt(current) {
+  const dialog = $("rename"); $("rename-name").value = current || "";
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok" ? $("rename-name").value : null), { once: true });
+    dialog.returnValue = ""; dialog.showModal();
+  });
+}
+
+// ---- commands -----------------------------------------------------------------
+async function tvCommand(op, alias, data = {}) {
+  error("");
+  let ok = false;
+  try { state = { ...state, ...(await request(`/api/tv/${op}/${alias}`, data)) }; ok = true; }
+  catch (problem) { error(problem.message); }
+  render();
+  return ok;
+}
+// An app ID belongs to one TV and is remembered only after it actually opened there.
+// The old global key pre-filled every TV with whatever was typed last; drop it.
+try { localStorage.removeItem("tizen-preview-app"); } catch { /* storage unavailable */ }
+const previewKey = (alias) => `tizen-preview-app:${alias}`;
+function rememberedApp(alias) {
+  try { return localStorage.getItem(previewKey(alias)) || ""; } catch { return ""; }
+}
+async function scan() {
+  error(""); $("scan").disabled = true;
+  try { await request("/api/detect", {}); } catch (problem) { error(problem.message); }
+  await refresh();
+}
+async function command(id, operation, data) {
   if (operation === "stream" && data.enabled === false) {
-    try { await request(`/api/stream/${active}`, data); await refresh(); }
-    catch (problem) { error(`${problem.message}. Pause was not confirmed.`); }
+    try { await request(`/api/stream/${id}`, data); await refresh(); }
+    catch (problem) { error(`${problem.message}. Pausing the live view was not confirmed.`); }
     return;
   }
   if (busy) return; // No queue, repeat dispatch or unattended input.
-  if (operation === "key" && document.activeElement?.closest("#remote")) $("remote").focus();
-  if (operation === "click") $("views").focus();
-  busy = true; error(""); $("status").textContent = `${operation} in flight…`; controls();
+  const card = cards.get(`source:${id}`) || cards.get(`tv:${id}`);
+  if (operation === "key" && document.activeElement?.closest(".remote")) card?.remote.focus();
+  if (operation === "click") card?.view?.focus();
+  busy = true; error(""); render();
   try {
-    const completed = await request(`/api/${operation}/${active}`, data);
-    if (["key", "click"].includes(operation) && selected()?.pixels_allowed) {
+    const completed = await request(`/api/${operation}/${id}`, data);
+    const source = sourceById(id);
+    if (["key", "click"].includes(operation) && source?.pixels_allowed) {
       await refresh(); // Acknowledge measured input before requesting costly pixels.
-      $("status").textContent = `Input completed in ${completed.command_ms} ms; capturing fresh paint layers…`;
-      controls();
-      await request(`/api/capture/${active}`, {});
+      if (card) card.reason.textContent = `Key sent in ${completed.command_ms} ms. Updating the picture…`;
+      await request(`/api/capture/${id}`, {});
     }
-  }
-  catch (problem) { error(`${problem.message}. No automatic retry was sent.`); }
+  } catch (problem) { error(`${problem.message}. Nothing was retried automatically.`); }
   finally { busy = false; await refresh(); }
 }
-function controls() {
-  const source = selected(), ready = source && ["connected", "in-flight"].includes(source.status) && source.expires_in > 0;
-  $("connect").disabled = busy || ready || !$("authorized").checked;
-  $("disconnect").disabled = busy || !ready;
-  $("capture").disabled = busy || !ready || !source.pixels_allowed;
-  $("stream").disabled = !ready || !source.pixels_allowed || (busy && !source.streaming);
-  document.querySelectorAll("[data-key]").forEach((button) => {
-    button.disabled = busy || !ready || !source.input_allowed || (button.dataset.key === "ok" && !source.activation_allowed);
-  });
-  $("duration").max = source?.run_limit_seconds || 120;
-  $("stream").textContent = source?.streaming ? "Pause feed" : "Start feed";
-  $("compare").disabled = state.sources.length < 2;
+
+function sourceById(id) {
+  return state.sources.find((s) => s.id === id) || (state.tvs || []).find((t) => t.alias === id)?.preview || null;
 }
-async function image(source, index, frame) {
+const tones = { ok: "connected", progress: "working", lost: "lost", warn: "warn", idle: "ready" };
+// The server owns the one status per TV (same words as the CLI); the page only adds "Connection lost"
+// when it cannot reach its own helper.
+function tvStatus(tv) {
+  if (offline) return { label: "Connection lost", tone: "lost", detail: "This page lost its local helper. Reopen the portal." };
+  return { label: tv.label, tone: tones[tv.tone] || "", detail: tv.headline || "" };
+}
+function usablePreview(card, preview) {
+  return card.previewReady && !offline && preview?.ready && !preview.stale &&
+    preview.revision === card.revision && preview.frames?.length > 0;
+}
+
+// ---- remote ---------------------------------------------------------------------
+function remotePanel() {
+  const button = (key, label, text) => el("button", { type: "button", data: { key }, "aria-label": label }, text);
+  const why = el("p", { class: "why" });
+  // Keyboard hints only while a picture is showing: before that, no key reaches anything.
+  const hint = el("p", { class: "hint", hidden: true }, "Keyboard: arrows, Enter = OK, Backspace = Back");
+  const remote = el("div", { class: "remote", tabIndex: 0, role: "group", "aria-label": "Remote" },
+    el("h3", {}, "Remote"),
+    el("div", { class: "dpad" }, button("up", "Up", "▲"), button("left", "Left", "◀"), button("ok", "OK", "OK"),
+      button("right", "Right", "▶"), button("down", "Down", "▼")),
+    el("div", { class: "remote-row" }, button("back", "Back", "Back")),
+    why, hint);
+  return { remote, why, hint, keys: [...remote.querySelectorAll("[data-key]")] };
+}
+
+// ---- scanned TV cards -------------------------------------------------------------
+// Names, not device IDs: the backend maps each listed ID to a remembered TV, else keeps the ID.
+const certText = (c) => c?.state === "not-covered"
+  ? `your certificate only allows ${(c.covers_names || c.covers || []).join(", ") || "no TVs"}.`
+  : "you don't have a Samsung certificate yet.";
+function tvCard(alias) {
+  const current = () => (state.tvs || []).find((t) => t.alias === alias);
+  const name = el("h2"), pill = el("span", { class: "pill" }), reason = el("p", { class: "reason" });
+  const rename = el("button", { type: "button", class: "link", "aria-label": "Rename", title: "Rename" }, "✎ Rename");
+  const connect = el("button", { type: "button", class: "primary" }, "Connect");
+  // Rarely needed (each action connects on its own), so a small link under TV details, not a big button.
+  const disconnect = el("button", { type: "button", class: "link" }, "Disconnect");
+  const rescan = el("button", { type: "button", class: "primary", hidden: true }, "Scan again");
+  const guide = el("div", { class: "guide", hidden: true });
+  // Screen
+  const screenText = el("p", { class: "placeholder" }), frames = el("div", { class: "frames" }), age = el("p", { class: "note" });
+  const refreshPicture = el("button", { type: "button", class: "secondary" }, "Refresh picture");
+  const save = el("button", { type: "button", class: "secondary" }, "Save screenshot");
+  const screen = el("section", { class: "picture", "aria-label": "Screen" },
+    el("div", { class: "row" }, el("h3", {}, "Screen"), refreshPicture, save), screenText, age, frames);
+  // Apps
+  const appsNote = el("p", { class: "subtle" }), appList = el("ul", { class: "apps", "aria-label": "Apps on this TV" });
+  const reloadApps = el("button", { type: "button", class: "link" }, "Reload list");
+  const apps = el("section", { class: "apps-section", "aria-label": "Apps on this TV" },
+    el("div", { class: "row" }, el("h3", {}, "Apps on this TV"), reloadApps), appsNote, appList);
+  // Install
+  const pkg = el("input", { maxLength: 1024, placeholder: "/path/to/app.wgt", "aria-label": "Package file (.wgt)",
+    autocomplete: "off", spellcheck: "false" });
+  const choose = el("button", { type: "button", class: "secondary" }, "Choose .wgt…");
+  const install = el("button", { type: "button", class: "primary" }, "Install");
+  const installSection = el("section", { class: "install", "aria-label": "Install app" },
+    el("h3", {}, "Install app"), el("div", { class: "row" }, pkg, choose, install));
+  // Certificate: appears only when this TV is not in the active certificate.
+  const certHead = el("h3");
+  const certButton = el("button", { type: "button", class: "primary" }, "Allow installing my apps on this TV");
+  const useProfile = el("button", { type: "button", class: "primary", hidden: true });
+  const copyDuid = el("button", { type: "button", class: "secondary" }, "Copy device ID");
+  const certCommand = el("p", { class: "subtle" });
+  const cert = el("section", { class: "guide cert", "aria-label": "Certificate", hidden: true },
+    certHead, el("div", { class: "row" }, useProfile, certButton, copyDuid), certCommand);
+  const job = el("div", { class: "job", role: "status", "aria-live": "polite" });
+  const list = el("dl");
+  const details = el("details", { class: "tv-details" }, el("summary", {}, "TV details"), list, disconnect);
+  const { remote, why, hint, keys } = remotePanel();
+  const connected = el("div", { class: "connected-body" }, screen, apps, installSection);
+  const root = el("article", { class: "device", "aria-label": alias },
+    el("div", { class: "device-main" },
+      el("div", { class: "title-row" }, name, pill, rename), reason,
+      el("div", { class: "row" }, connect, rescan), guide, cert, job, connected, details),
+    remote);
+  const card = { root, name, pill, reason, connect, rescan, disconnect, guide, screenText, frames, age, refreshPicture, save,
+    appsNote, appList, reloadApps, apps, pkg, choose, install, installSection, cert, certHead, certButton, useProfile, copyDuid,
+    certCommand, job, list, details, connected, remote, why, hint, keys, summary: "", revision: null, appRows: new Map() };
+
+  connect.addEventListener("click", () => tvCommand("connect", alias, {}));
+  disconnect.addEventListener("click", () => tvCommand("disconnect", alias));
+  rescan.addEventListener("click", scan);
+  rename.addEventListener("click", async () => {
+    const tv = current(); if (!tv) return;
+    const value = await renamePrompt(tv.renamed ? tv.name : "");
+    if (value !== null) tvCommand("rename", alias, { name: value });
+  });
+  refreshPicture.addEventListener("click", () => command(alias, "capture", {}));
+  save.addEventListener("click", () => tvCommand("screenshot", alias, {}));
+  reloadApps.addEventListener("click", () => tvCommand("apps", alias, {}));
+  choose.addEventListener("click", async () => {
+    error("");
+    try { const picked = await request("/api/choose-package", {}); if (picked.path) pkg.value = picked.path; }
+    catch (problem) { error(`${problem.message}. Paste the .wgt path instead.`); }
+  });
+  install.addEventListener("click", () => {
+    const path = pkg.value.trim();
+    if (!path) { error("Choose a .wgt file or paste its path first."); pkg.focus(); return; }
+    tvCommand("install", alias, { package: path });
+  });
+  certButton.addEventListener("click", () => tvCommand("cert", alias, {}));
+  useProfile.addEventListener("click", () => {
+    const other = current()?.certificate?.others?.[0];
+    if (other) tvCommand("profile", alias, { profile: other });
+  });
+  copyDuid.addEventListener("click", async () => {
+    const duid = current()?.details?.duid; if (!duid) return;
+    try { await navigator.clipboard.writeText(duid); copyDuid.textContent = "Copied"; setTimeout(() => { copyDuid.textContent = "Copy device ID"; }, 1500); }
+    catch { error(`Copy failed. The device ID is ${duid}.`); }
+  });
+  const send = (key) => { if (usablePreview(card, sourceById(alias))) command(alias, "key", { key }); };
+  for (const key of keys) key.addEventListener("click", () => send(key.dataset.key));
+  remote.addEventListener("keydown", (event) => {
+    if (!handledShortcut(event)) return;
+    event.preventDefault();
+    const p = sourceById(alias), key = shortcut(event, usablePreview(card, p) && p.input_allowed, busy);
+    if (key) command(alias, "key", { key });
+  });
+  return card;
+}
+function openApp(alias, appId) { return tvCommand("preview", alias, { app: appId, restart: true }); }
+function appRow(card, alias, appId) {
+  const id = el("code", { class: "app-id" }, appId), tag = el("span", { class: "app-tag" });
+  const open = el("button", { type: "button", class: "secondary" }, "Open screen (restarts app)");
+  const shot = el("button", { type: "button", class: "secondary" }, "Screenshot");
+  const remove = el("button", { type: "button", class: "secondary danger" }, "Uninstall");
+  open.addEventListener("click", () => openApp(alias, appId));
+  shot.addEventListener("click", () => tvCommand("screenshot", alias, { app: appId }));
+  remove.addEventListener("click", () => tvCommand("remove", alias, { app: appId }));
+  const item = el("li", { class: "app" }, el("div", { class: "app-name" }, id, tag), el("div", { class: "row" }, open, shot, remove));
+  return { item, tag, open, shot, remove };
+}
+function renderApps(card, tv) {
+  const a = tv.apps || { items: [], store: [], installed_here: [] };
+  const store = new Set(a.store || []), mine = new Set(a.installed_here || []);
+  const showing = tv.preview?.app, last = rememberedApp(tv.alias), working = Boolean(tv.pending) || offline;
+  card.appsNote.textContent = a.state === "listed" ? `${a.items.length} app${a.items.length === 1 ? "" : "s"}. Store apps may refuse; the TV gives the answer.`
+    : a.state === "unreadable" ? "The TV did not return its app list. Choose Reload list." : "Reading the app list…";
+  const wanted = a.state === "listed" ? a.items : [];
+  for (const [appId, row] of card.appRows) if (!wanted.includes(appId)) { row.item.remove(); card.appRows.delete(appId); }
+  wanted.forEach((appId, index) => {
+    if (!card.appRows.has(appId)) card.appRows.set(appId, appRow(card, tv.alias, appId));
+    const row = card.appRows.get(appId);
+    row.tag.textContent = appId === showing ? "On screen" : store.has(appId) ? "Store app — can't be viewed"
+      : mine.has(appId) ? "Installed from here" : appId === last ? "Last opened" : "";
+    row.tag.className = `app-tag${store.has(appId) ? " muted" : appId === showing ? " live" : ""}`;
+    row.open.className = mine.has(appId) || appId === last ? "primary" : "secondary";
+    row.open.textContent = appId === showing ? "Reopen (restarts app)" : "Open screen (restarts app)";
+    for (const b of [row.open, row.shot, row.remove]) b.disabled = working;
+    if (card.appList.children[index] !== row.item) card.appList.insertBefore(row.item, card.appList.children[index] || null);
+  });
+}
+function renderJob(card, tv) {
+  const j = tv.job;
+  if (!j) { card.job.replaceChildren(); return; }
+  const parts = [el("p", { class: j.ok ? "" : "problem" }, j.message || (j.ok ? "Done" : "Failed"))];
+  // Multi-step jobs (certificate) show a short checklist: what's done, what is waiting on you.
+  if (j.steps?.length) parts.push(el("ul", { class: "checklist" }, ...j.steps.map((step) =>
+    el("li", { class: step.done ? "done" : "waiting" }, el("span", { "aria-hidden": "true" }, step.done ? "✓" : "…"),
+      step.text))));
+  for (const path of j.paths || []) parts.push(el("p", { class: "subtle" }, "Saved to ", el("code", {}, path)));
+  if (j.code === "waiting" && j.url) parts.push(el("p", { class: "subtle" }, "Browser didn't open? ",
+    el("a", { href: j.url, target: "_blank", rel: "noopener" }, "Open Samsung sign-in")));
+  if (j.note) parts.push(el("p", {}, j.note));
+  if (j.backup) parts.push(el("p", { class: "subtle" }, "Old certificate files backed up to ", el("code", {}, j.backup)));
+  if (j.command) parts.push(el("p", { class: "subtle" }, "Command: ", el("code", {}, j.command)));
+  if (j.next) parts.push(el("p", { class: "subtle" }, `Next: ${j.next}`));
+  if (j.output) parts.push(el("pre", { class: "output" }, j.output));
+  card.job.replaceChildren(...parts);
+}
+async function updateTv(card, tv, keep) {
+  const p = tv.preview;
+  card.previewReady = false;
+  let live = tv.status === "connected" && Boolean(p?.ready) && (p.frames || []).length > 0 && !p.stale && !offline;
+  let previewError = "";
+  if (live && (card.revision !== p.revision || !card.frames.childElementCount)) {
+    const figures = [];
+    try {
+      for (let i = 0; i < p.frames.length; i++) {
+        const frame = p.frames[i];
+        const img = el("img", { src: await image({ id: tv.alias, revision: p.revision }, i),
+          alt: `${tvTitle(tv)}: ${p.app} screen, layer ${i + 1}`, width: frame.width, height: frame.height });
+        await img.decode();
+        figures.push(el("figure", {}, img));
+      }
+      card.frames.replaceChildren(...figures);
+      card.revision = p.revision;
+    } catch (problem) {
+      live = false;
+      previewError = `Could not show the picture: ${problem.message}`;
+    }
+  }
+  card.name.textContent = tvTitle(tv);
+  const shown = tvStatus(tv), working = Boolean(tv.pending);
+  card.pill.textContent = shown.label;
+  card.pill.className = `pill ${shown.tone}`;
+  card.reason.textContent = shown.detail;
+  card.reason.className = `reason${shown.tone === "lost" ? " problem" : ""}`;
+  // Not reachable: one line ("Turn the TV on, then scan again") and a Scan button; nothing to connect to.
+  const unreachable = !tv.held && tv.label === "Not reachable";
+  const canConnect = !tv.held && ["Ready to connect", "Connection problem"].includes(tv.label);
+  card.connect.hidden = !canConnect;
+  card.connect.textContent = tv.label === "Connection problem" ? "Try again" : "Connect";
+  card.connect.disabled = working || offline || state.sdk === "missing";
+  card.rescan.hidden = !unreachable;
+  card.rescan.disabled = offline || state.scan?.status === "scanning";
+  card.disconnect.hidden = !tv.held;
+  card.disconnect.disabled = working || offline;
+  const meta = tv.metadata || {}, d = tv.details || {};
+  const seen = unreachable && tv.last_seen ? `last seen ${new Date(tv.last_seen * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+  card.summary = [meta.model, meta.os?.text, unreachable ? "" : d.address, seen].filter(Boolean).join(" · ");
+  // Setup guidance appears only when it explains why this TV can't be used yet.
+  const guidance = (tv.held && tv.status === "connected") || unreachable ? null : tv.guidance;
+  const next = tv.dev_mode?.next && !tv.held && !unreachable && tv.label !== "Ready to connect" ? tv.dev_mode.next : "";
+  card.guide.hidden = !guidance && !next;
+  if (guidance) {
+    const host = guidance.host_ip ? el("p", {}, "This computer's address: ", el("code", {}, guidance.host_ip)) : null;
+    card.guide.replaceChildren(...[el("h3", {}, guidance.title), host,
+      el("ol", {}, ...(guidance.steps || []).map((step) => el("li", {}, step.replace("{host}", guidance.host_ip || "this computer's address"))))].filter(Boolean));
+  } else if (next) card.guide.replaceChildren(el("p", {}, `Next: ${next}`));
+  // Certificate: one action, only when this connected TV is not in the active certificate.
+  const c = tv.certificate || {}, fix = tv.held && ["not-covered", "no-profile", "default"].includes(c.state) && d.duid;
+  card.cert.hidden = !fix;
+  if (fix) {
+    // Another signing profile already lists this TV: switching to it is the fix, not a new certificate.
+    const other = (c.others || [])[0];
+    card.useProfile.hidden = !other;
+    card.certButton.hidden = Boolean(other);
+    if (other) {
+      card.certHead.textContent = `Your profile ${other} allows ${c.tv_name || "this TV"}, but installs use ` +
+        `${c.profile || "no profile"}, which doesn't.`;
+      card.useProfile.textContent = `Use ${other} for installs`;
+      card.certCommand.textContent = `Makes ${other} the active signing profile in Tizen Studio. ` +
+        `${c.profile ? `${c.profile} stays as it is.` : ""}`;
+    } else {
+      card.certHead.textContent = `You can't install your apps on ${c.tv_name || "this TV"} yet: ${certText(c)}`;
+      card.certCommand.textContent = "Adds this TV to your Samsung certificate. Samsung sign-in opens in your browser; nothing else to type.";
+    }
+    // While waiting, the same button brings the sign-in page back; after a failure it is "Try again".
+    const job = tv.job?.op === "cert" ? tv.job : null;
+    card.certButton.textContent = job?.code === "waiting" ? "Reopen Samsung sign-in"
+      : job && !job.ok && job.retry ? "Try again" : "Allow installing my apps on this TV";
+    card.certButton.disabled = card.useProfile.disabled = card.copyDuid.disabled = working || offline;
+  }
+  renderJob(card, tv);
+  card.connected.hidden = !tv.held;
+  if (tv.held) renderApps(card, tv);
+  card.install.disabled = card.choose.disabled = working || offline;
+  card.refreshPicture.hidden = card.save.hidden = !live;
+  card.refreshPicture.disabled = card.save.disabled = busy || working || !live;
+  card.screenText.hidden = live;
+  card.screenText.textContent = previewError || (tv.pending === "preview" ? "Opening the app's screen…" : "Pick an app to see its screen.");
+  card.previewReady = live;
+  // Remembered per TV, and only once its picture actually showed.
+  if (live && rememberedApp(tv.alias) !== p.app) {
+    try { localStorage.setItem(previewKey(tv.alias), p.app); } catch { /* storage unavailable */ }
+  }
+  for (const key of card.keys) key.disabled = busy || !live || !p.input_allowed;
+  card.hint.hidden = !live;
+  card.why.textContent = offline ? "Connection lost. Keys are off until the page reconnects."
+    : !tv.held ? "Connect to the TV, then open an app."
+    : !live ? "Open an app's screen to use the remote." : busy ? "Sending…" : `Keys go to ${p.app}.`;
+  card.age.textContent = live && p.captured_at ? `Picture from ${new Date(p.captured_at * 1000).toLocaleTimeString()} · the app's own drawing; video and the TV menu don't appear` : "";
+  const rows = [["Network address", d.address], ["Device ID (DUID)", d.duid], ["Model", d.model || meta.model],
+    ["OS", d.os], ["Firmware", d.firmware], ["Model year", meta.model_year?.value],
+    ["Developer port", d.developer_port], ["Developer link", d.sdk_link],
+    ["Certificate", c.profile ? `${c.profile} · covers ${(c.covers || []).join(", ") || "no TVs"}` : c.state === "no-profile" ? "None yet" : null]];
+  card.list.replaceChildren(...rows.filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, String(v))]));
+  if (!live) { card.frames.replaceChildren(); card.revision = null; return; }
+  for (let i = 0; i < p.frames.length; i++) keep.add(`${tv.alias}/${i}/${p.revision}`);
+}
+
+// ---- configured TVs/emulator with live view --------------------------------------
+function sourceCard(id) {
+  const name = el("h2"), kind = el("span", { class: "kind" }), pill = el("span", { class: "pill" });
+  const reason = el("p", { class: "reason" });
+  const connect = el("button", { type: "button", class: "primary" }, "Connect");
+  const disconnect = el("button", { type: "button", class: "secondary" }, "Disconnect");
+  const capture = el("button", { type: "button", class: "secondary" }, "Refresh picture");
+  const stream = el("button", { type: "button", class: "secondary" }, "Start live view");
+  const duration = el("input", { type: "number", min: 10, max: 120, value: 120, "aria-label": "Stay connected for (seconds)" });
+  const interval = el("select", { "aria-label": "Live view rate" });
+  for (const [v, t] of [["1", "Every second"], ["2", "Every 2 seconds"], ["5", "Every 5 seconds"]]) interval.add(new Option(t, v));
+  interval.value = "2";
+  const frames = el("div", { class: "frames" }), age = el("p", { class: "note" });
+  const view = el("div", { class: "view", tabIndex: 0, "aria-label": "Picture. Arrow keys, Enter and Backspace act as the remote." }, age, frames);
+  const picture = el("section", { class: "picture", "aria-label": "Screen" }, el("div", { class: "row" }, el("h3", {}, "Screen"), capture, stream, interval), view);
+  const list = el("dl"), limits = el("p", { class: "note" });
+  const meta = el("form", { class: "fields" });
+  const inputs = {};
+  for (const f of fields) {
+    const input = el("input", { type: "text", maxLength: 100, "aria-label": fieldLabels[f] });
+    const from = el("select", { "aria-label": `${fieldLabels[f]} source` });
+    for (const [v, t] of [["user-provided", "I checked this"], ["unknown", "Not sure"]]) from.add(new Option(t, v));
+    inputs[f] = { input, from };
+    meta.append(el("label", {}, fieldLabels[f], input, from));
+  }
+  meta.append(el("div", { class: "row" }, el("button", { type: "submit", class: "secondary" }, "Save TV info")));
+  const details = el("details", {}, el("summary", {}, "Details"), list,
+    el("label", {}, "Stay connected for (seconds)", duration), meta, limits);
+  const { remote, why, hint, keys } = remotePanel();
+  const root = el("article", { class: "device", "aria-label": id },
+    el("div", { class: "device-main" }, el("div", { class: "title-row" }, name, kind, pill),
+      reason, el("div", { class: "row" }, connect, disconnect), details),
+    picture, remote);
+  const card = { root, name, kind, pill, reason, connect, disconnect, capture, stream, duration, interval, frames, age, view, list, limits, inputs, remote, why, hint, keys, filled: false, revision: null };
+  const current = () => state.sources.find((s) => s.id === id);
+  connect.addEventListener("click", () => {
+    if (!current()) return;
+    command(id, "connect", { authorized: true, pixels: true, input: true, run_seconds: Number(duration.value) });
+  });
+  disconnect.addEventListener("click", () => command(id, "disconnect", {}));
+  capture.addEventListener("click", () => command(id, "capture", {}));
+  stream.addEventListener("click", () => command(id, "stream", { enabled: !current()?.streaming, interval: Number(interval.value) }));
+  for (const key of keys) key.addEventListener("click", () => command(id, "key", { key: key.dataset.key }));
+  const keyboard = (event) => {
+    if (!handledShortcut(event)) return;
+    event.preventDefault(); // Suppress native Space/Enter, repeats and browser Back even while busy/disconnected.
+    const s = current(), ready = s?.status === "connected" && s.expires_in > 0 && s.input_allowed;
+    const key = shortcut(event, ready, busy);
+    if (!key) return;
+    command(id, "key", { key });
+  };
+  remote.addEventListener("keydown", keyboard);
+  view.addEventListener("keydown", keyboard);
+  meta.addEventListener("submit", (event) => {
+    event.preventDefault(); const values = {};
+    for (const f of fields) values[f] = { value: inputs[f].input.value, provenance: inputs[f].from.value };
+    command(id, "metadata", values);
+  });
+  return card;
+}
+async function image(source, index) {
   const key = `${source.id}/${index}/${source.revision}`;
   let url = urls.get(key);
   if (!url) {
     const response = await fetch(`/api/frame/${key}`, { headers, signal: AbortSignal.timeout(10000) });
-    if (!response.ok) throw new Error("Capture became stale while loading. Refresh it.");
-    if (Number(response.headers.get("Content-Length")) > 8 * 1024 * 1024) throw new Error("Frame exceeds payload limit.");
+    if (!response.ok) throw new Error("The picture changed while loading. Refresh it.");
+    if (Number(response.headers.get("Content-Length")) > 8 * 1024 * 1024) throw new Error("Picture is too large.");
     const blob = await response.blob();
-    if (blob.size > 8 * 1024 * 1024) throw new Error("Frame exceeds payload limit.");
+    if (blob.size > 8 * 1024 * 1024) throw new Error("Picture is too large.");
     url = URL.createObjectURL(blob); urls.set(key, url);
   }
   return url;
 }
-let rendering = false;
+async function updateSource(card, s, keep) {
+  card.name.textContent = sourceName(s);
+  card.kind.textContent = s.kind === "emulator" ? "Emulator, not a real TV" : "";
+  const ready = ["connected", "in-flight"].includes(s.status) && s.expires_in > 0 && !offline;
+  card.pill.textContent = offline ? "Connection lost" : ready ? "Connected" : s.status === "in-flight" ? "Working…" : "Not connected";
+  card.pill.className = `pill ${offline ? "lost" : ready ? "connected" : ""}`;
+  card.reason.className = `reason${s.error ? " problem" : ""}`;
+  card.reason.textContent = s.error || (ready ? `Disconnects automatically in ${s.expires_in}s.` : "Choose Connect to see the screen and use the remote.");
+  card.connect.disabled = busy || ready || offline;
+  card.disconnect.disabled = busy || !ready;
+  card.capture.disabled = busy || !ready || !s.pixels_allowed;
+  card.stream.disabled = !ready || !s.pixels_allowed || (busy && !s.streaming);
+  card.stream.textContent = s.streaming ? "Pause live view" : "Start live view";
+  card.duration.max = s.run_limit_seconds || 120;
+  for (const key of card.keys) {
+    key.disabled = busy || !ready || !s.input_allowed || (key.dataset.key === "ok" && !s.activation_allowed);
+  }
+  card.hint.textContent = ready && s.activation_allowed ? "Keyboard: arrows, Enter = OK, Backspace = Back" : "Keyboard: arrows, Backspace = Back";
+  card.hint.hidden = !ready;
+  card.why.textContent = offline ? "Connection lost. Keys are off until the page reconnects."
+    : !ready ? "Choose Connect on this card to turn the remote on."
+    : busy ? "Sending…" : "Ready.";
+  if (!card.filled) {
+    for (const f of fields) {
+      card.inputs[f].input.value = s.metadata?.[f]?.value || "";
+      card.inputs[f].from.value = s.metadata?.[f]?.provenance === "unknown" ? "unknown" : "user-provided";
+    }
+    card.filled = true;
+  }
+  const rows = [["Kind", s.kind === "emulator" ? "Emulator" : "TV"], ["Connection ID", s.id],
+    ["What you see", s.provenance], ["Key round trip", s.command_ms == null ? "—" : `${s.command_ms} ms`],
+    ["Picture time", s.capture_ms == null ? "—" : `${s.capture_ms} ms`],
+    ...fields.map((f) => [fieldLabels[f], `${s.metadata?.[f]?.value || "unknown"} (${s.metadata?.[f]?.provenance || "unknown"})`])];
+  card.list.replaceChildren(...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, String(v ?? "—"))]));
+  card.limits.textContent = s.limitations || "";
+  card.age.textContent = s.captured_at ? `${s.stale ? "Out of date — " : ""}Picture from ${new Date(s.captured_at * 1000).toLocaleTimeString()}` : "";
+  for (let i = 0; i < s.frames.length; i++) keep.add(`${s.id}/${i}/${s.revision}`);
+  if (card.revision === s.revision && card.frames.childElementCount) return;
+  if (!s.frames.length) {
+    card.frames.replaceChildren(el("div", { class: "placeholder" }, "No picture yet. Connect, then choose Refresh picture. This page never shows a made-up picture."));
+    card.revision = s.revision; return;
+  }
+  const figures = [];
+  for (let i = 0; i < s.frames.length; i++) {
+    const frame = s.frames[i];
+    const img = el("img", { src: await image(s, i), alt: `${sourceName(s)} app screen, layer ${i + 1}; may be incomplete`, width: frame.width, height: frame.height });
+    img.addEventListener("click", (event) => {
+      const live = state.sources.find((x) => x.id === s.id);
+      if (busy || !live?.input_allowed || live.stale || live.revision !== s.revision || !frame.clickable || !live.activation_allowed) return;
+      const point = coordinate(img.getBoundingClientRect(), frame.width, frame.height, event.clientX, event.clientY);
+      if (point) command(s.id, "click", { frame: i, revision: s.revision, ...point });
+    });
+    figures.push(el("figure", {}, img, el("figcaption", {}, `Layer ${i + 1} · ${frame.width} × ${frame.height}` +
+      (frame.clickable && !s.stale && s.activation_allowed ? " · click safe buttons" : ""))));
+  }
+  card.frames.replaceChildren(...figures);
+  card.revision = s.revision;
+}
+
+// ---- left rail: compact rows; choosing one only changes what this page shows -------
+function select(key) {
+  selected = key; render(); // Local only: no request, connection or key is sent.
+  rows.get(key)?.button.focus();
+}
+function renderRail(wanted) {
+  for (const key of [...rows.keys()]) if (!wanted.includes(key)) { rows.get(key).item.remove(); rows.delete(key); }
+  const list = $("tv-list");
+  wanted.forEach((key, index) => {
+    if (!rows.has(key)) {
+      const label = el("span", { class: "row-name" }), status = el("span", { class: "row-status" });
+      const sub = el("span", { class: "row-meta" });
+      const button = el("button", { type: "button", class: "tv-row", data: { key } }, label, status, sub);
+      button.addEventListener("click", () => select(key));
+      button.addEventListener("keydown", (event) => {
+        if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+        event.preventDefault();
+        const keys = [...rows.keys()], next = keys[keys.indexOf(key) + (event.key === "ArrowDown" ? 1 : -1)];
+        if (next) select(next);
+      });
+      rows.set(key, { item: el("li", {}, button), button, label, status, sub });
+    }
+    const row = rows.get(key), card = cards.get(key);
+    row.label.textContent = card.name.textContent;
+    row.status.textContent = card.pill.textContent;
+    row.sub.textContent = card.summary || "";
+    row.status.className = `row-status ${card.pill.className.replace("pill", "").trim()}`;
+    row.button.setAttribute("aria-current", key === selected ? "true" : "false");
+    row.button.classList.toggle("selected", key === selected);
+    if (list.children[index] !== row.item) list.insertBefore(row.item, list.children[index] || null);
+  });
+}
+
+// ---- setup wizard: the server's guide (tv_setup.evaluate), same steps and words as `tv setup` ----
+const WIZARD_POLL_MS = 3000, WIZARD_SCAN_MS = 5000;
+const wizard = { open: false, alias: null, view: null, loading: false, acting: false, lastPoll: 0, lastScan: 0, auto: new Set() };
+const tvReady = (tv) => tv.held || tv.reachable;
+const stepMarks = { done: "✓", working: "…", failed: "!", active: "", todo: "" };
+function wizardClosed() { try { return sessionStorage.getItem("tizen-wizard-closed") === "1"; } catch { return false; } }
+function openWizard(byUser) {
+  if (byUser) { wizard.alias = null; wizard.auto.clear(); try { sessionStorage.removeItem("tizen-wizard-closed"); } catch { /* storage unavailable */ } }
+  wizard.open = true; wizard.lastPoll = 0;
+  showWizard(); pollWizard(true);
+  if (byUser) $("wizard-title").focus();
+}
+function closeWizard() {
+  wizard.open = false;
+  try { sessionStorage.setItem("tizen-wizard-closed", "1"); } catch { /* storage unavailable */ }
+  showWizard(); render();
+}
+function showWizard() {
+  $("wizard").hidden = !wizard.open;
+  $("tvs").hidden = wizard.open;
+  $("setup-tv").setAttribute("aria-expanded", String(wizard.open));
+  if (wizard.open) $("pick").hidden = true;
+}
+// Opens by itself only when no TV is usable, and only after the first check finished:
+// before that, remembered TVs are "Checking…", not missing.
+function maybeOpenWizard() {
+  if (wizard.open || offline || wizardClosed()) return;
+  if (!["done", "failed"].includes(state.scan?.status)) return;
+  if (!(state.tvs || []).some(tvReady) && !(state.sources || []).length) openWizard(false);
+}
+async function pollWizard(force) {
+  if (!wizard.open || wizard.loading || offline) return;
+  const now = Date.now();
+  if (!force && now - wizard.lastPoll < WIZARD_POLL_MS) return;
+  wizard.loading = true; wizard.lastPoll = now;
+  try {
+    wizard.view = await request("/api/wizard", wizard.alias ? { tv: wizard.alias } : {});
+    if (wizard.view.alias) wizard.alias = wizard.view.alias;
+    renderWizard(); await wizardAutomatic();
+  } catch (problem) { error(problem.message); }
+  finally { wizard.loading = false; }
+}
+async function runWizard(fn) {
+  if (wizard.acting) return;
+  wizard.acting = true; renderWizard();
+  try { await fn(); } catch (problem) { error(problem.message); }
+  finally { wizard.acting = false; await pollWizard(true); renderWizard(); }
+}
+const wizardActions = {
+  "install-sdk": () => request("/api/install-sdk", {}),
+  scan: () => scan(),
+  connect: (alias) => tvCommand("connect", alias, {}),
+  cert: (alias) => tvCommand("cert", alias, {}),
+  profile: (alias, data) => tvCommand("profile", alias, { profile: data.profile }),
+  choose: async (alias) => {
+    error("");
+    const picked = await request("/api/choose-package", {});
+    if (picked.path) await tvCommand("install", alias, { package: picked.path });
+  },
+  sample: (alias) => tvCommand("sample", alias, {}),
+  preview: (alias, data) => openApp(alias, data.app),
+};
+function wizardAct(action) {
+  const alias = wizard.view?.alias, run = wizardActions[action.action];
+  if (!run || (!alias && !["install-sdk", "scan"].includes(action.action))) return;
+  if (action.action === "cert") {
+    // The sign-in page may already be open: the same button brings it back instead of starting over.
+    const tv = (state.tvs || []).find((t) => t.alias === alias), job = tv?.job;
+    if (job?.op === "cert" && job.code === "waiting" && job.url) { window.open(job.url, "_blank", "noopener"); return; }
+  }
+  runWizard(() => run(alias, action.data || {}));
+}
+// "Connect" and "Open screen" happen by themselves once, like the CLI; a failure waits for the user.
+async function wizardAutomatic() {
+  const view = wizard.view, step = view?.steps.find((s) => s.id === view.current);
+  if (!step || wizard.acting) return;
+  if (step.id === "developer-mode" && step.status === "active" && state.scan?.status !== "scanning" &&
+      Date.now() - wizard.lastScan > WIZARD_SCAN_MS) {
+    wizard.lastScan = Date.now();
+    await scan(); return;
+  }
+  const once = (key, action) => { if (wizard.auto.has(key)) return; wizard.auto.add(key); wizardAct(action); };
+  if (step.id === "connect" && step.status === "active" && view.alias) once(`connect:${view.alias}`, step.actions[0]);
+  if (step.id === "see" && step.status === "active" && step.actions[0]) once(`see:${view.alias}:${step.actions[0].data?.app}`, step.actions[0]);
+}
+function wizardStep(step, current) {
+  const mine = step.id === current;
+  const head = el("div", { class: "step-head" },
+    el("span", { class: `step-mark ${step.status}`, "aria-hidden": "true" }, stepMarks[step.status] || String(step.n)),
+    el("h3", {}, step.title),
+    el("span", { class: "visually-hidden" }, { done: "Done", working: "In progress", failed: "Needs attention", active: "Your turn", todo: "Not yet" }[step.status] || ""));
+  const parts = [head];
+  if (step.status !== "todo") parts.push(el("p", { class: "step-text" }, step.text));
+  if (mine) {
+    if (step.ip && step.id === "developer-mode") parts.push(el("p", { class: "step-ip" }, "This computer's address: ", el("code", {}, step.ip)));
+    if (step.items.length) {
+      const list = el(step.id === "developer-mode" ? "ol" : "ul", { class: "step-items" }, ...step.items.map((item) => el("li", {}, item)));
+      parts.push(list);
+    }
+    if (step.percent != null) parts.push(el("progress", { max: 100, value: step.percent, "aria-label": "Progress" }));
+    if (step.status_line) parts.push(el("p", { class: "step-status", role: "status" }, step.status_line));
+    if (step.url) parts.push(el("p", { class: "subtle" }, "Browser didn't open? ", el("a", { href: step.url, target: "_blank", rel: "noopener" }, "Open Samsung sign-in")));
+    if (step.error) parts.push(el("p", { class: "problem", role: "alert" }, step.error));
+    if (step.output) parts.push(el("pre", { class: "output" }, step.output));
+    if (step.actions.length) {
+      parts.push(el("div", { class: "row" }, ...step.actions.map((action, index) => {
+        const button = el("button", { type: "button", class: index === 0 ? "primary" : "secondary" }, action.label);
+        button.disabled = wizard.acting || offline || step.status === "working";
+        button.addEventListener("click", () => wizardAct(action));
+        return button;
+      })));
+    }
+    if (step.command) parts.push(el("p", { class: "subtle" }, step.status === "failed" ? "Or do it by hand: " : "By hand instead: ", el("code", {}, step.command)));
+  }
+  const item = el("li", { class: `step ${step.status}${mine ? " current" : ""}` }, ...parts);
+  if (mine) item.setAttribute("aria-current", "step");
+  return item;
+}
+function renderWizard() {
+  if (!wizard.open) return;
+  const view = wizard.view;
+  if (!view) { $("wizard-steps").replaceChildren(el("li", { class: "step" }, el("p", { class: "subtle" }, "Checking this computer…"))); return; }
+  $("wizard-steps").replaceChildren(...view.steps.map((step) => wizardStep(step, view.current)));
+  $("wizard-sub").textContent = view.tv_name ? `Setting up ${view.tv_name}.` : "From a TV you've never touched to your app on its screen.";
+  const finished = view.done;
+  $("wizard-finish").hidden = !finished;
+  $("wizard-close").textContent = finished ? "Done" : "Close";
+}
+
+// ---- page ---------------------------------------------------------------------------
+let rendering = false, renderAgain = false;
 async function render() {
-  if (rendering) return;
+  if (rendering) { renderAgain = true; return; }
   rendering = true;
   try {
-    const source = selected();
-    if (source && !busy) $("status").textContent = `${source.status}; auto-disconnect in ${source.expires_in}s (not lease TTL). ` +
-      `Input RTT ${source.command_ms ?? "—"} ms; capture ${source.capture_ms ?? "—"} ms. ${source.error || ""}`;
-    $("identity").textContent = source ? `${source.kind === "tv" ? "Actual TV" : "Explicit emulator"} · ${source.id}` : "";
-    controls();
-    const views = $("views"); views.classList.toggle("side", $("compare").checked);
-    const next = document.createDocumentFragment(), keep = new Set();
-    const shown = $("compare").checked ? state.sources : state.sources.filter((s) => s.id === active);
-    for (const s of shown) {
-      const section = document.createElement("section"); section.className = "screen";
-      const heading = document.createElement("h2"); heading.textContent = `${s.kind === "tv" ? "Actual TV" : "Emulator"} · ${s.id}`;
-      const details = document.createElement("p");
-      details.textContent = fields.map((f) => `${f.replaceAll("_", " ")}: ${s.metadata[f]?.value || "unknown"} (${s.metadata[f]?.provenance || "unknown"})`).join(" · ");
-      const age = document.createElement("p"); age.className = "stale";
-      age.textContent = s.captured_at ? `${s.stale ? "STALE — " : ""}Captured ${new Date(s.captured_at * 1000).toLocaleTimeString()} · age ${Math.max(0, Math.floor(Date.now() / 1000 - s.captured_at))}s` : "No native capture yet";
-      section.append(heading, details, age);
-      if (!s.frames.length) {
-        const empty = document.createElement("div"); empty.className = "empty";
-        empty.textContent = "Disconnected sources never show emulated or synthetic fallback pixels. Connect and authorize pixels, then Refresh frame or Start feed.";
-        section.append(empty);
-      }
-      for (let i = 0; i < s.frames.length; i++) {
-        const frame = s.frames[i], figure = document.createElement("figure"), img = document.createElement("img");
-        keep.add(`${s.id}/${i}/${s.revision}`);
-        img.src = await image(s, i, frame);
-        img.alt = `${s.kind} native renderer paint layer ${i + 1}; may be incomplete`;
-        img.width = frame.width; img.height = frame.height;
-        const caption = document.createElement("figcaption");
-        caption.textContent = `${s.provenance} · layer ${i + 1} · ${frame.width} × ${frame.height}. ` +
-          (frame.clickable && !s.stale && s.activation_allowed ? "Fresh coordinate mapping available for audited controls." : "Coordinate input unavailable on this layer.");
-        img.addEventListener("click", (event) => {
-          if (s.id !== active || busy || !s.input_allowed || s.stale || !frame.clickable || !s.activation_allowed) return;
-          const rect = img.getBoundingClientRect();
-          const point = coordinate(rect, frame.width, frame.height, event.clientX, event.clientY);
-          if (point) command("click", { frame: i, revision: s.revision, ...point });
-        });
-        figure.append(img, caption); section.append(figure);
-      }
-      const limits = document.createElement("p"); limits.className = "note"; limits.textContent = s.limitations;
-      section.append(limits); next.append(section);
+    const scanInfo = state.scan || {};
+    const scanning = scanInfo.status === "scanning";
+    $("scan").disabled = scanning || offline || state.sdk === "missing";
+    $("scan").textContent = scanning ? "Scanning…" : "Scan network for TVs";
+    $("scan-status").textContent = offline ? "Connection lost to this page's helper. Reopen the portal."
+      : state.sdk === "missing" ? "Samsung's sdb tool was not found. Install Tizen Studio, then reopen."
+      : scanning ? "Looking for TVs with Developer Mode on your network…"
+      : scanInfo.status === "failed" ? `Scan failed: ${scanInfo.error || "unknown error"}`
+      : scanInfo.status === "done" ? `Found ${scanInfo.found} TV${scanInfo.found === 1 ? "" : "s"}. Scanning only looks; it changes nothing.`
+      : "Not scanned yet. Scanning only looks; it changes nothing on any TV.";
+    const wanted = [], keep = new Set();
+    for (const tv of state.tvs || []) {
+      const key = `tv:${tv.alias}`;
+      if (!cards.has(key)) cards.set(key, tvCard(tv.alias));
+      await updateTv(cards.get(key), tv, keep); wanted.push(key);
     }
-    views.replaceChildren(next);
+    for (const s of state.sources || []) {
+      const key = `source:${s.id}`;
+      if (!cards.has(key)) cards.set(key, sourceCard(s.id));
+      await updateSource(cards.get(key), s, keep); wanted.push(key);
+    }
+    for (const key of [...cards.keys()]) if (!wanted.includes(key)) { cards.get(key).root.remove(); cards.delete(key); }
+    if (!wanted.includes(selected)) selected = wanted[0] || null;
+    const list = $("tvs");
+    wanted.forEach((key, index) => { const node = cards.get(key).root; if (list.children[index] !== node) list.insertBefore(node, list.children[index] || null); });
+    for (const key of wanted) cards.get(key).root.hidden = key !== selected;
+    renderRail(wanted);
+    $("empty").hidden = wanted.length > 0;
+    $("pick").hidden = Boolean(selected) || !wanted.length || wizard.open;
     for (const [key, url] of urls) if (!keep.has(key)) { URL.revokeObjectURL(url); urls.delete(key); }
-  } catch (problem) {
-    error(problem.message);
-    document.querySelectorAll(".stale").forEach((label) => { label.textContent = "STALE — frame loading failed; last image retained."; });
+  } catch (problem) { error(problem.message); }
+  finally {
+    rendering = false;
+    if (renderAgain) { renderAgain = false; queueMicrotask(render); }
   }
-  finally { rendering = false; }
 }
-let polling = false;
+let polling = false, autoScanned = false;
 async function refresh() {
   if (polling || stopped) return;
   polling = true;
   try {
-    state = await request("/api/state");
-    if (!active) {
-      for (const source of state.sources) $("source").add(new Option(`${source.kind} · ${source.id}`, source.id));
-      active = state.sources.find((s) => s.kind === "tv")?.id || state.sources[0]?.id || "";
-      $("source").value = active; editMetadata();
-    }
-    await render();
+    state = { tvs: [], scan: { status: "never" }, sdk: "available", ...(await request("/api/state")) };
+    offline = false;
   } catch (problem) {
-    error(`Service disconnected: ${problem.message}. Controls are disabled; no fallback frame.`);
-    state.sources.forEach((source) => { source.status = "disconnected"; source.stale = true; source.input_allowed = false; });
-    document.querySelectorAll("[data-key]").forEach((button) => { button.disabled = true; });
-    document.querySelectorAll(".stale").forEach((label) => { label.textContent = "STALE — local service disconnected. Last frame retained."; });
-    for (const id of ["connect", "disconnect", "capture", "stream"]) $(id).disabled = true;
-  } finally { polling = false; }
+    offline = true;
+    error(`Connection lost: ${problem.message}. Controls are off; the last picture is kept and marked out of date.`);
+    state.sources.forEach((s) => { s.stale = true; s.input_allowed = false; });
+  } finally {
+    polling = false;
+  }
+  await render();
+  // A fresh portal knows TVs only from memory; check them now (a scan is read-only).
+  if (!offline && !autoScanned && state.scan?.status === "never") { autoScanned = true; scan(); }
+  maybeOpenWizard(); pollWizard(false);
 }
-$("source").addEventListener("change", () => { active = $("source").value; editMetadata(); render(); });
-$("authorized").addEventListener("change", controls);
-$("connect").addEventListener("click", () => command("connect", { authorized: $("authorized").checked, pixels: $("pixels").checked, input: $("input").checked, run_seconds: Number($("duration").value) }));
-$("disconnect").addEventListener("click", () => command("disconnect", {}));
-$("capture").addEventListener("click", () => command("capture", {}));
-$("stream").addEventListener("click", () => command("stream", { enabled: !selected().streaming, interval: Number($("interval").value) }));
-$("compare").addEventListener("change", render);
-document.querySelectorAll("[data-key]").forEach((button) => button.addEventListener("click", () => command("key", { key: button.dataset.key })));
-function keyboard(event) {
-  if (!handledShortcut(event)) return;
-  event.preventDefault(); // Suppress native button Space/Enter, repeats and browser Back even while busy/disconnected.
-  const s = selected(), ready = s?.status === "connected" && s.expires_in > 0 && s.input_allowed;
-  const key = shortcut(event, ready, busy);
-  if (!key) return;
-  if (key === "ok" && !s.activation_allowed) { error("OK needs audited non-write control IDs."); return; }
-  command("key", { key });
-}
-$("remote").addEventListener("keydown", keyboard);
-$("views").addEventListener("keydown", keyboard);
-$("metadata").addEventListener("submit", (event) => {
-  event.preventDefault(); const values = {};
-  for (const name of fields) values[name] = { value: $(`meta-${name}`).value, provenance: $(`from-${name}`).value };
-  command("metadata", values);
+$("scan").addEventListener("click", scan);
+$("setup-tv").addEventListener("click", () => openWizard(true));
+$("wizard-close").addEventListener("click", () => {
+  const alias = wizard.view?.done ? wizard.view.alias : null;
+  closeWizard();
+  if (alias) select(`tv:${alias}`);
 });
 window.addEventListener("pagehide", () => {
   stopped = true; for (const url of urls.values()) URL.revokeObjectURL(url);
@@ -185,4 +748,3 @@ window.addEventListener("pagehide", () => {
     body: "{}", keepalive: true }).catch(() => {});
 });
 refresh(); setInterval(refresh, 1000);
-import { shortcut, handledShortcut, coordinate } from "/controls.mjs";

@@ -1,0 +1,548 @@
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "tests"))
+import tv  # noqa: E402
+import tv_fleet  # noqa: E402
+from test_tv_fleet import FakeSdb, LAN_A, LAN_B, DUID  # noqa: E402
+import threading  # noqa: E402
+from test_live_tv import FakeCDP, source_config, live  # noqa: E402
+
+
+APP = "AbCdEfGhIj.App"
+STORE = "StOrEaPpId.store"
+
+
+DUID_B = "PLACEHOLDERDUID0002"
+
+
+class AppsSdb(FakeSdb):
+    """FakeSdb that also lists installed apps, like vd_applist on the observed TVs."""
+    def __call__(self, argv, timeout=60, limit=None):
+        if argv[1:][2:] == ["shell", "0", "getduid"] and getattr(self, "duids", None):
+            self.calls.append(argv[1:])
+            duid = next((d for host, d in self.duids.items() if argv[1:][1].startswith(host)), None)
+            if duid is None:
+                raise tv_fleet.LiveError("sdk", "SDK command failed: closed")
+            return duid + "\n"
+        if argv[1:][2:] == ["shell", "0", "vd_applist"]:
+            self.calls.append(argv[1:])
+            return f"get app list...\napps count: 2\napp_tizen_id: {APP}\napp_tizen_id: {STORE}\n"
+        return super().__call__(argv, timeout, limit)
+
+
+@unittest.skipUnless(os.name == "posix", "Private profiles require POSIX ownership")
+class TvCliTests(unittest.TestCase):
+    """The tv CLI uses the portal's Fleet paths and words; fakes only, no SDK, network or TV."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.sdb = AppsSdb()
+        self.tool = self.root / "sdb"
+        self.tool.write_text("")
+        self.certificate = self.root / "device-profile.xml"
+        self.certificate.write_text(f"<profile><duid>{DUID}</duid></profile>")
+        self.profile = self.root / "profile.json"
+        # Emulator kind: a native TV source must use /tmp lease paths, which tests never create.
+        self.write_profile({"sources": [source_config(self.root, kind="emulator")], "certificate_duids": str(self.certificate)})
+        self.sessions = []
+        self.launches = []
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def write_profile(self, data):
+        self.profile.write_text(json.dumps(data))
+        self.profile.chmod(0o600)
+
+    hosts = (LAN_A,)
+
+    def fleet(self, certificate_duids=None, names=None, save_names=None, known=None, save_known=None):
+        test = self
+        class Session:
+            def __init__(self, serial, app, legacy):
+                self.app, self.forward, self.client = app, None, None
+                test.sessions.append(self)
+            def launch(self):
+                if self.app == STORE:
+                    raise tv_fleet.LiveError("sdk", "SDK command failed: closed")
+                self.forward = (45555, 9222)
+            def close(self):
+                self.forward = None
+        return tv_fleet.Fleet(
+            sdb_path=str(self.tool), runner=self.run_tool, interfaces=lambda: ["10.255.255.10"],
+            sweep=lambda address, port, timeout: set(test.hosts), ssdp=lambda: set(),
+            info=lambda host: {"name": "[TV] Samsung 7 Series (55)", "model": "UE55NU7400", "year": "2018",
+                               "developer_mode": "1", "uid": "uuid:fixture" + ("" if host == LAN_A else "-" + host)},
+            key_path=self.root / "alias.key", lease_root=self.root, canonical=self.root / "canonical.lock",
+            certificate_duids=certificate_duids, names=names or {}, save_names=save_names,
+            data_root=self.root / "tizen-data", tizen_path=self.tizen_path, which=lambda name: None,
+            clipboard=lambda text: True, browser=self.launches.append, openssl="/bin/openssl", cert_system="Linux",
+            signin=lambda: test.fail("No sign-in listener"), opener=lambda *args: test.fail("Nothing reaches Samsung"),
+            pictures=self.root / "Pictures", session=Session, cdp=FakeCDP, discover=lambda port: ["page-1"])
+
+    tizen_path = None
+
+    def run_tool(self, argv, timeout=60, limit=None):
+        if argv[0] != self.tizen_path:
+            return self.sdb(argv, timeout, limit)
+        self.write_profiles(argv[-1])  # `tizen security-profiles set-active -n NAME`
+        return "Succeed to set 'active' profile."
+
+    def write_profiles(self, active):
+        """Two signing profiles; only plx-tv-2's certificate lists this TV."""
+        folder = self.root / "tizen-data" / "profile"
+        folder.mkdir(parents=True, exist_ok=True)
+        items = ""
+        for name, duids in (("plx-tv", ["OTHERDEVICE0002"]), ("plx-tv-2", ["OTHERDEVICE0002", DUID])):
+            certs = self.root / name
+            certs.mkdir(exist_ok=True)
+            (certs / "device-profile.xml").write_text(
+                "<DeviceProfile>" + "".join(f"<TestDevice>{d}</TestDevice>" for d in duids) + "</DeviceProfile>")
+            items += f'<profile name="{name}"><profileitem distributor="1" key="{certs / "distributor.p12"}"/></profile>'
+        (folder / "profiles.xml").write_text(f'<profiles active="{active}">{items}</profiles>')
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        code = tv.main(list(argv), fleet_factory=self.fleet, cdp_factory=FakeCDP, stdout=out, stderr=err,
+                       state_dir=self.root / "state")
+        return code, out.getvalue(), err.getvalue()
+
+    def alias(self):
+        code, out, _ = self.run_cli("scan", "--json")
+        self.assertEqual(code, 0)
+        return json.loads(out)["tvs"][0]["alias"]
+
+    def assert_cache_private(self, text):
+        for secret in (LAN_A, DUID, "uuid:fixture"):
+            self.assertNotIn(secret, text)
+
+    def test_scan_prints_status_words_and_full_address(self):
+        code, out, err = self.run_cli("scan")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Samsung 7 Series (55) · UE55NU7400", out)
+        self.assertIn("Ready to connect", out)
+        self.assertIn(LAN_A, out)  # Shown to the developer on this computer.
+        self.assertRegex(out, r"tv-[0-9a-f]{6}")
+        self.assertEqual(self.sdb.mutations(), [])
+
+    def test_unnamed_tv_is_titled_by_its_address_not_a_number(self):
+        state = {"tvs": [{"alias": "tv-abc123", "name": "Samsung TV #1", "unnamed": True, "label": "Not reachable",
+                          "headline": "Turn the TV on, then scan again", "details": {"address": LAN_A}}]}
+        lines = list(tv.card_lines(state))
+        self.assertTrue(lines[0].startswith(f"TV at {LAN_A}"), lines)
+        self.assertIn("Not reachable", lines[0])
+        self.assertNotIn("#1", "\n".join(lines))
+        self.assertIs(tv.find(state, f"TV at {LAN_A}"), state["tvs"][0])
+
+    def test_status_is_scan_and_json_matches_portal_state(self):
+        code, out, _ = self.run_cli("status", "--json")
+        state = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(set(state), {"scan", "sdk", "tizen", "signing_profiles", "tvs"})
+        self.assertEqual(state["tvs"][0]["label"], "Ready to connect")
+        self.assertEqual(state["tvs"][0]["details"]["address"], LAN_A)
+
+    def test_connect_by_name_without_yes_shows_everything_then_disconnects(self):
+        code, out, err = self.run_cli("connect", "samsung 7 series (55) · ue55nu7400")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(": Connected", out)
+        for value in (LAN_A, DUID, "UE55NU7400", APP, STORE, "Apps on this TV (2)"):
+            self.assertIn(value, out)
+        self.assertIn("No Samsung certificate yet. This TV is " + DUID, out)
+        self.assertEqual([c[0] for c in self.sdb.mutations()], ["connect", "disconnect"])
+        self.assertEqual(list(self.root.glob("tizen-tv-*.lock")), [])
+        for banned in ("No app open", "Developer Mode ready", "Dev mode enabled", "Preview not connected",
+                       "Needs to be configured", "Busy", "--yes"):
+            self.assertNotIn(banned, out)
+
+    def test_aliases_share_connect_and_scan(self):
+        alias = self.alias()
+        for command in ("check", "identify"):
+            code, out, _ = self.run_cli(command, alias)
+            self.assertEqual(code, 0)
+            self.assertIn(DUID, out)
+        self.assertEqual(self.run_cli("apps", alias.upper())[0], 0)
+        code, out, _ = self.run_cli("duid", alias)
+        self.assertEqual((code, out.strip().splitlines()[-1]), (0, DUID))
+
+    def test_connect_failure_prints_guided_fix_and_host_ip(self):
+        self.sdb.accept = False
+        alias = self.alias()
+        code, out, err = self.run_cli("connect", alias)
+        self.assertEqual(code, 1)
+        self.assertIn("Connection problem", out)
+        self.assertIn("Check the TV's Host PC IP", out)
+        self.assertIn("This computer's IP to enter on the TV: 10.255.255.10", out)
+
+    def test_info_shows_portal_details_without_contacting_the_tv(self):
+        alias = self.alias()
+        code, out, err = self.run_cli("info", alias)
+        self.assertEqual((code, err), (0, ""))
+        for value in (LAN_A, "UE55NU7400", "Developer port: open", "This computer's IP to enter on the TV: 10.255.255.10"):
+            self.assertIn(value, out)
+        self.assertEqual(self.sdb.mutations(), [])
+
+    def test_info_connect_shows_duid_certificate_and_apps_then_disconnects(self):
+        alias = self.alias()
+        for flag in ("--connect", "--show-duid"):
+            code, out, err = self.run_cli("info", alias, flag)
+            self.assertEqual((code, err), (0, ""))
+            for value in (DUID, APP, "Certificate:", "This computer's IP to enter on the TV: 10.255.255.10"):
+                self.assertIn(value, out)
+            self.assertEqual([c[0] for c in self.sdb.mutations()][-2:], ["connect", "disconnect"])
+        self.assertEqual(list(self.root.glob("tizen-tv-*.lock")), [])
+
+    def test_unknown_tv_is_refused_with_the_list_of_names(self):
+        code, _, err = self.run_cli("connect", "tv-ffffff")
+        self.assertEqual(code, 1)
+        self.assertIn("No TV called tv-ffffff", err)
+        self.assertIn("Samsung 7 Series", err)
+        self.assertEqual(self.sdb.mutations(), [])
+
+    def test_open_shows_app_and_store_refusal_is_explained(self):
+        alias = self.alias()
+        code, out, err = self.run_cli("open", alias, APP)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Showing " + APP, out)
+        code, out, _ = self.run_cli("open", alias, STORE)
+        self.assertEqual(code, 1)
+        self.assertIn(tv_fleet.STORE_APP, out)
+        self.assertIn("closed", out)
+        self.assertEqual([c[0] for c in self.sdb.mutations()][-2:], ["connect", "disconnect"])
+
+    def test_screenshot_writes_private_png_without_yes(self):
+        alias = self.alias()
+        self.assertEqual(self.run_cli("screenshot", alias)[0], 2)  # Names the app to capture.
+        out_dir = self.root / "shots"
+        code, out, err = self.run_cli("screenshot", alias, "--app", APP, "--out", str(out_dir))
+        self.assertEqual((code, err), (0, ""))
+        written = sorted(out_dir.iterdir())
+        self.assertEqual(len(written), 1)
+        self.assertTrue(written[0].read_bytes().startswith(b"\x89PNG"))
+        self.assertEqual(oct(written[0].stat().st_mode & 0o777), "0o600")
+        self.assertIn("Saved " + str(written[0].resolve()), out)
+        self.assertEqual(self.run_cli("screenshot", alias, "--app", APP, "--out", str(ROOT / "shots"))[0], 2)
+        self.assertFalse((ROOT / "shots").exists())
+
+    def test_key_sends_ok_and_rejects_unknown_keys(self):
+        alias = self.alias()
+        code, out, err = self.run_cli("key", alias, "down", "ok", "back", "--app", APP)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Sent down, ok, back to " + APP, out)
+        code, _, err = self.run_cli("key", alias, "power", "--app", APP)
+        self.assertEqual(code, 2)
+        self.assertIn("power", err)
+
+    def test_profile_source_keys_and_screenshot_need_no_yes(self):
+        code, out, err = self.run_cli("--profile", str(self.profile), "key", "sample", "down", "ok")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Sent down, ok", out)
+        self.assertFalse(Path(source_config(self.root)["lease_path"]).exists())
+        code, out, err = self.run_cli("--profile", str(self.profile), "screenshot", "sample",
+                                      "--out", str(self.root / "shots"))
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("video plane", out)
+
+    def test_cert_add_waits_for_sign_in_shows_each_step_and_reports_the_real_outcome(self):
+        alias = self.alias()
+        code, out, _ = self.run_cli("cert", alias)
+        self.assertEqual(code, 0)
+        self.assertIn("This TV is " + DUID, out)
+        self.assertIn("tv cert add " + alias, out)
+
+        polled = threading.Event()
+        cert_result = tv_fleet.Fleet.cert_result
+
+        def watched(fleet, alias):
+            polled.set()
+            return cert_result(fleet, alias)
+
+        def add_tvs(duids, progress, browser, **options):
+            progress("signin", "Waiting for Samsung sign-in\u2026", False)
+            browser(tv_fleet.samsung_cert.SIGNIN_URL)
+            polled.wait(5)  # A real sign-in takes longer than the CLI's first look.
+            progress("signin", "Signed in to Samsung", True)
+            return {"profile": "tv-companion", "backup": None, "reinstall": False}  # Yet the TV isn't listed.
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv, "CERT_POLL", 0.01), \
+                mock.patch.object(tv_fleet.Fleet, "cert_result", watched):
+            code, out, _ = self.run_cli("cert", "add", alias)
+        self.assertEqual(code, 1, "The certificate still doesn't list the TV: not a success")
+        self.assertEqual(self.launches, [tv_fleet.samsung_cert.SIGNIN_URL])
+        self.assertIn("Sign in to Samsung in your browser. If it didn't open, go to:", out)
+        self.assertIn("  [done] Signed in to Samsung", out)
+        self.assertIn("installs still use one that doesn't list", out)
+        self.assertTrue(all("\u2026" not in line for line in out.splitlines() if "[" in line))
+        self.assertEqual(self.run_cli("cert", "add")[0], 2)
+
+    def two_tvs(self, duid_b=DUID_B):
+        """Two TVs on the network with different Device IDs; returns their aliases (A, B)."""
+        self.hosts = (LAN_A, LAN_B)
+        self.sdb.duids = {LAN_A: DUID, **({LAN_B: duid_b} if duid_b else {})}
+        code, out, _ = self.run_cli("scan", "--json")
+        self.assertEqual(code, 0)
+        tvs = {tv["details"]["address"]: tv["alias"] for tv in json.loads(out)["tvs"]}
+        return tvs[LAN_A], tvs[LAN_B]
+
+    def companion(self, *duids):
+        """The active tv-companion profile's certificate lists `duids` (what a finished sign-in writes)."""
+        certs = self.root / "tv-companion"
+        certs.mkdir(exist_ok=True)
+        (certs / "device-profile.xml").write_text(
+            "<DeviceProfile>" + "".join(f"<TestDevice>{d}</TestDevice>" for d in duids) + "</DeviceProfile>")
+        folder = self.root / "tizen-data" / "profile"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "profiles.xml").write_text(
+            f'<profiles active="tv-companion"><profile name="tv-companion"><profileitem distributor="1" '
+            f'key="{certs / "distributor.p12"}"/></profile></profiles>')
+
+    def test_cert_add_for_several_tvs_reads_every_device_id_then_signs_in_once(self):
+        a, b = self.two_tvs()
+        self.companion("OTHERDEVICE0003")
+        calls = []
+
+        def add_tvs(duids, progress, browser, **options):
+            calls.append(list(duids))
+            progress("signin", "Waiting for Samsung sign-in\u2026", False)
+            browser(tv_fleet.samsung_cert.SIGNIN_URL)
+            self.companion(*duids)
+            return {"profile": "tv-companion", "backup": "/backup", "reinstall": False}
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv, "CERT_POLL", 0.01):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 1, "One Samsung sign-in for both TVs")
+        self.assertEqual(sorted(calls[0]), sorted(["OTHERDEVICE0003", DUID, DUID_B]), "Existing coverage is kept")
+        self.assertEqual(self.launches, [tv_fleet.samsung_cert.SIGNIN_URL])
+        self.assertEqual(out.count("): can install your apps"), 2, out)
+
+        calls.clear()
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual((code, calls, self.launches[1:]), (0, [], []), "Already covered: no new sign-in")
+
+    def test_cert_add_for_several_tvs_reports_each_tv_and_fails_when_one_is_not_allowed(self):
+        a, b = self.two_tvs()
+
+        def add_tvs(duids, progress, browser, **options):
+            self.companion(DUID)  # Samsung's certificate missed TV B.
+            return {"profile": "tv-companion", "backup": None, "reinstall": False}
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv, "CERT_POLL", 0.01):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual(code, 1, "A partial result is not a success")
+        self.assertIn("can install your apps", out)
+        self.assertIn("not allowed yet", out)
+
+    def test_cert_add_for_several_tvs_stops_before_sign_in_when_one_tv_cannot_be_read(self):
+        a, b = self.two_tvs(duid_b=None)
+
+        def add_tvs(*args, **kwargs):
+            self.fail("No sign-in while a TV's Device ID is unknown")
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual(code, 1)
+        self.assertIn("Nothing was changed", out)
+        self.assertEqual(self.launches, [])
+
+    def test_ctrl_c_while_waiting_cancels_the_sign_in(self):
+        a, b = self.two_tvs()
+        stopped = threading.Event()
+
+        def add_tvs(duids, progress, browser, cancel=None, **options):
+            progress("signin", "Waiting for Samsung sign-in\u2026", False)
+            cancel.wait(5)
+            stopped.set()
+            raise tv_fleet.samsung_cert.CertError("cancelled", "Samsung sign-in was cancelled", "Start a new sign-in")
+
+        def interrupt(seconds):
+            raise KeyboardInterrupt
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv.time, "sleep", interrupt):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual(code, 1)
+        self.assertIn("Sign-in cancelled. Nothing was changed", out)
+        self.assertTrue(stopped.wait(5), "The waiting sign-in was told to stop")
+
+    def test_cert_offers_and_switches_to_a_profile_that_allows_the_tv(self):
+        self.tizen_path = str(self.root / "tizen")
+        self.write_profiles("plx-tv")
+        alias = self.alias()
+        code, out, _ = self.run_cli("cert", alias)
+        self.assertIn("Your profile plx-tv-2 allows", out)
+        self.assertIn(f"Run: tv cert use {alias} plx-tv-2", out)
+        code, out, _ = self.run_cli("cert", "add", alias)
+        self.assertEqual((code, self.launches), (1, []), "No sign-in: another profile already allows the TV")
+        self.assertIn(f"Run: tv cert use {alias} plx-tv-2", out)
+        code, out, _ = self.run_cli("cert", "use", alias, "plx-tv-2")
+        self.assertEqual(code, 0)
+        self.assertIn("Installs now use plx-tv-2, which allows this TV", out)
+        code, out, _ = self.run_cli("cert", alias)
+        self.assertIn("plx-tv-2 covers this TV", out)
+        self.assertEqual(self.run_cli("cert", "use", alias)[0], 2)
+
+    def test_uninstall_and_remove_alias_need_tizen_cli_and_no_yes(self):
+        alias = self.alias()
+        for command in ("uninstall", "remove"):
+            code, _, err = self.run_cli(command, alias, APP)
+            self.assertEqual(code, 1)
+            self.assertIn("tizen CLI was not found", err)
+        self.assertEqual([c[0] for c in self.sdb.mutations()][-2:], ["connect", "disconnect"])
+
+    def test_rename_persists_in_private_profile_by_alias(self):
+        alias = self.alias()
+        code, out, _ = self.run_cli("--profile", str(self.profile), "rename", alias, "Den TV")
+        self.assertEqual(code, 0)
+        self.assertIn("Den TV", out)
+        self.assertEqual(json.loads(self.profile.read_text())["tv_names"], {alias: "Den TV"})
+        self.assertEqual(oct(self.profile.stat().st_mode & 0o777), "0o600")
+        code, out, _ = self.run_cli("--profile", str(self.profile), "scan")
+        self.assertIn("Den TV", out)
+        self.assertEqual(self.run_cli("--profile", str(self.profile), "connect", "den tv")[0], 0)
+        self.assertEqual(self.run_cli("rename", alias, "Den")[0], 0)
+        default = self.root / "state" / "profile.json"
+        self.assertEqual(json.loads(default.read_text())["tv_names"], {alias: "Den"})
+        self.assertIn("Den", self.run_cli("list")[1])
+
+    def test_default_profile_is_created_private_and_empty_without_credentials(self):
+        state = self.root / "state"
+        path = tv.default_profile(state, create=True)
+        self.assertEqual(path, state / "profile.json")
+        self.assertEqual(json.loads(path.read_text()), {"sources": []})
+        self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
+        self.assertEqual(oct(state.stat().st_mode & 0o777), "0o700")
+        self.assertEqual(tv.default_profile(state, create=True), path)  # Reused, not rewritten.
+        self.assertIsNone(tv.default_profile(self.root / "absent", create=False))
+        os.environ["TIZEN_TV_PROFILE"] = str(self.profile)
+        try:
+            self.assertEqual(tv.default_profile(state, create=True), self.profile)
+        finally:
+            del os.environ["TIZEN_TV_PROFILE"]
+
+    def test_scan_saves_private_list_without_addresses_and_list_never_scans(self):
+        code, before, _ = self.run_cli("list")
+        self.assertEqual(code, 0)
+        self.assertIn("tv scan", before)
+        alias = self.alias()
+        cache = self.root / "state" / "last-scan.json"
+        self.assertEqual(oct(cache.stat().st_mode & 0o777), "0o600")
+        self.assert_cache_private(cache.read_text())
+        calls = len(self.sdb.calls)
+        out, err = io.StringIO(), io.StringIO()
+        def no_scan(**_):
+            raise AssertionError("list must not scan")
+        code = tv.main(["list"], fleet_factory=no_scan, stdout=out, stderr=err, state_dir=self.root / "state")
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        self.assertIn(alias, out.getvalue())
+        self.assertIn("Ready to connect", out.getvalue())
+        self.assertEqual(len(self.sdb.calls), calls)
+
+    def test_portal_uses_default_profile_and_prints_plain_url(self):
+        seen = {}
+        def fake_serve(profile, owner_stdin=False, port=0, announce=None):
+            seen["profile"] = profile
+            seen["port"] = port
+            announce("http://127.0.0.1:47811/")
+        original = tv.live_tv.serve
+        tv.live_tv.serve = fake_serve
+        try:
+            code, out, err = self.run_cli("portal")
+        finally:
+            tv.live_tv.serve = original
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(seen["profile"], self.root / "state" / "profile.json")
+        self.assertEqual(seen["port"], tv.PORTAL_PORT)
+        self.assertIn("Open http://127.0.0.1:47811/", out)
+        self.assertNotIn("Scanning", out)  # Starting the page never contacts TVs.
+
+    def test_kit_entrypoint_delegates_tv_commands(self):
+        import subprocess
+        result = subprocess.run([sys.executable, str(ROOT / "tools/tizen.py"), "tv", "--help"],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for command in ("scan", "list", "connect", "apps", "open", "screenshot", "key", "install",
+                        "uninstall", "cert add", "portal"):
+            self.assertIn(command, result.stdout)
+        result = subprocess.run([sys.executable, str(ROOT / "tools/tizen.py"), "--help"],
+                                capture_output=True, text=True, timeout=30)
+        self.assertIn("tv", result.stdout)
+
+    def test_help_lists_portal_capabilities(self):
+        parser = tv.parser()
+        text = parser.format_help()
+        for command in ("scan", "list", "connect", "apps", "open", "screenshot", "key", "install", "uninstall",
+                        "cert add", "duid", "rename", "setup", "portal", "check", "status", "remove"):
+            self.assertIn(command, text)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class CertResetCliTests(unittest.TestCase):
+    """`tizen.py cert reset PROFILE... [--yes]`: a plan without --yes, a receipt with it. Never a TV."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "SamsungCertificate"
+        self.profiles = self.root / "tizen-data" / "profile" / "profiles.xml"
+        self.profiles.parent.mkdir(parents=True)
+        body = ""
+        for name in ("plx-tv", "tv-companion", "store-dev"):
+            (self.home / name).mkdir(parents=True)
+            (self.home / name / "author.p12").write_bytes(b"k")
+            body += f'<profile name="{name}"><profileitem distributor="0" key="{self.home / name / "author.p12"}" password="inline"/></profile>'
+        self.profiles.write_text(f'<profiles active="plx-tv">{body}</profiles>')
+        patch = mock.patch.object(tv, "cert_places", lambda: (self.profiles, self.home))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_cli(self, *argv):
+        out = io.StringIO()
+        fleet = lambda **kw: self.fail("cert reset never builds a fleet or contacts a TV")  # noqa: E731
+        code = tv.main(list(argv), fleet_factory=fleet, stdout=out, stderr=io.StringIO(), state_dir=self.root / "state")
+        return code, out.getvalue()
+
+    def test_without_yes_only_shows_the_plan(self):
+        before = self.profiles.read_bytes()
+        code, out = self.run_cli("cert", "reset", "plx-tv", "tv-companion")
+        self.assertEqual(code, 1)
+        self.assertIn("nothing was changed; add --yes", out)
+        self.assertIn("plx-tv: would remove profiles.xml entry (active)", out)
+        self.assertEqual(self.profiles.read_bytes(), before)
+        self.assertTrue((self.home / "plx-tv").is_dir())
+
+    def test_yes_removes_exactly_those_and_prints_a_receipt(self):
+        code, out = self.run_cli("cert", "reset", "plx-tv", "tv-companion", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Certificate reset receipt", out)
+        self.assertIn("plx-tv: removed profiles.xml entry (active)", out)
+        self.assertIn("Backup: " + str(self.root / "state" / "cert-backups"), out)
+        self.assertTrue((self.home / "store-dev" / "author.p12").is_file())
+        self.assertFalse((self.home / "plx-tv").exists())
+        self.assertIn('name="store-dev"', self.profiles.read_text())
+        code, out = self.run_cli("cert", "reset", "plx-tv", "--yes")
+        self.assertEqual(code, 0)
+        self.assertIn("plx-tv: not present (nothing to remove)", out)
+
+    def test_refusal_changes_nothing(self):
+        (self.home / "plx-tv" / "loop").symlink_to(self.root)
+        before = self.profiles.read_bytes()
+        code, out = self.run_cli("cert", "reset", "plx-tv", "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("Refused:", out)
+        self.assertIn("Nothing was changed", out)
+        self.assertEqual(self.profiles.read_bytes(), before)
+        self.assertFalse((self.root / "state" / "cert-backups").exists())
+        code, out = self.run_cli("cert", "reset")
+        self.assertNotEqual(code, 0)

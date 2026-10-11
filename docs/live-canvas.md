@@ -6,6 +6,19 @@ Node adapter uses the host's bundled SDK; do not install SDK npm packages.
 The published 0.1.0 plugin is unchanged. **No new release or installed-plugin
 replacement until parent acceptance.** Identify this candidate by its commit.
 
+## Start the Samsung TV Developer Companion
+
+```
+python3 tools/tizen.py tv portal        # or: python3 tools/tv.py portal
+```
+
+- It prints `http://127.0.0.1:47811/`; open that in your browser. Ctrl+C stops it.
+  Run the same command again to restart. `--port N` picks another port.
+- Requirements: Python 3.10+, Tizen Studio's `sdb` and `tizen` CLI.
+- On the TV: Apps → 1 2 3 4 5 → Developer mode On → Host PC IP = this computer →
+  restart the TV.
+- Then: Scan → pick a TV → Connect → Open screen on your app.
+
 ## Install and open
 
 In this toolkit checkout, `.github/extensions/tizen-live/` is discovered as a
@@ -44,20 +57,27 @@ Call `list_canvas_capabilities`, `open_canvas`, then
 It performs no device RPC and returns no endpoint, page identity, DOM, pixels or
 authentication token. There is no agent-callable mutation action.
 
-Opening starts only an authenticated, loopback-only local service. **No inspector
-connection or device lease is acquired until the human clicks Connect.**
-The four exact public GET routes (`/`, `/ui.js`, `/ui.css`, `/controls.mjs`)
-allow cross-site embedding by the host. They contain no capability, profile or
-pixels. Host/duplicate-header checks still apply; API/frame requests and every
-POST retain bearer authentication and strict origin/cross-site rejection.
+Opening starts an **unauthenticated**, loopback-only local service (user decision:
+no token prompt). **No inspector connection or device lease is acquired until the
+human clicks Connect.** Every request must name Host `127.0.0.1:<port>`; duplicate
+headers are refused. API and frame requests are refused when the browser marks them
+`same-site` or `cross-site` (this also blocks other localhost ports), and every POST
+must carry this page's exact `Origin`. The four public GET routes (`/`, `/ui.js`,
+`/ui.css`, `/controls.mjs`) contain no capability, profile or pixels.
+**Residual risk:** any local process or other local user on this computer can call
+the portal API while it runs (consent grants are JSON flags, not secrets). Run it
+only on a single-user machine and stop it when done. The standalone Workbench
+(`tools/workbench.py`) keeps its URL-fragment bearer token.
 SDK open/status success alone does not prove the embedded page rendered.
 
 ## Private profile
 
 Keep this file outside the toolkit/repository, owned by your user, mode 0600.
-Use an existing authorized loopback inspector forward/relay. This provider does
-not launch SDB, create relays/forwards, discover TVs or acquire an outer lease.
-Replace these placeholders privately; never commit actual addresses or identities:
+Configured `sources` use an existing authorized loopback inspector forward/relay;
+that provider does not launch SDB or create relays/forwards. TVs found by
+**Scan network for TVs** need no profile entry (see below), so `"sources": []`
+is a valid profile. Replace these placeholders privately; never commit actual
+addresses or identities:
 
 ```json
 {
@@ -106,10 +126,219 @@ endpoint and target. TV remains the default when configured. Switching and
 side-by-side comparison preserve separate labels and capture timestamps.
 An unavailable source never substitutes another source's image.
 
+Optional private keys: `tv_names` (alias → your name, written by Rename) and
+`certificate_duids` (absolute path, outside the repository, to the distributor
+device-profile file used only for the install DUID gate). Up to 8 sources, at
+most one emulator; a TV lease is the canonical lock or `/tmp/tizen-tv-<id>.lock`.
+
+## Scan network for TVs
+
+The primary button above the TV list runs a user-triggered, bounded scan. It
+probes each local private /24 (at most 4 networks) concurrently for TCP 26101
+(Developer Mode) and TCP 8001 (Samsung's read-only TV API), sends one SSDP
+search, and reads the current `sdb devices` list. It writes nothing, never runs
+`kill-server` and never reboots. A host answering only 8001 or SSDP is listed
+only if its unauthenticated `http://<tv>:8001/api/v2/` reply says it is a Samsung
+TV, so an unrelated open port is never shown as a TV. This is how TVs with
+Developer Mode off appear. Several observations of one TV (for example 26101 and
+8001 on the same address) merge into one card by the TV's own ID, which is used
+only to derive the hashed alias and is never shown. The card is named from
+`device.name` and `modelName` (e.g. "Samsung 7 Series (55) · UE55NU7…"),
+otherwise by its address ("TV at 192.0.2.10") until it answers with its name, which is
+then remembered. Rename (✎) stores your name in the 0600 profile
+keyed by the hashed alias, never by address.
+
+Discovery limits: TVs that are off or in deep standby, on another subnet/VLAN or
+guest network, or that block both ports and SSDP do not appear. At most 16 TVs
+are listed. This discovery path is host-tested with mocks only and is
+**unverified** on real TVs.
+
+### Developer Mode labels
+
+Each card and `tv scan`/`tv check` show one developer-readiness label with a next
+action. It is separate from Connected / Developer Mode ready / Not connected, and comes from
+observed evidence only:
+
+| Evidence | Label |
+|---|---|
+| Developer connection accepted (this session or sdb lists it) | Dev mode enabled |
+| Port 26101 open, not tried yet | Dev mode reachable · not checked (Connect to check) |
+| Port 26101 open but the TV refused this computer | Needs to be configured (Host PC IP, restart TV) |
+| The TV API reports Developer Mode off and port 26101 is closed | Dev mode not enabled |
+| The TV API answers, does not report the mode, and port 26101 is closed | Dev mode port closed (off or blocked; not proof) |
+| Remembered TV, not scanned yet since the portal started | Checking… (the page scans on open) |
+| Nothing answered | Not reachable (unknown, never "not enabled") |
+
+An open port alone is never "Dev mode enabled". Certificate/install readiness is a
+separate line that appears once Connect has read the TV identity. When the active
+certificate doesn't list the TV, the card says so in TV names ("You can't install your
+apps on <TV> yet: your certificate only allows <TVs>."). It falls back to the raw device
+ID only for an ID that no remembered TV has. One button, "Allow installing my apps on
+this TV", is the only thing to click; the only other step is the Samsung sign-in that opens
+in your browser. No terminal, profile name or password prompt. Behind it the companion:
+
+- lists every TV the active certificate already allows plus this TV;
+- makes the keys and certificate requests with `openssl`, signs in through a loopback-only
+  listener on `localhost:4794` (Samsung's registered redirect), and asks Samsung's certificate
+  service for a distributor certificate listing those TVs. If the active profile already has a
+  Samsung author certificate it is kept, so installed apps need no reinstall; otherwise a new
+  author certificate is made too, and the card says in one line that apps installed with the
+  old one need one reinstall;
+- backs up the previous files, saves the new ones under `~/SamsungCertificate/tv-companion`,
+  registers the `tv-companion` profile in `profiles.xml` and makes it active;
+- picks a random password: on macOS it goes to the login Keychain the way Tizen Studio stores
+  it (service `certificate-manager`); on Windows and Linux it is stored in `profiles.xml` in
+  Tizen's own encrypted form, which is what the Tizen CLI reads. It is never shown.
+
+While it runs the card shows a checklist ("Waiting for Samsung sign-in…", "Signed in to
+Samsung", "Samsung issued your certificate", …), with a link to reopen the sign-in page. It
+ends with "You can install your apps on <TV>." only when the active certificate's
+`device-profile.xml` now lists the TV; otherwise it shows Samsung's or openssl's real error
+and "Try again". `tv cert add TV` does exactly the same in the terminal. Needs `openssl`
+(macOS and Linux include it; on Windows it comes with Git for Windows) and Tizen Studio's
+Certificate Manager with the Samsung TV extension, which holds Samsung's CA certificates.
+The sign-in and certificate protocol was learned from
+[gifflet/tizen-cert-cli](https://github.com/gifflet/tizen-cert-cli) (MIT) and reimplemented here.
+Every signing profile in `profiles.xml` is checked, not only the active one. If another profile
+already lists the TV, the card says so and offers "Use PROFILE for installs" instead of a
+new sign-in; it runs `tizen security-profiles set-active -n
+PROFILE` and re-reads `profiles.xml`, reporting failure if the active profile did not change.
+The CLI equivalent is `tv cert use TV PROFILE`. Other profiles' device lists are never sent to the page.
+The raw device IDs are listed under TV details, together with a small "Disconnect" link
+(each action connects on its own, so you rarely need it).
+
+### TV details (shared by portal and CLI)
+
+Scan builds one metadata record per TV, used by both the portal and the CLI:
+manufacturer, friendly name, full model, model family, **model year** with its
+provenance (reported by the TV, or inferred from the model code), OS name and
+version, a platform baseline, and resolution, The Frame and firmware only when the
+TV reports them. Model year is not a manufacture date; the manufacture date stays
+unknown. The OS version is shown only when it was observed over the developer
+connection (read automatically on Connect); otherwise only "Tizen" is shown, and
+unknown fields are omitted rather than printed as placeholders. The
+baseline ("2019 models shipped with Tizen 5.0") comes from Samsung's
+[TV Model Groups](https://developer.samsung.com/smarttv/develop/specifications/tv-model-groups.html)
+table and is never shown as the TV's version, because regional exceptions and
+upgrades exist (for example 2017 ENTRY_CN1 ran Tizen 2.4). Model codes are parsed
+with anchored family patterns (LED `UE43RU7092` → 2019, QLED, Neo QLED, OLED, The
+Frame/Serif/Sero); unknown or ambiguous codes are omitted, as is a bare "Tizen" without a version.
+
+Each TV has one status, identical in the pill, the list row and the CLI: **Not
+reachable**, **Developer Mode off**, **Ready to connect**, **Connecting…**,
+**Connected** (a working developer link; an app picture adds "· Showing APP") or
+**Connection problem** (with the TV's real error). Inspector failures name the
+step that failed (target discovery, WebSocket handshake, or the awaited method)
+and the real exception, instead of a generic message.
+
+A TV seen once keeps its card. The private profile remembers its last-known
+name, model, OS and Device ID per alias (`known_tvs`), never its network address.
+When it is off, the card reads "Name · model · last seen HH:MM" with one line,
+"Turn the TV on, then scan again", and a **Scan again** button; no Connect, no
+setup steps. A held connection is never retargeted. If the TV's info request
+times out when it returns, it keeps the same card rather than gaining a second one.
+The keyboard hint appears only while an app picture is showing.
+
+Connections are stateless. Connect has no confirmation dialog: it launches no app
+and sends no keys. It runs `sdb connect`, reads the TV identity and keeps that link in this
+portal's memory only. No lock or lease file reserves the TV, so there is no Busy
+state and nothing to unlock: lock files left by other sessions (including
+`/tmp/tizen-tv-<alias>.lock` and the canonical lock) are ignored, never deleted.
+Status reflects the connection and picture observed now, not ownership. Within
+one portal, requests run one at a time. Two portals or tools driving the same TV
+at once can interfere with each other; avoid that. Disconnect and portal exit
+remove only the link and forwards this portal created; the shared SDB server is
+never stopped. When Connect fails the card explains why and offers Retry.
+
+From Developer Mode ready, **Open app for preview** takes an app ID and always
+asks first, because it restarts that app on the TV in debug mode; the portal
+never does this silently. The portal forwards the app's inspector to loopback, attaches,
+captures, and shows Connected only after the page decodes that picture. The picture is the app's own drawing
+(renderer paint layers), not the whole TV screen, other apps, AVPlay video, HDR
+or audio. Arrows and Back reach the app; OK is off because scanned apps have no
+audited safe buttons. Disconnect ends the preview and removes only the forward
+this portal created. Certificate, package and install controls live under
+Advanced; install needs the alias typed and a matching DUID. Addresses, DUIDs and
+lock paths appear only under Details, redacted.
+
+The left list shows each TV compactly (name, model · year, status). Selecting a
+row shows that TV on the right without contacting it; the TV has one Connect
+button. Its card shows model · model year · OS, the Dev mode label with the next
+action, and Details with provenance.
+
+### Same features from the terminal: `tizen.py tv`
+
+No setup is needed. On first use the kit creates an empty private profile at
+`~/.tizen-tv-builder/profile.json` (folder 0700, file 0600, `{"sources": []}`, no
+credentials); set `TIZEN_TV_PROFILE` or pass `--profile` to use another one.
+
+```sh
+python3 tools/tizen.py tv scan                # find Samsung TVs: status, model, OS, full address
+python3 tools/tizen.py tv list                # last scan again, without contacting any TV
+python3 tools/tizen.py tv connect tv-abc123   # status, details, certificate and apps, then disconnect
+python3 tools/tizen.py tv info tv-abc123      # every detail the portal shows, incl. this computer's IP for the TV
+python3 tools/tizen.py tv info tv-abc123 --connect     # also reads Tizen version, DUID, certificate and apps
+python3 tools/tizen.py tv rename tv-abc123 "Den TV"
+python3 tools/tizen.py tv portal              # prints http://127.0.0.1:47811/ (or a free port)
+```
+
+First run, from a terminal (unreleased; host-tested against a fake SDK). TV is a name
+or a `tv-xxxxxx` alias; nothing asks for `--yes`, and the TV's real error is printed:
+
+```sh
+python3 tools/tizen.py setup                        # this computer: sdb, tizen CLI; installs them if missing
+python3 tools/tizen.py tv setup                     # guided: this computer to your app on a TV
+python3 tools/tizen.py tv cert tv-abc123            # does the active certificate cover this TV?
+python3 tools/tizen.py tv cert add tv-abc123        # add this TV to your certificate (one Samsung sign-in)
+python3 tools/tizen.py tv duid tv-abc123            # print the Device ID
+python3 tools/tizen.py tv apps tv-abc123            # every app ID on the TV
+python3 tools/tizen.py tv install tv-abc123 app.wgt [--sign MyTV]
+python3 tools/tizen.py tv open tv-abc123 AbCdEf1234.App      # restarts the app
+python3 tools/tizen.py tv screenshot tv-abc123 --app AbCdEf1234.App [--out DIR]
+python3 tools/tizen.py tv key tv-abc123 down ok --app AbCdEf1234.App
+python3 tools/tizen.py tv uninstall tv-abc123 AbCdEf1234.App
+```
+
+Each command connects, acts, and disconnects what it connected. `install` re-signs a
+private copy named `app.wgt` (the SDK names its output after `<name>`, which may contain
+spaces) and passes the TV's device name with `-t`; without `-t` the Tizen CLI silently
+does nothing. In Developer Mode the default Tizen distributor certificate installed on
+the 2017 and 2019 TVs tested; other years are reported as unverified. The DUID comes
+from the developer link (`getduid`), not the network API's `duid`. `remove` re-lists
+the TV's apps (`0 vd_applist`) and only reports success when the app is gone: on
+Tizen 5.0 `tizen uninstall` exits 0 and changes nothing, so the command then says to
+delete the app on the TV (Apps, gear, the app, Delete). If the list cannot be read the
+result is "unconfirmed", never success, and so is a list shorter than its own
+"apps count". The listing itself was checked read-only on the 2017 (Tizen 3.0) and 2019
+(Tizen 5.0) TVs; the other first-run commands are not yet verified on a TV. Python 3.10 or newer is required; older versions stop with that message.
+
+`check` reports each stage separately and only says "Developer Mode ready" when
+all of them pass: Developer Mode port open (a TCP answer only), developer
+connection accepted by the TV (`sdb connect` listed as a device), and identity
+read (Tizen version; the DUID is only reported as present, never shown). An open
+port with a refused connection is "Not ready": Developer Mode is on, but the TV's Host PC IP most
+likely points to another computer. A TV that reports Developer Mode off is told apart and
+not connected to. `tv-abc123` is the alias printed by `scan`; aliases stay stable
+between runs, and `list` keeps only names and status from the last scan
+(`last-scan.json`, 0600), never addresses or identities.
+
+`portal` starts the same page the canvas shows, on loopback only. When the page opens
+before any scan, it runs one read-only scan on its own; it connects to a TV only when you
+choose Connect. `python3 tools/tv.py ...` is the same CLI.
+
+The CLI calls the same Fleet/Source code as the portal, accepts aliases only (never
+raw addresses), keeps the key allowlist and the OK safe-target gate, writes
+screenshots 0600 outside this repository only, and releases every connection
+and forward it made before it exits. Use `py tools\tizen.py tv ...` on Windows; the
+private profile (rename, key, screenshot, portal) requires POSIX permissions.
+Scan, naming and guidance are host-tested with a mocked SDB only; real 2018 TV
+wording, identify output and the 8001 fields are **unverified**.
+
 ## Human-operated capture and input
 
-Connect requires target/lane permission and separate private-pixel and input
-grants. Start feed requests a discrete genuine native LayerTree paint capture
+Connect shows one confirmation ("Screen images may show account info; remote
+keys will be sent.") which grants the session, private pixels and input for that
+run; the backend still checks each grant separately. Start feed requests a discrete genuine native LayerTree paint capture
 every 10 seconds (adjustable 10–60); Pause stops future requests, and Refresh
 captures manually. Pause does not cancel an already in-flight capture.
 Frames remain private in memory. A failed/disconnected capture retains the last
@@ -123,7 +352,7 @@ immediately rather than queued. Capture budgets are bounded, with separate
 bounded snapshot-release/disable cleanup. Closing the last panel, provider pipe
 EOF, process cancellation or the run deadline disconnects owned clients.
 
-Focus the remote or capture surface:
+Each card has its own on-screen Remote panel. Focus it or the screen view:
 
 | Shortcut | Command |
 |---|---|
@@ -131,7 +360,7 @@ Focus the remote or capture surface:
 | Space / Enter | OK |
 | Backspace | TV Back |
 
-Editing fields, IME/modifiers, held repeats, disconnected or busy input cannot
+Editing fields, IME/modifiers, held repeats, disconnected input or input while a key is sending cannot
 dispatch. Handled focused keys suppress browser defaults/native button clicks,
 so Enter/Space does not double-send. Buttons use the same guarded command route.
 There is no Home, Exit, volume, arbitrary evaluation or text-entry route.
@@ -168,12 +397,18 @@ node tests/live-controls.test.mjs
 node --check .github/extensions/tizen-live/extension.mjs
 # Optional: existing isolated Chromium browser, no installation or TV needed:
 node tests/live-browser.test.mjs /absolute/private/browser-profile OFFLINE_CANVAS_URL
+node tests/portal-browser.test.mjs http://127.0.0.1:BROWSER_CDP_PORT http://127.0.0.1:47811/
 ```
 
 The last gate uses an already-running isolated browser with DevToolsActivePort.
 It checks the real offline renderer and injected, explicitly labelled **UI-only**
 fixtures for shortcuts/backpressure. Fixtures never connect a TV or synthesize
 runtime fallback captures. Three timed host feed cycles use a mock CDP provider.
+The portal gate answers every `/api/` request with in-page synthetic TVs and
+checks that Connected and the keys stay off for empty frames, undecodable images
+and a frame that arrives after the connection is lost. Set
+`PORTAL_BASELINE=<revision>` to replay an older `ui.js` and show the checks fail
+there.
 
 Host pass is not device acceptance. Parent/capturer must release the existing
 viewer, select the authorized page, then observe at least three genuine 10-second

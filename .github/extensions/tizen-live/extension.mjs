@@ -36,7 +36,7 @@ async function start(profilePath) {
       if (!buffer.includes("\n")) return;
       try {
         const { url } = JSON.parse(buffer.split("\n")[0]);
-        if (!/^http:\/\/127\.0\.0\.1:\d+\/#[A-Za-z0-9_-]{40,}$/.test(url)) throw new Error();
+        if (!/^http:\/\/127\.0\.0\.1:\d+\/$/.test(url)) throw new Error();
         settled = true; clearTimeout(timeout);
         resolve({ child, url, refs: new Set() });
       } catch {
@@ -68,12 +68,12 @@ async function close(instanceId) {
 await joinSession({
   canvases: [createCanvas({
     id: "tizen-live", displayName: "Live TV inspector",
-    description: "User-operated native TV paint-layer feed and guarded controls; explicit emulator comparison, no fake fallback.",
+    description: "User-operated TV portal: scan the network for Samsung TVs, connect, identify, remote and live renderer view; no fake fallback.",
     inputSchema: { type: "object", additionalProperties: false, required: ["profilePath"],
       properties: { profilePath: { type: "string", minLength: 1 } } },
     actions: [{
       name: "status",
-      description: "Read connection, capture age/provenance, metadata and capabilities; no device commands or secrets.",
+      description: "Read scanned TVs, connection, capture age/provenance, metadata and capabilities; no device commands or secrets.",
       inputSchema: { type: "object", additionalProperties: false },
       handler: async (ctx) => {
         const entry = entries.get(owners.get(ctx.instanceId));
@@ -81,7 +81,6 @@ await joinSession({
         const address = new URL(entry.url);
         try {
           const response = await fetch(`${address.origin}/api/state`, {
-            headers: { Authorization: `Bearer ${address.hash.slice(1)}` },
             signal: AbortSignal.timeout(3000),
           });
           if (!response.ok) throw new Error();
@@ -107,7 +106,7 @@ await joinSession({
         entry = await pending;
       }
       entry.refs.add(ctx.instanceId); owners.set(ctx.instanceId, profile);
-      return { title: "Live TV inspector", url: entry.url, status: "Disconnected until the user authorizes Connect" };
+      return { title: "Live TV inspector", url: entry.url, status: "Choose Scan network for TVs, then Connect on a TV card" };
     },
     onClose: async (ctx) => close(ctx.instanceId),
   })],

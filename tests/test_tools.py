@@ -6,6 +6,7 @@ from pathlib import Path
 import socketserver
 import subprocess
 import sys
+import shutil
 import tempfile
 import threading
 import time
@@ -103,6 +104,16 @@ class ToolkitTests(unittest.TestCase):
             self.assertNotEqual(command[3], str(ROOT / "examples/hello-tv"))
             self.assertEqual(result["build"], "unsigned")
             self.assertFalse(Path(command[3]).exists(), "Temporary build cleaned")
+
+    def test_build_refuses_a_failing_audit_before_the_sdk_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "app"
+            shutil.copytree(ROOT / "examples/hello-tv", root)
+            (root / "leak.js").write_text('var password = "hunter2hunter2";\n')
+            with patch.object(tizen, "tool_path", return_value="/sdk/tizen"), patch.object(tizen, "execute") as execute:
+                with self.assertRaisesRegex(ValueError, "audit"):
+                    tizen.run(self.args("build", str(root)))
+                execute.assert_not_called()
 
     def test_package_never_overwrites_output(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -252,7 +263,7 @@ class ToolkitTests(unittest.TestCase):
                             capture_output=True, text=True, timeout=6,
                         )
                         self.assertLess(time.monotonic() - started, 6)
-                        self.assertEqual(result.returncode, 1)
+                        self.assertEqual(result.returncode, 2)
                         self.assertIn("deadline", result.stderr)
                     finally:
                         server.shutdown()
@@ -354,7 +365,7 @@ class ToolkitTests(unittest.TestCase):
                      "--port", str(server.server_address[1])],
                     capture_output=True, text=True, timeout=6,
                 )
-                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.returncode, 2)
                 self.assertIn("deadline", result.stderr)
             finally:
                 server.shutdown()

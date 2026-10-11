@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { shortcuts, shortcut, coordinate } from "../.github/extensions/tizen-live/controls.mjs";
-const remote = { closest: (selector) => selector === "#remote,#views" ? {} : null };
+const remote = { closest: (selector) => selector === ".remote,.view" ? {} : null };
 for (const [key, action] of Object.entries(shortcuts)) assert.equal(shortcut({ key, target: remote }, true, false), action);
 for (const flag of ["repeat", "isComposing", "ctrlKey", "altKey", "metaKey", "shiftKey"])
   assert.equal(shortcut({ key: "Enter", target: remote, [flag]: true }, true, false), null);

@@ -59,6 +59,18 @@ offline opening/status/schema routing and real browser UI testing are separate
 host gates. Parent-reported 406 ms native capture belongs to the upstream viewer,
 not this candidate. Existing Samsung lane ownership is never overridden.
 
+## TV Workbench continuation
+
+The separate runnable entry point now includes direct-click setup, SDK/app and
+bounded network discovery, a complete app-key remote, private recording/export
+and six generic human/agent workflows. Hosted Windows Server checks passed.
+After explicit lane release, bounded toolkit-native LayerTree replay and a
+nine-frame recording with PNG/GIF/MP4/WebM export were observed on the historical
+2017 target. See [the dated receipt](workbench.md#bounded-retail-observation-2026-10-11)
+for source identity, skipped input gates and independently verified cleanup.
+This supersedes candidate-only capture statements, not the published 0.1.0
+inventory or the annual hardware acceptance matrix.
+
 ## Source boundaries
 
 Stable references: [Samsung engine table](https://developer.samsung.com/smarttv/develop/specifications/web-engine-specifications.html),

@@ -1,0 +1,13 @@
+{
+  "status": "targets, not measurements; record measured medians per named model in receipts",
+  "method": {
+    "coldStartMs": "host clock from `sdb shell 0 debug APP` after kill to document.readyState complete; includes inspector attach",
+    "firstFrameMs": "window.__tvMarks.firstFrame: first requestAnimationFrame after script start, relative to navigationStart",
+    "firstHomeMs": "window.__tvMarks.home: first frame after the Home view is painted, relative to navigationStart"
+  },
+  "tiers": {
+    "legacy": {"years": "2015-2017", "tizen": "2.3-3.0", "budgets_ms": {"coldStartMs": 6000, "firstFrameMs": 2500, "firstHomeMs": 8000}},
+    "mid": {"years": "2018-2019", "tizen": "4.0-5.0", "budgets_ms": {"coldStartMs": 4000, "firstFrameMs": 1500, "firstHomeMs": 5000}},
+    "current": {"years": "2020+", "tizen": "5.5+", "budgets_ms": {"coldStartMs": 3000, "firstFrameMs": 1000, "firstHomeMs": 3500}}
+  }
+}
