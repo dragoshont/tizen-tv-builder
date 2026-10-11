@@ -32,7 +32,7 @@ in every command.
 ## 3. Find your TV
 
 ```sh
-python3 tools/tizen.py tv scan
+python3 tools/tizen.py scan
 ```
 
 This lists the Samsung TVs on your network with their name, model, Tizen version and
@@ -44,7 +44,7 @@ Turn on Developer Mode once per TV:
 
 1. On the TV open **Apps**, then type **1 2 3 4 5** on the remote.
 2. Switch **Developer mode** to **On**.
-3. Set **Host PC IP** to this computer's address (`python3 tools/tizen.py tv info NAME`
+3. Set **Host PC IP** to this computer's address (`python3 tools/tizen.py info NAME`
    shows it as "this computer's IP for the TV").
 4. Restart the TV (hold the power button until it turns off and on again).
 
@@ -69,23 +69,39 @@ says they need to be reinstalled. Details: [live canvas](live-canvas.md).
 ## 5. Install, open and check your app
 
 ```sh
-python3 tools/tizen.py tv install NAME /path/to/MyApp.wgt
-python3 tools/tizen.py tv apps NAME
-python3 tools/tizen.py tv open NAME APP
-python3 tools/tizen.py tv screenshot NAME --app APP --out ~/Pictures/TV-Screenshots
-python3 tools/tizen.py tv info NAME --connect
+python3 tools/tizen.py install /path/to/MyApp.wgt NAME
+python3 tools/tizen.py install https://example.com/builds/MyApp.wgt NAME
+python3 tools/tizen.py apps NAME
+python3 tools/tizen.py info NAME --app APP
+python3 tools/tizen.py open NAME APP
+python3 tools/tizen.py screenshot NAME --app APP --out ~/Pictures/TV-Screenshots
+python3 tools/tizen.py info NAME --connect
 python3 tools/tizen.py tv uninstall NAME APP
 ```
 
+NAME is the TV's IP address, its name as `scan` shows it, or its `tv-xxxxxx` alias.
+
 - `install` signs a private copy with your active certificate, installs it, and only
-  says "Installed" when the TV's own app list shows the app.
+  says "Installed" when the TV's own app list shows the app. An `https://` link is
+  downloaded to a private folder (at most 256 MB and 5 minutes), checked to be a Tizen
+  app package, installed and then deleted; only the link without its query or password
+  is printed. Plain `http://` is refused.
 - `apps` lists every app ID on the TV.
+- `info NAME --app APP` answers installed / not installed / unknown for one app ID or
+  app name. The version is printed only when the TV's own app list shows one; the 2017
+  and 2019 TVs list IDs only, so it says "Version: unknown". The version inside a
+  downloaded package is not proof of what is installed.
 - `open` restarts the app in debug mode so its screen can be seen.
 - `screenshot` saves the app's picture as a PNG (default folder `~/Pictures/TV Screenshots`).
 - `info --connect` shows every detail the portal shows, including the Tizen version,
   certificate coverage and apps.
-- `uninstall` removes the app and checks the app list again. Some TVs (Tizen 5.0) report
+- `tv uninstall` removes the app and checks the app list again. Some TVs (Tizen 5.0) report
   success without removing it; then the command tells you to delete it on the TV.
+
+Every other TV command (`setup`, `cert`, `uninstall`, `key`, ...) stays under
+`python3 tools/tizen.py tv COMMAND`, and `python3 tools/tizen.py tv install NAME APP.wgt`
+(TV first) still works. The older sdb form `python3 tools/tizen.py install --serial SERIAL APP.wgt`
+is unchanged.
 
 Each command connects, does its job and disconnects. The TV's real error is printed
 when something fails, with the next command to run.
@@ -93,7 +109,7 @@ when something fails, with the next command to run.
 ## The same steps in the web portal
 
 ```sh
-python3 tools/tizen.py tv portal
+python3 tools/tizen.py portal
 ```
 
 Open the printed `http://127.0.0.1:47811/`. Ctrl+C stops it; `--port N` picks another port.
@@ -128,7 +144,7 @@ python3 tools/tizen.py validate MyTv/app
 python3 tools/tizen.py audit MyTv/app
 python3 tools/tizen.py pack MyTv/app --output MyTv.wgt
 python3 tools/tizen.py check-package MyTv.wgt
-python3 tools/tizen.py tv install NAME MyTv.wgt
+python3 tools/tizen.py install MyTv.wgt NAME
 ```
 
 - `new` creates a starter app with a unique ten-character package ID, an ES5 template

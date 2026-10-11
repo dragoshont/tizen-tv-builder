@@ -1188,6 +1188,40 @@ class Fleet:
             fail("apps", "The TV's app list could not be read; try Show apps again")
         return self.state()
 
+    def app_info(self, alias, data):
+        """Read-only: is one app (exact ID or exact name) installed, and which version the TV lists.
+
+        installed is "yes", "no" or "unknown". The version is only what the TV's own app list
+        shows; None when it shows none (the 2017 and 2019 TVs list IDs only).
+        """
+        exact(data, {"app"})
+        query = data["app"]
+        if not isinstance(query, str) or not 0 < len(query.strip()) <= 128 or not query.isprintable():
+            fail("invalid", "Name the app by its ID or its name")
+        query = query.strip()
+        with self.lock:
+            record = self.record(alias)
+            if record["lease"] is None:
+                fail("connect", "Connect to this TV first")
+            serial = record["serial"]
+        listing = self._app_listing(serial)
+        self._remember_apps(record, None if listing is None else {r["id"] for r in listing})
+        found = {"op": "app-info", "query": query, "installed": "unknown", "app": None, "title": None,
+                 "version": None, "reason": None}
+        if listing is None:
+            return dict(found, reason="unreadable")
+        match = [r for r in listing if r["id"] == query]
+        if not match:
+            match = [r for r in listing if (r.get("title") or "").casefold() == query.casefold()]
+            if len(match) > 1:
+                return dict(found, reason="ambiguous")
+        if match:
+            r = match[0]
+            return dict(found, installed="yes", app=r["id"], title=r.get("title"), version=r.get("version"))
+        if APP_ID_TOKEN.fullmatch(query) or all(r.get("title") for r in listing):
+            return dict(found, installed="no")
+        return dict(found, reason="names-not-listed")
+
     def _remember_apps(self, record, listed):
         with self.lock:
             if record["lease"] is not None:
@@ -1231,6 +1265,11 @@ class Fleet:
 
     def _installed_apps(self, serial):
         """App IDs the TV lists, or None when the list cannot be read. Never inferred from exit codes."""
+        listing = self._app_listing(serial)
+        return None if listing is None else {r["id"] for r in listing}
+
+    def _app_listing(self, serial):
+        """One record per listed app: id, plus title/version only when the TV prints them."""
         try:
             text = self.runner([self.sdb, "-s", serial, "shell", "0", "vd_applist"], 30)
         except LiveError:
@@ -1241,7 +1280,19 @@ class Fleet:
         apps = set(APP_ID_TOKEN.findall(text))
         if not apps or (count and listed and len(listed) < int(count.group(1))):
             return None
-        return apps
+        records, current = {}, None
+        for line in text.splitlines():
+            key, sep, value = line.partition("=")
+            key, value = key.strip().lower(), value.strip()
+            if not sep:
+                continue
+            if key == "app_tizen_id":
+                current = records.setdefault(value, {"id": value}) if value in apps else None
+            elif current is not None and value and key in {"app_title", "title"}:
+                current["title"] = value[:128]
+            elif current is not None and value and key in {"app_version", "version", "pkg_version"}:
+                current["version"] = value[:32]
+        return list(records.values()) + [{"id": a} for a in sorted(apps - set(records))]
 
     def _tizen(self, args, timeout=120):
         """(failed, scrubbed output). The Tizen CLI often exits 0 on failure, so callers read the text."""

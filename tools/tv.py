@@ -11,13 +11,21 @@ No setup is needed: names live in a private profile created empty on first use
 (~/.tizen-tv-builder/profile.json, or $TIZEN_TV_PROFILE).
 """
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import sys
+import tempfile
 import time
+import urllib.parse
+import urllib.request
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import appkit  # noqa: E402
 import live_tv  # noqa: E402
 from live_tv import LiveError, read_profile  # noqa: E402
 
@@ -26,6 +34,8 @@ KEYS = sorted(live_tv.KEYS)
 PORTAL_PORT = 47811
 CERT_POLL = 1.0  # Seconds between checks while the certificate is being made.
 STATE_DIR = Path.home() / ".tizen-tv-builder"
+WGT_LIMIT = 256 * 1024 * 1024  # Bytes; a TV web app is far smaller.
+WGT_DEADLINE = 300.0  # Seconds for the whole download, not per read.
 # The scan cache is a file on disk: names and status only, never addresses or Device IDs.
 CACHE_FIELDS = ("alias", "name", "label", "headline", "status", "reachable", "year", "dev_mode", "metadata")
 ALIASES = {"status": "scan", "check": "connect", "identify": "connect", "remove": "uninstall"}
@@ -34,15 +44,16 @@ ALIASES = {"status": "scan", "check": "connect", "identify": "connect", "remove"
 def parser():
     cli = argparse.ArgumentParser(prog="tv", description=__doc__.split("\n\n")[0],
                                   formatter_class=argparse.RawDescriptionHelpFormatter, epilog=(
-        "commands (TV = name or tv-xxxxxx alias):\n"
+        "commands (TV = IP address, name or tv-xxxxxx alias):\n"
         "  scan | list            Find TVs on your network / show the last scan\n"
         "  connect TV             Connect: status, details, certificate and apps, then disconnect\n"
         "  info TV [--connect]    Every detail the portal shows; --connect also reads identity and apps\n"
+        "  info TV --app APP      Is APP (exact ID or name) installed, and the version if the TV lists it\n"
         "  apps TV                Every app ID on the TV\n"
         "  open TV APP            Open an app's screen (restarts the app)\n"
         "  screenshot TV --app APP [--out DIR]   Save the app's picture as PNG\n"
         "  key TV KEY... --app APP               Send remote keys to the app: " + ", ".join(KEYS) + "\n"
-        "  install TV WGT [--sign PROFILE]       Sign with the active profile and install\n"
+        "  install TV WGT_OR_HTTPS_URL [--sign PROFILE]   Sign with the active profile and install\n"
         "  uninstall TV APP       Uninstall an app\n"
         "  cert TV | cert add TV  Certificate coverage / add this TV to your certificate\n"
         "  cert use TV PROFILE    Make PROFILE the active signing profile (one that allows this TV)\n"
@@ -68,6 +79,7 @@ def parser():
     item.add_argument("--connect", action="store_true",
                       help="Also connect to read OS, DUID, certificate and apps, then disconnect")
     item.add_argument("--show-duid", action="store_true", help="Same as --connect (the DUID is always shown)")
+    item.add_argument("--app", help="Is this app (exact ID or name) installed, and which version does the TV list")
     item = sub.add_parser("rename", help="Name a TV")
     item.add_argument("tv")
     item.add_argument("name")
@@ -79,7 +91,7 @@ def parser():
     item.add_argument("words", nargs="+", metavar="TV | add TV | use TV PROFILE")
     item = sub.add_parser("install", help="Sign a .wgt with the active profile and install it")
     item.add_argument("tv")
-    item.add_argument("package", type=Path)
+    item.add_argument("package", help="A .wgt file, or an https:// link to one")
     item.add_argument("--sign", metavar="PROFILE", help="Signing profile (default: the active one)")
     item.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
     for name in ("open", "uninstall", "remove", "launch"):
@@ -225,16 +237,132 @@ def guidance_lines(tv):
         yield "This computer's IP to enter on the TV: " + guide["host_ip"]
 
 
+def addresses(tv):
+    """The TV's network address, with and without a port."""
+    address = str((tv.get("details") or {}).get("address") or "").casefold()
+    if not address:
+        return set()
+    return {address, address.rsplit(":", 1)[0]} if address.count(":") == 1 else {address, address.strip("[]")}
+
+
 def find(state, query):
-    """A TV by alias or name, any case."""
+    """A TV by IP address, alias or name, any case."""
     wanted = query.strip().casefold()
     matches = [t for t in state["tvs"]
-               if wanted in (t["alias"].casefold(), str(t.get("name", "")).casefold(), title(t).casefold())]
+               if wanted in (t["alias"].casefold(), str(t.get("name", "")).casefold(), title(t).casefold())
+               or wanted in addresses(t)]
     if len(matches) != 1:
         names = ", ".join(f"{title(t)} ({t['alias']})" for t in state["tvs"]) or "none found"
         raise LiveError("unknown", ("Several TVs are called " if matches else "No TV called ") + query +
                         "; TVs: " + names)
     return matches[0]
+
+
+def public_url(url):
+    """The link without credentials, query or fragment: safe to print."""
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    host = f"[{host}]" if ":" in host else host
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return urllib.parse.urlunsplit((parts.scheme, host + (f":{port}" if port else ""), parts.path, "", ""))
+
+
+class HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not str(newurl).lower().startswith("https://"):
+            raise LiveError("download", "The download link redirected away from HTTPS; nothing was installed")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def https_opener(request, timeout):
+    return urllib.request.build_opener(HttpsOnlyRedirect()).open(request, timeout=timeout)
+
+
+class download_package:
+    """`with download_package(url) as path`: a validated .wgt in a private folder, removed afterwards.
+
+    Bounded by size and by one deadline for the whole download. Only the public part of the link
+    (no credentials, query or fragment) ever appears in messages.
+    """
+
+    def __init__(self, url, opener=None, limit=WGT_LIMIT, deadline=WGT_DEADLINE, chunk=1 << 20, clock=time.monotonic):
+        if not url.lower().startswith("https://"):
+            raise Usage("Only https:// links can be installed; download it yourself, then install the file")
+        self.url, self.public = url, public_url(url)
+        self.opener, self.limit, self.deadline = opener or https_opener, limit, deadline
+        self.chunk, self.clock, self.folder = chunk, clock, None
+        self.size = 0
+        self.version = None
+
+    def __enter__(self):
+        self.folder = Path(tempfile.mkdtemp(prefix="tv-download-"))
+        try:
+            return self._fetch()
+        except BaseException:
+            shutil.rmtree(self.folder, ignore_errors=True)
+            raise
+
+    def __exit__(self, *exc):
+        shutil.rmtree(self.folder, ignore_errors=True)
+        return False
+
+    def _request(self):
+        parts = urllib.parse.urlsplit(self.url)
+        netloc = parts.netloc.rpartition("@")[2]
+        request = urllib.request.Request(urllib.parse.urlunsplit(parts._replace(netloc=netloc)),
+                                         headers={"User-Agent": "tizen-tv-builder"})
+        if parts.username is not None:
+            token = f"{urllib.parse.unquote(parts.username)}:{urllib.parse.unquote(parts.password or '')}"
+            # Unredirected: credentials are never forwarded to another host.
+            request.add_unredirected_header("Authorization", "Basic " + base64.b64encode(token.encode()).decode())
+        return request
+
+    def _fetch(self):
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", urllib.parse.unquote(Path(urllib.parse.urlsplit(self.url).path).name))
+        target = self.folder / (name if name.lower().endswith(".wgt") and len(name) <= 128 else "download.wgt")
+        started = self.clock()
+        too_big = LiveError("download", f"The file at {self.public} is larger than {self.limit // (1024 * 1024)} MB; "
+                                        "nothing was installed")
+        try:
+            with self.opener(self._request(), timeout=min(30.0, self.deadline)) as response, open(target, "xb") as out:
+                if int(response.headers.get("Content-Length") or 0) > self.limit:
+                    raise too_big
+                while True:
+                    if self.clock() - started > self.deadline:
+                        raise LiveError("download", f"The download from {self.public} took longer than "
+                                                    f"{self.deadline:g} s; nothing was installed")
+                    data = response.read(self.chunk)
+                    if not data:
+                        break
+                    self.size += len(data)
+                    if self.size > self.limit:
+                        raise too_big
+                    out.write(data)
+        except LiveError:
+            raise
+        except (OSError, ValueError) as error:
+            reason = f"HTTP {error.code}" if hasattr(error, "code") and isinstance(error.code, int) \
+                else type(error).__name__
+            raise LiveError("download", f"Could not download {self.public} ({reason}); nothing was installed") \
+                from None
+        try:
+            app = appkit.check_package(target)["app"]
+            with zipfile.ZipFile(target) as archive:
+                info = archive.getinfo("config.xml")
+                config = archive.read(info).decode("utf-8", "replace") if info.file_size <= 1 << 20 else ""
+        except (ValueError, OSError, KeyError, zipfile.BadZipFile) as error:
+            reason = str(error) if isinstance(error, ValueError) else "not a zip archive"
+            raise LiveError("invalid", f"The file at {self.public} is not a Tizen TV app package ({reason}); "
+                                       "nothing was installed") from None
+        if not app:
+            raise LiveError("invalid", f"The file at {self.public} is not a Tizen TV app package "
+                                       "(config.xml has no app ID); nothing was installed")
+        found = re.search(r"<widget\b[^>]*?\sversion=\"([^\"]{1,32})\"", config)
+        self.app, self.version = app, found and found.group(1)
+        return target
 
 
 def private_output(folder):
@@ -555,6 +683,8 @@ def act(args, fleet, tv, say):
         return 1
     alias = connected["alias"]
     try:
+        if command == "info" and args.app:
+            return app_info(fleet, alias, connected, args.app, say)
         if command in {"connect", "info"}:
             say(f"{title(connected)}: {connected['label']}")
             say(connected["headline"])
@@ -615,7 +745,7 @@ def act(args, fleet, tv, say):
             say(f"Sent {', '.join(args.keys)} to {args.app} ({source.command_ms} ms for the last key)")
             return 0
         if command == "install":
-            data = {"package": str(args.package.expanduser().absolute())}
+            data = {"package": str(Path(args.package).expanduser().absolute())}
             if args.sign:
                 data["sign"] = args.sign
             return result(say, fleet.install(alias, data))
@@ -623,6 +753,29 @@ def act(args, fleet, tv, say):
         return result(say, getattr(fleet, verb)(alias, {"app": args.app}))
     finally:
         release(fleet, alias, say)
+
+
+APP_UNKNOWN = {
+    "unreadable": "the TV's app list could not be read; try again",
+    "names-not-listed": "this TV lists app IDs only, so a name can't be checked; use the app ID (see `tv apps TV`)",
+    "ambiguous": "several apps have that name; use the app ID (see `tv apps TV`)",
+}
+
+
+def app_info(fleet, alias, tv, query, say):
+    """Installed yes/no/unknown, and the version only when the TV itself lists one."""
+    found = fleet.app_info(alias, {"app": query})
+    say(f"{title(tv)}: {tv['label']}")
+    if found["installed"] == "yes":
+        say(f"{found['app']}: installed" + (f" ({found['title']})" if found.get("title") else ""))
+        say(f"  Version: {found['version']} (as the TV lists it)" if found.get("version")
+            else "  Version: unknown (this TV's app list does not show versions)")
+        return 0
+    if found["installed"] == "no":
+        say(f"{query}: not installed")
+        return 1
+    say(f"{query}: unknown — " + APP_UNKNOWN.get(found.get("reason"), "the TV did not say"))
+    return 1
 
 
 def profile_source(args, profile, config, cdp_factory, say):
@@ -733,12 +886,20 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
             tv = find(fleet.rename(tv["alias"], {"name": args.name}), tv["alias"])
             say(f"Renamed {tv['alias']} to {title(tv)}")
             return 0
-        if args.command == "info" and not (args.connect or args.show_duid):
+        if args.command == "info" and not (args.connect or args.show_duid or args.app):
             say(f"{title(tv)}: {tv['label']}")
             say(tv["headline"])
             for line in details_lines(tv):
                 say(line)
             return 0
+        if args.command == "install" and "://" in args.package:
+            download = download_package(args.package)
+            with download as path:
+                say(f"Downloaded {download.public} ({max(1, download.size // 1024)} KB): app {download.app}"
+                    + (f", package version {download.version} (from the file, not read from the TV)"
+                       if download.version else ""))
+                args.package = str(path)
+                return act(args, fleet, tv, say)
         return act(args, fleet, tv, say)
     finally:
         fleet.close()

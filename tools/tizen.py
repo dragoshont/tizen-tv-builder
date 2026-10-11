@@ -234,8 +234,64 @@ def inspect(port):
             "capture": "not tested by HTTP discovery"}
 
 
+TV_COMMANDS = {"scan", "apps", "info", "open", "screenshot", "portal"}
+TV_HELP = """TV commands (TV = IP address, name or tv-xxxxxx alias):
+  scan                                  Find Samsung TVs on your network
+  install PACKAGE_OR_HTTPS_URL TV       Sign a .wgt (file or https:// link) with your profile and install it
+  info TV [--app APP]                   TV details; --app: is APP (ID or name) installed, and which version
+  apps TV                               Every app ID on the TV
+  open TV APP                           Open an app's screen (restarts the app)
+  screenshot TV --app APP [--out DIR]   Save the app's picture as PNG
+  portal                                Open the Samsung TV Developer Companion in your browser
+  tv COMMAND ...                        Every TV command, e.g. tv setup, tv cert add TV, tv key, tv uninstall
+
+Legacy device commands keep their form: install --serial SERIAL PACKAGE, run, debug, forward, unforward."""
+INSTALL_USAGE = ("Use: install PACKAGE_OR_HTTPS_URL TV [--sign PROFILE]  "
+                 "(legacy serial install: install --serial SERIAL PACKAGE)")
+
+
+INSTALL_HELP = """usage: install PACKAGE_OR_HTTPS_URL TV [--sign PROFILE]
+       install --serial SERIAL [--authorized] PACKAGE   (legacy, by sdb serial)
+
+PACKAGE_OR_HTTPS_URL  a .wgt file, or an https:// link to one (downloaded to a private
+                      folder, checked, installed, then deleted)
+TV                    the TV's IP address, name or tv-xxxxxx alias
+--sign PROFILE        signing profile (default: the active one)"""
+
+
+class InstallShape(ValueError):
+    pass
+
+
+def tv_argv(argv):
+    """The `tv` arguments for a TV command, or None for every other (build/legacy) command."""
+    if argv[:1] == ["tv"]:
+        return argv[1:]
+    if argv[:1] and argv[0] in TV_COMMANDS:
+        return argv
+    if argv[:1] != ["install"] or any(a == "--serial" or a.startswith("--serial=") or a == "--authorized"
+                                      for a in argv[1:]):
+        return None
+    if {"-h", "--help"} & set(argv[1:]):
+        raise InstallShape(INSTALL_HELP)
+    words, options, before, rest = [], [], [], iter(argv[1:])
+    for word in rest:
+        if word == "--profile":
+            before += [word, next(rest, "")]
+        elif word == "--sign":
+            options += [word, next(rest, "")]
+        elif word.startswith("-"):
+            options.append(word)
+        else:
+            words.append(word)
+    if len(words) != 2:
+        raise InstallShape(INSTALL_USAGE)
+    return before + ["install", words[1], words[0]] + options
+
+
 def parser():
-    cli = argparse.ArgumentParser(description=__doc__)
+    cli = argparse.ArgumentParser(description=__doc__, epilog=TV_HELP,
+                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     version = json.loads((Path(__file__).resolve().parents[1] / "plugin.json").read_text())["version"]
     cli.add_argument("--version", action="version", version="tizen-tv-builder " + version)
     cli.add_argument("--tizen")
@@ -418,10 +474,18 @@ def _cancel(signum, frame):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] == ["tv"]:
+    try:
+        forwarded = tv_argv(argv)
+    except InstallShape as error:
+        if str(error) == INSTALL_HELP:
+            print(INSTALL_HELP)
+            return 0
+        print("ERROR: " + str(error), file=sys.stderr)
+        return 2
+    if forwarded is not None:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import tv
-        return tv.main(argv[1:])
+        return tv.main(forwarded)
     previous_sigterm = signal.signal(signal.SIGTERM, _cancel)
     try:
         result = run(parser().parse_args(argv))

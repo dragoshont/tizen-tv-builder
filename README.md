@@ -5,7 +5,7 @@ Build a Samsung TV app without relearning the same lessons every time.
 ## Start the Samsung TV Developer Companion
 
 ```
-python3 tools/tizen.py tv portal        # or: python3 tools/tv.py portal
+python3 tools/tizen.py portal
 ```
 
 - It prints `http://127.0.0.1:47811/`; open that in your browser. Ctrl+C stops it.
@@ -160,9 +160,11 @@ manifest validation and HTTP inspector discovery do not launch SDK processes.
 
 ## First install on a TV
 
-Follow [getting started](docs/getting-started.md): `python3 tools/tizen.py tv scan`, TV
+Follow [getting started](docs/getting-started.md): `python3 tools/tizen.py scan`, TV
 Developer Mode, `python3 tools/tizen.py tv cert add NAME` (one Samsung sign-in in your
-browser, no other prompts), then `python3 tools/tizen.py tv install NAME APP.wgt`. Keep
+browser, no other prompts), then `python3 tools/tizen.py install APP.wgt NAME` (a file or an
+`https://` link). Then `python3 tools/tizen.py apps NAME`, `python3 tools/tizen.py info NAME --app APP`,
+`python3 tools/tizen.py open NAME APP` and `python3 tools/tizen.py screenshot NAME --app APP`. Keep
 certificates, passwords and device IDs private.
 
 The lower-level `package`, `install` and `run` commands remain for agents and scripted

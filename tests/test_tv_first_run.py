@@ -74,8 +74,10 @@ FAKE_TOOL = textwrap.dedent('''
                     done("closed")
                 apps = ["SyStEmApp1.Home"] + state["installed"]
                 count = len(apps) + (5 if scenario.get("applist") == "truncated" else 0)
+                version = scenario.get("applist_versions")
                 done("\\n".join(["get app list...", "apps count: %d" % count]
-                                + ["app_tizen_id = " + a for a in apps]))
+                                + [line for a in apps for line in (["app_tizen_id = " + a]
+                                   + (["app_title = Title " + a, "app_version = " + version] if version else []))]))
     if tool == "tizen":
         target = args[args.index("-t") + 1] if "-t" in args else None
         if args[0] == "package":
