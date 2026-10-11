@@ -553,7 +553,7 @@ class LiveTests(unittest.TestCase):
         self.assertNotIn("version unavailable", script)
 
     def test_certificate_card_speaks_in_tv_names(self):
-        script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text()
+        script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text(encoding="utf-8")
         for text in ("`You can't install your apps on ${c.tv_name || \"this TV\"} yet: ${certText(c)}`",
                      "`your certificate only allows ${(c.covers_names", '"Allow installing my apps on this TV"',
                      "Uses tizen-cert; Samsung sign-in opens in your browser.", 'el("ul", { class: "checklist" }',
