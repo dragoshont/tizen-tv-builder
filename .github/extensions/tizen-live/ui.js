@@ -166,10 +166,11 @@ function tvCard(alias) {
   // Certificate: appears only when this TV is not in the active certificate.
   const certHead = el("h3");
   const certButton = el("button", { type: "button", class: "primary" }, "Allow installing my apps on this TV");
+  const useProfile = el("button", { type: "button", class: "primary", hidden: true });
   const copyDuid = el("button", { type: "button", class: "secondary" }, "Copy device ID");
   const certCommand = el("p", { class: "subtle" });
   const cert = el("section", { class: "guide cert", "aria-label": "Certificate", hidden: true },
-    certHead, el("div", { class: "row" }, certButton, copyDuid), certCommand);
+    certHead, el("div", { class: "row" }, useProfile, certButton, copyDuid), certCommand);
   const job = el("div", { class: "job", role: "status", "aria-live": "polite" });
   const list = el("dl");
   const details = el("details", { class: "tv-details" }, el("summary", {}, "TV details"), list, disconnect);
@@ -181,7 +182,7 @@ function tvCard(alias) {
       el("div", { class: "row" }, connect, rescan), guide, cert, job, connected, details),
     remote);
   const card = { root, name, pill, reason, connect, rescan, disconnect, guide, screenText, frames, age, refreshPicture, save,
-    appsNote, appList, reloadApps, apps, pkg, choose, install, installSection, cert, certHead, certButton, copyDuid,
+    appsNote, appList, reloadApps, apps, pkg, choose, install, installSection, cert, certHead, certButton, useProfile, copyDuid,
     certCommand, job, list, details, connected, remote, why, hint, keys, summary: "", revision: null, appRows: new Map() };
 
   connect.addEventListener("click", () => tvCommand("connect", alias, {}));
@@ -206,6 +207,10 @@ function tvCard(alias) {
     tvCommand("install", alias, { package: path });
   });
   certButton.addEventListener("click", () => tvCommand("cert", alias, {}));
+  useProfile.addEventListener("click", () => {
+    const other = current()?.certificate?.others?.[0];
+    if (other) tvCommand("profile", alias, { profile: other });
+  });
   copyDuid.addEventListener("click", async () => {
     const duid = current()?.details?.duid; if (!duid) return;
     try { await navigator.clipboard.writeText(duid); copyDuid.textContent = "Copied"; setTimeout(() => { copyDuid.textContent = "Copy device ID"; }, 1500); }
@@ -322,10 +327,22 @@ async function updateTv(card, tv, keep) {
   const c = tv.certificate || {}, fix = tv.held && ["not-covered", "no-profile", "default"].includes(c.state) && d.duid;
   card.cert.hidden = !fix;
   if (fix) {
-    card.certHead.textContent = `You can't install your apps on ${c.tv_name || "this TV"} yet: ${certText(c)}`;
-    card.certCommand.textContent = `Adds this TV to your Samsung certificate${c.profile ? ` (${c.profile})` : ""}. ` +
-      "Uses tizen-cert; Samsung sign-in opens in your browser.";
-    card.certButton.disabled = card.copyDuid.disabled = working || offline;
+    // Another signing profile already lists this TV: switching to it is the fix, not a new certificate.
+    const other = (c.others || [])[0];
+    card.useProfile.hidden = !other;
+    card.certButton.hidden = Boolean(other);
+    if (other) {
+      card.certHead.textContent = `Your profile ${other} allows ${c.tv_name || "this TV"}, but installs use ` +
+        `${c.profile || "no profile"}, which doesn't.`;
+      card.useProfile.textContent = `Use ${other} for installs`;
+      card.certCommand.textContent = `Makes ${other} the active signing profile in Tizen Studio. ` +
+        `${c.profile ? `${c.profile} stays as it is.` : ""}`;
+    } else {
+      card.certHead.textContent = `You can't install your apps on ${c.tv_name || "this TV"} yet: ${certText(c)}`;
+      card.certCommand.textContent = `Adds this TV to your Samsung certificate${c.profile ? ` (${c.profile})` : ""}. ` +
+        "Uses tizen-cert; Samsung sign-in opens in your browser.";
+    }
+    card.certButton.disabled = card.useProfile.disabled = card.copyDuid.disabled = working || offline;
   }
   renderJob(card, tv);
   card.connected.hidden = !tv.held;

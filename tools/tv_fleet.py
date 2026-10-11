@@ -142,15 +142,22 @@ def signing_profiles(data_root):
         return None
     names = [p.get("name") for p in root.iter("profile") if p.get("name")]
     active = root.get("active") if root.get("active") in names else None
-    distributor = None
+    distributors = {}
     for profile in root.iter("profile"):
-        if profile.get("name") != active:
-            continue
         for item in profile.iter("profileitem"):
             # Only the key path is read; password attributes are never touched.
-            if item.get("distributor") == "1" and item.get("key"):
-                distributor = item.get("key")
-    return {"names": names, "active": active, "distributor": distributor}
+            if profile.get("name") and item.get("distributor") == "1" and item.get("key"):
+                distributors[profile.get("name")] = item.get("key")
+    return {"names": names, "active": active, "distributor": distributors.get(active),
+            "distributors": distributors}
+
+
+def _profile_devices(key):
+    """(folder, DUIDs listed in the device-profile.xml next to a distributor key); None when unreadable."""
+    folder = Path(key).expanduser().parent
+    root = _safe_xml(folder / "device-profile.xml")
+    return folder, None if root is None else [
+        (d.text or "").strip() for d in root.iter("TestDevice") if (d.text or "").strip()]
 
 
 def _safe_xml(path):
@@ -173,23 +180,29 @@ def certificate_coverage(data_root, duid=None):
 
     Returns DUIDs and the profile name only; the profile's email and passwords are never read out."""
     profiles = signing_profiles(data_root)
+    # Every other profile's device list too: a new profile made in tizen-cert may cover the TV.
+    by_profile = {}
+    for name, key in ((profiles or {}).get("distributors") or {}).items():
+        devices = _profile_devices(key)[1]
+        if name != (profiles or {}).get("active") and devices is not None:
+            by_profile[name] = devices
+    others = [name for name, devices in sorted(by_profile.items()) if duid and duid in devices]
+    extra = {"duid": duid, "by_profile": by_profile, "others": others}
     if not profiles or not profiles["active"]:
-        return {"state": "no-profile", "profile": None, "covers": [], "duid": duid, "folder": None}
+        return dict(extra, state="no-profile", profile=None, covers=[], folder=None)
     key = profiles.get("distributor")
     if not key:
         # Tizen's built-in distributor certificate: Developer Mode TVs accept it without a DUID list.
-        return {"state": "default", "profile": profiles["active"], "covers": [], "duid": duid, "folder": None}
-    folder = Path(key).expanduser().parent
-    root = _safe_xml(folder / "device-profile.xml")
-    covers = [] if root is None else [
-        (d.text or "").strip() for d in root.iter("TestDevice") if (d.text or "").strip()]
-    if root is None:
+        return dict(extra, state="default", profile=profiles["active"], covers=[], folder=None)
+    folder, devices = _profile_devices(key)
+    covers = devices or []
+    if devices is None:
         state = "unreadable"
     elif not duid:
         state = "unknown-tv"
     else:
         state = "covered" if duid in covers else "not-covered"
-    return {"state": state, "profile": profiles["active"], "covers": covers, "duid": duid, "folder": str(folder)}
+    return dict(extra, state=state, profile=profiles["active"], covers=covers, folder=str(folder))
 
 
 INSTALL_HELP = {
@@ -631,7 +644,8 @@ class Fleet:
     PENDING = {"connect": "Connecting…", "identify": "Reading TV details…", "disconnect": "Disconnecting…",
                "preview": "Opening app screen (restarts the app)…", "apps": "Listing apps…",
                "install": "Installing…", "remove": "Uninstalling…", "launch": "Starting app…",
-               "screenshot": "Saving screenshot…", "cert": "Preparing certificate…"}
+               "screenshot": "Saving screenshot…", "cert": "Preparing certificate…",
+               "profile": "Changing signing profile…"}
 
     def headline(self, record, status, reason):
         """One status per TV, identical in the pill, the list row and the CLI: (label, tone, detail)."""
@@ -816,6 +830,9 @@ class Fleet:
             cached = (now, certificate_coverage(self.data_root))
             self._coverage = cached
         base = dict(cached[1], duid=duid)
+        by_profile = base.pop("by_profile", {})
+        # Names of the other signing profiles that list this TV (no other profile's device IDs leave here).
+        base["others"] = [name for name, devices in sorted(by_profile.items()) if duid and duid in devices]
         if base["state"] in {"unknown-tv", "covered", "not-covered"}:
             base["state"] = "unknown-tv" if not duid else "covered" if duid in base["covers"] else "not-covered"
         # TV names instead of bare device IDs; an ID no remembered TV has stays an ID.
@@ -1345,6 +1362,8 @@ class Fleet:
             return self._finish(record, {"op": "cert", "ok": True, "code": "covered",
                                          "message": f"Certificate {coverage['profile']} already includes this TV",
                                          "next": None})
+        if coverage["others"]:
+            return self._finish(record, self._other_profile_job(coverage, self.short_name(alias) or "this TV"))
         installed_now = None
         binary = find_tizen_cert(self.which, self.cert_locations)
         if not binary:
@@ -1417,6 +1436,8 @@ class Fleet:
         if coverage["state"] == "covered":
             record["job"] = dict(base, ok=True, code="covered", next=None,
                                  message=f"Done: your certificate ({coverage['profile']}) now allows {watch['name']}")
+        elif coverage["others"]:
+            record["job"] = dict(base, **self._other_profile_job(coverage, watch["name"]))
         elif code != 0:
             record["job"] = dict(base, ok=False, code="tizen-cert-failed",
                                  message=f"tizen-cert exited with code {text or 'unknown'}. Certificate unchanged: "
@@ -1429,8 +1450,44 @@ class Fleet:
                                  next="In tizen-cert, choose Renew for this profile and add the Device ID, then try again")
         return record["job"]
 
+    @staticmethod
+    def _other_profile_job(coverage, name):
+        other = coverage["others"][0]
+        active = coverage["profile"] or "no profile"
+        return {"op": "cert", "ok": False, "code": "other-profile", "use_profile": other,
+                "others": coverage["others"], "duid": coverage["duid"],
+                "message": f"Your profile {other} allows {name}, but installs use {active}, which doesn't.",
+                "next": f"Use {other} for installs"}
+
+    def profile(self, alias, data):
+        """Make another signing profile the active one (`tizen security-profiles set-active`), then re-read it."""
+        exact(data, {"profile"})
+        name = data["profile"]
+        profiles = signing_profiles(self.data_root) or {"names": []}
+        if not isinstance(name, str) or name not in profiles["names"]:
+            fail("invalid", "There is no signing profile with that name")
+        with self.lock:
+            record = self.record(alias)
+        if not self.tizen:
+            fail("sdk", "The tizen CLI from Tizen Studio is needed to change the active profile")
+        failed, output = self._tizen(["security-profiles", "set-active", "-n", name], 60)
+        self._coverage = self._profiles = None
+        now = (signing_profiles(self.data_root) or {}).get("active")
+        if now != name:
+            return self._finish(record, {
+                "op": "profile", "ok": False, "code": "profile-unchanged", "output": output[-2000:],
+                "command": f"tizen security-profiles set-active -n {name}",
+                "message": f"The active profile is still {now or 'none'}: the tizen CLI didn't switch to {name}.",
+                "next": "See the output, or choose the profile in Tizen Studio's Certificate Manager"})
+        duid = record.get("duid")
+        covers = certificate_coverage(self.data_root, duid)
+        return self._finish(record, {
+            "op": "profile", "ok": True, "code": "profile-active", "profile": name,
+            "message": f"Installs now use {name}" + (", which allows this TV" if covers["state"] == "covered" else ""),
+            "next": None})
+
     OPERATIONS = {"connect", "identify", "disconnect", "preview", "apps", "install", "remove",
-                  "launch", "screenshot", "cert"}
+                  "launch", "screenshot", "cert", "profile"}
 
     # Failures of these mean the developer link is broken; any other failure is that action's result only.
     LINK_OPS = {"connect", "identify", "disconnect"}

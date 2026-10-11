@@ -369,6 +369,80 @@ class FleetTests(unittest.TestCase):
         self.assertIn("tizen-cert exited with code 127. Certificate unchanged", job["message"])
         fleet.close()
 
+    def two_profiles(self, switch=True):
+        """test-profile (active, without this TV) and plx-tv-2 (a newer tizen-cert profile listing it)."""
+        second = self.root / "certs2"
+        second.mkdir()
+        (second / "device-profile.xml").write_text(device_profile("OTHERDEVICE0002", DUID))
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+        profiles = self.data_root / "profile" / "profiles.xml"
+        def body(active):
+            return (f'<profiles active="{active}"><profile name="test-profile">'
+                    f'<profileitem distributor="1" key="{self.certs / "distributor.p12"}" password="secret"/></profile>'
+                    f'<profile name="plx-tv-2"><profileitem distributor="1" key="{second / "distributor.p12"}"/>'
+                    '</profile></profiles>')
+        tizen = str(self.root / "tizen")
+        self.tizen_calls = []
+        def runner(argv, timeout=60, limit=None):
+            if argv[0] != tizen:
+                return self.sdb(argv, timeout, limit)
+            self.tizen_calls.append(argv[1:])
+            if switch:
+                profiles.write_text(body(argv[-1]))
+                return "Succeed to set 'active' profile."
+            return "[ERROR] something went wrong"
+        fleet = self.fleet(runner=runner, tizen_path=tizen)
+        profiles.write_text(body("test-profile"))
+        return fleet
+
+    def test_another_profile_that_allows_the_tv_is_offered_instead_of_tizen_cert(self):
+        fleet = self.two_profiles()
+        alias = fleet.detect()["tvs"][0]["alias"]
+        fleet.connect(alias, {})
+        fleet.identify(alias, {})
+        certificate = self.only(fleet)["certificate"]
+        self.assertEqual((certificate["state"], certificate["profile"], certificate["others"]),
+                         ("not-covered", "test-profile", ["plx-tv-2"]))
+        self.assertNotIn("by_profile", certificate, "Other profiles' device lists stay private")
+        job = fleet.cert(alias, {})
+        self.assertEqual((job["ok"], job["code"], job["use_profile"]), (False, "other-profile", "plx-tv-2"))
+        self.assertIn("plx-tv-2 allows", job["message"])
+        self.assertEqual(self.launches, [], "No tizen-cert when another profile already allows the TV")
+        job = fleet.profile(alias, {"profile": "plx-tv-2"})
+        self.assertEqual((job["ok"], job["code"]), (True, "profile-active"))
+        self.assertEqual(self.tizen_calls, [["security-profiles", "set-active", "-n", "plx-tv-2"]])
+        self.assertEqual(self.only(fleet)["certificate"]["state"], "covered")
+        self.assertIn("allows this TV", job["message"])
+        with self.assertRaises(live.LiveError):
+            fleet.profile(alias, {"profile": "no-such-profile"})
+        fleet.close()
+
+    def test_tizen_cert_making_a_new_profile_is_reported_after_it_exits(self):
+        fleet = self.two_profiles()
+        (self.root / "certs2" / "device-profile.xml").write_text(device_profile("OTHERDEVICE0002"))
+        alias = fleet.detect()["tvs"][0]["alias"]
+        fleet.connect(alias, {})
+        fleet.identify(alias, {})
+        fleet.which = lambda name: "/bin/tizen-cert" if name == "tizen-cert" else None
+        self.assertEqual(fleet.cert(alias, {})["code"], "waiting")
+        # In tizen-cert the person made plx-tv-2 with this TV, leaving test-profile as it was.
+        (self.root / "certs2" / "device-profile.xml").write_text(device_profile("OTHERDEVICE0002", DUID))
+        Path(self.launches[0][1]).write_text("0\n")
+        job = self.only(fleet)["job"]
+        self.assertEqual((job["code"], job["use_profile"]), ("other-profile", "plx-tv-2"))
+        fleet.close()
+
+    def test_a_profile_switch_the_cli_did_not_make_is_not_claimed(self):
+        fleet = self.two_profiles(switch=False)
+        alias = fleet.detect()["tvs"][0]["alias"]
+        fleet.connect(alias, {})
+        fleet.identify(alias, {})
+        job = fleet.profile(alias, {"profile": "plx-tv-2"})
+        self.assertEqual((job["ok"], job["code"]), (False, "profile-unchanged"))
+        self.assertIn("still test-profile", job["message"])
+        self.assertIn("[ERROR] something went wrong", job["output"])
+        fleet.close()
+
     def test_cert_add_reports_a_failed_installer_and_changes_nothing(self):
         self.certificate.write_text(device_profile("OTHERDEVICE0002"))
         fleet = self.fleet(installer=lambda: (1, "curl: (6) Could not resolve host: github.com"))

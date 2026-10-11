@@ -45,6 +45,7 @@ def parser():
         "  install TV WGT [--sign PROFILE]       Sign with the active profile and install\n"
         "  uninstall TV APP       Uninstall an app\n"
         "  cert TV | cert add TV  Certificate coverage / add this TV to your certificate\n"
+        "  cert use TV PROFILE    Make PROFILE the active signing profile (one that allows this TV)\n"
         "  duid TV                Print the TV's Device ID (DUID)\n"
         "  rename TV NAME         Name a TV\n"
         "  setup                  What this computer has for signing and installing\n"
@@ -71,7 +72,7 @@ def parser():
     item.add_argument("name")
     sub.add_parser("setup", help="Check sdb, the tizen CLI and signing profiles; installs nothing")
     item = sub.add_parser("cert", help="Certificate coverage for a TV, or `cert add TV`")
-    item.add_argument("words", nargs="+", metavar="TV | add TV")
+    item.add_argument("words", nargs="+", metavar="TV | add TV | use TV PROFILE")
     item = sub.add_parser("install", help="Sign a .wgt with the active profile and install it")
     item.add_argument("tv")
     item.add_argument("package", type=Path)
@@ -290,6 +291,10 @@ def certificate_text(tv):
     # TV names first, raw IDs alongside: the CLI shows every detail.
     covers = ", ".join(n if n == i else f"{n} ({i})" for n, i in zip(names, ids)) or "no TVs"
     who = c.get("tv_name") or "this TV"
+    others = c.get("others") or []
+    if others and c.get("state") != "covered":
+        return (f"Your profile {others[0]} allows {who} ({duid}), but installs use {c.get('profile') or 'no profile'}, "
+                f"which doesn't. Run: tv cert use {tv['alias']} {others[0]}")
     return {"covered": f"{c.get('profile')} covers this TV ({duid})",
             "not-covered": f"You can't install your apps on {who} yet. Your certificate ({c.get('profile')}) "
                            f"only allows: {covers}. This TV is {duid}. Run: tv cert add {tv['alias']}",
@@ -394,11 +399,15 @@ def act(args, fleet, tv, say):
             say(duid or "The TV did not report its Device ID")
             return 0 if duid else 1
         if command == "cert":
+            if getattr(args, "use", None):
+                return result(say, fleet.profile(alias, {"profile": args.use[1]}))
             if not args.add:
                 say("Certificate: " + certificate_text(connected))
                 return 0
             job = fleet.cert(alias, {})
             code = result(say, job)
+            if job.get("use_profile"):
+                say(f"Run: tv cert use {alias} {job['use_profile']}")
             if job.get("code") != "waiting":
                 return code
             # Report what tizen-cert really did: its exit code and a fresh read of the certificate.
@@ -408,7 +417,10 @@ def act(args, fleet, tv, say):
             except KeyboardInterrupt:
                 say(f"Stopped waiting. Check later with: tv cert {alias}")
                 return 1
-            return result(say, dict(job, steps=None, command=None, backup=None))
+            code = result(say, dict(job, steps=None, command=None, backup=None))
+            if job.get("use_profile"):
+                say(f"Run: tv cert use {alias} {job['use_profile']}")
+            return code
         if command == "open":
             try:
                 fleet.preview(alias, {"app": args.app})
@@ -494,9 +506,10 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
     if args.command == "cert":
         words = args.words
         args.add = words[0] == "add" and len(words) == 2
-        if len(words) != (2 if args.add else 1) or words == ["add"]:
-            raise Usage("Use: tv cert TV  or  tv cert add TV")
-        args.tv = words[-1]
+        args.use = words[1:] if words[0] == "use" and len(words) == 3 else None
+        if not args.use and (len(words) != (2 if args.add else 1) or words in (["add"], ["use"])):
+            raise Usage("Use: tv cert TV  or  tv cert add TV  or  tv cert use TV PROFILE")
+        args.tv = args.use[0] if args.use else words[-1]
     profile = config = None
     chosen = args.profile.expanduser().absolute() if args.profile is not None else \
         default_profile(state_dir, create=args.command in {"portal", "rename"})

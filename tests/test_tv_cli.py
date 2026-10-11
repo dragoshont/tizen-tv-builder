@@ -66,13 +66,13 @@ class TvCliTests(unittest.TestCase):
             def close(self):
                 self.forward = None
         return tv_fleet.Fleet(
-            sdb_path=str(self.tool), runner=self.sdb, interfaces=lambda: ["10.255.255.10"],
+            sdb_path=str(self.tool), runner=self.run_tool, interfaces=lambda: ["10.255.255.10"],
             sweep=lambda address, port, timeout: {LAN_A}, ssdp=lambda: set(),
             info=lambda host: {"name": "[TV] Samsung 7 Series (55)", "model": "UE55NU7400", "year": "2018",
                                "developer_mode": "1", "uid": "uuid:fixture"},
             key_path=self.root / "alias.key", lease_root=self.root, canonical=self.root / "canonical.lock",
             certificate_duids=certificate_duids, names=names or {}, save_names=save_names,
-            data_root=self.root / "tizen-data", tizen_path=None, which=lambda name: None,
+            data_root=self.root / "tizen-data", tizen_path=self.tizen_path, which=lambda name: None,
             launcher=self.launch_tizen_cert, clipboard=lambda text: True,
             installer=self.install_tizen_cert, cert_locations=(self.root / "bin" / "tizen-cert",),
             pictures=self.root / "Pictures", session=Session, cdp=FakeCDP, discover=lambda port: ["page-1"])
@@ -89,6 +89,26 @@ class TvCliTests(unittest.TestCase):
         Path(status).write_text(self.tizen_cert_exit)  # The person closed tizen-cert without renewing.
 
     tizen_cert_exit = "0\n"
+    tizen_path = None
+
+    def run_tool(self, argv, timeout=60, limit=None):
+        if argv[0] != self.tizen_path:
+            return self.sdb(argv, timeout, limit)
+        self.write_profiles(argv[-1])  # `tizen security-profiles set-active -n NAME`
+        return "Succeed to set 'active' profile."
+
+    def write_profiles(self, active):
+        """Two signing profiles; only plx-tv-2's certificate lists this TV."""
+        folder = self.root / "tizen-data" / "profile"
+        folder.mkdir(parents=True, exist_ok=True)
+        items = ""
+        for name, duids in (("plx-tv", ["OTHERDEVICE0002"]), ("plx-tv-2", ["OTHERDEVICE0002", DUID])):
+            certs = self.root / name
+            certs.mkdir(exist_ok=True)
+            (certs / "device-profile.xml").write_text(
+                "<DeviceProfile>" + "".join(f"<TestDevice>{d}</TestDevice>" for d in duids) + "</DeviceProfile>")
+            items += f'<profile name="{name}"><profileitem distributor="1" key="{certs / "distributor.p12"}"/></profile>'
+        (folder / "profiles.xml").write_text(f'<profiles active="{active}">{items}</profiles>')
 
     def run_cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()
@@ -248,6 +268,23 @@ class TvCliTests(unittest.TestCase):
         steps = [line for line in out.splitlines() if "[done]" in line or "[next]" in line]
         self.assertTrue(steps and all("→" not in line and "…" not in line for line in steps))
         self.assertEqual(self.run_cli("cert", "add")[0], 2)
+
+    def test_cert_offers_and_switches_to_a_profile_that_allows_the_tv(self):
+        self.tizen_path = str(self.root / "tizen")
+        self.write_profiles("plx-tv")
+        alias = self.alias()
+        code, out, _ = self.run_cli("cert", alias)
+        self.assertIn("Your profile plx-tv-2 allows", out)
+        self.assertIn(f"Run: tv cert use {alias} plx-tv-2", out)
+        code, out, _ = self.run_cli("cert", "add", alias)
+        self.assertEqual((code, self.launches), (1, []), "No tizen-cert: another profile already allows the TV")
+        self.assertIn(f"Run: tv cert use {alias} plx-tv-2", out)
+        code, out, _ = self.run_cli("cert", "use", alias, "plx-tv-2")
+        self.assertEqual(code, 0)
+        self.assertIn("Installs now use plx-tv-2, which allows this TV", out)
+        code, out, _ = self.run_cli("cert", alias)
+        self.assertIn("plx-tv-2 covers this TV", out)
+        self.assertEqual(self.run_cli("cert", "use", alias)[0], 2)
 
     def test_uninstall_and_remove_alias_need_tizen_cli_and_no_yes(self):
         alias = self.alias()

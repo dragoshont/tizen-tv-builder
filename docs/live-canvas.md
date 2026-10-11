@@ -182,6 +182,11 @@ not be on PATH, so it is run by absolute path; a failed install shows the instal
 output and changes nothing. When tizen-cert exits, the card reads its exit code and the
 certificate again: "Done" only if `device-profile.xml` now lists the TV, otherwise
 "Certificate unchanged" (or the non-zero exit code). `tv cert add TV` waits and reports the same.
+Every signing profile in `profiles.xml` is checked, not only the active one. If another profile
+(for example a new one made in tizen-cert) already lists the TV, the card says so and offers
+"Use PROFILE for installs" instead of tizen-cert; it runs `tizen security-profiles set-active -n
+PROFILE` and re-reads `profiles.xml`, reporting failure if the active profile did not change.
+The CLI equivalent is `tv cert use TV PROFILE`. Other profiles' device lists are never sent to the page.
 The raw device IDs are listed under TV details, together with a small "Disconnect" link
 (each action connects on its own, so you rarely need it).
 
