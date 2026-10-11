@@ -42,6 +42,9 @@ def run_tool(argv, timeout=60, limit=512 * 1024):
     except OSError:
         fail("sdk", "SDK tool could not start")
     output = done.stdout[-limit:].decode("utf-8", errors="replace")
+    if len(done.stdout) > limit:
+        fail("sdk_output_truncated", "SDK output exceeded the limit and was truncated: "
+             + redact(output[-600:]).strip())
     if done.returncode:
         if len(done.stdout) > min(limit, 600):
             fail("sdk_output_truncated", "SDK command failed (output truncated): " + redact(output[-600:]).strip())

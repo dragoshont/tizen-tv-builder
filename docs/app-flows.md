@@ -68,7 +68,10 @@ python3 tools/tizen.py retail --serial TV_IP:26101 --authorized \
   `spend time for pkgcmd is [N]ms` line: `Pkgid: <package> is Terminated` (`ok`) or
   `Pkgid: <package> is already Terminated` (`not-running`).
   `processing result : General error [-1] failed` is `failed` (`sdk_kill_error`).
-  Any other, mixed, extra or truncated output is `failed` (`sdk_kill_unrecognized`).
+  Any other, mixed or extra output is `failed` (`sdk_kill_unrecognized`). SDK output
+  longer than the runner limit (512 KiB by default) is rejected as
+  `sdk_output_truncated` whatever the exit code, so a kill fails and a `dlog` tail is
+  recorded as `unsupported`.
   A nonzero exit, a timeout or a lost connection is always `failed`. Other firmware
   may use different wording; that fails closed until it has been observed.
   Any missing or non-numeric run sample makes that median

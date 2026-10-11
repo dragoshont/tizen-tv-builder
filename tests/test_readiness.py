@@ -163,6 +163,20 @@ class ReReview(Base):
                 self.assertEqual(step["result"], "failed")
                 self.assertFalse(passed)
 
+    def test_truncated_zero_exit_output_is_rejected_by_the_runner(self):
+        valid = b"Pkgid: AbCdEfGhIj is Terminated\n"
+        done = subprocess.CompletedProcess([], 0, stdout=b"error: device offline\n" + valid)
+        with patch.object(flows.subprocess, "run", return_value=done):
+            with self.assertRaises(LiveError) as caught:
+                flows.run_tool(["sdb"], limit=len(valid))
+        self.assertEqual(caught.exception.code, "sdk_output_truncated")
+        self.assertLessEqual(len(str(caught.exception)), 700)
+        with patch.object(flows.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout=valid)):
+            self.assertEqual(flows.run_tool(["sdb"], limit=len(valid)), valid.decode())
+        step, passed = self.kill_with(0, b"error: device offline\n" + b" " * (512 * 1024) + valid)
+        self.assertEqual((step["result"], step["reason"]), ("failed", "sdk_output_truncated"))
+        self.assertFalse(passed)
+
     def test_zero_exit_kill_is_classified_by_observed_sdk_wording(self):
         timing = b"spend time for pkgcmd is [111]ms\n"
         cases = (
