@@ -720,7 +720,11 @@ class Source:
             rpc("LayerTree.enable")
             enabled = True
             layers = client.layer_list()
-            paint = [layer for layer in layers if isinstance(layer, dict) and layer.get("drawsContent") is True]
+            # A layer with an explicit zero size paints nothing; Tizen flags its 0x0 root drawsContent
+            # yet refuses makeSnapshot on it ("Layer does not draw content").
+            paint = [layer for layer in layers if isinstance(layer, dict) and layer.get("drawsContent") is True
+                     and not any(isinstance(layer.get(side), (int, float)) and layer[side] <= 0
+                                 for side in ("width", "height"))]
             if not 1 <= len(paint) <= 8:
                 fail("limit", "Expected one to eight paint layers; incomplete over-limit captures are refused")
             for layer in paint:

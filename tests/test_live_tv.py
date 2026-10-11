@@ -648,6 +648,38 @@ class LiveTests(unittest.TestCase):
             finally:
                 source.disconnect()
 
+    def test_capture_skips_empty_root_layer_the_tv_refuses_to_snapshot(self):
+        # Layer list as reported by a QE65Q80C (Tizen 9.0) for a running web app: the 0x0 root is
+        # flagged drawsContent, yet makeSnapshot on it answers -32000 "Layer does not draw content".
+        class EmptyRootCDP(FakeCDP):
+            def layer_list(self):
+                return [{"layerId": "10", "drawsContent": True, "width": 0, "height": 0, "offsetX": 0, "offsetY": 0},
+                        {"layerId": "11", "parentLayerId": "10", "drawsContent": False, "width": 1920, "height": 1080},
+                        {"layerId": "12", "parentLayerId": "10", "drawsContent": True, "width": 1920, "height": 1080,
+                         "offsetX": 0, "offsetY": 0},
+                        {"layerId": "13", "parentLayerId": "10", "drawsContent": True, "width": 28, "height": 28,
+                         "offsetX": 0, "offsetY": 0},
+                        {"layerId": "14", "parentLayerId": "10", "drawsContent": True, "width": 238, "height": 67,
+                         "offsetX": 0, "offsetY": 0},
+                        {"layerId": "9", "parentLayerId": "10", "drawsContent": False, "width": 1920, "height": 1080}]
+
+            def rpc(self, method, params=None, timeout=3):
+                if method == "LayerTree.makeSnapshot" and params["layerId"] == "10":
+                    self.calls.append((method, params))
+                    raise live.LiveError("rpc", method + " was rejected by this target")
+                return super().rpc(method, params, timeout)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = live.Source(source_config(Path(temporary)), EmptyRootCDP)
+            try:
+                source.operate("connect", {"authorized": True, "pixels": True, "input": False})
+                result = source.operate("capture", {})
+                self.assertEqual(len(result["frames"]), 3)
+                snapped = [p["layerId"] for m, p in source.client.calls if m == "LayerTree.makeSnapshot"]
+                self.assertEqual(snapped, ["12", "13", "14"])
+            finally:
+                source.disconnect()
+
     def test_guarded_input_and_no_capture_before_key_dispatch(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = live.Source(source_config(Path(temporary)), FakeCDP)
