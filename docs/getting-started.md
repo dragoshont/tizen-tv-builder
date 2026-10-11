@@ -1,275 +1,161 @@
-# Zero to a signed Samsung TV app
+# Getting started: from zero to your app on a Samsung TV
 
-**What you can do:** copy an account-free Web app, validate it, build/sign with
-an installed Samsung SDK, install it to one authorized TV and inspect it privately.
-No npm or media account is required. See [prerequisites](prerequisites.md) first.
-Host checks do not certify hardware support; this toolkit has not completed its
-own named-TV acceptance. Windows SDK examples are instructions, not tested Windows
-execution. No install, network scan or device operation was performed to write this guide.
+This is the one guide for a new user. It uses the `tv` commands and the web portal
+(the Samsung TV Developer Companion); both do the same thing with the same words.
+Every command below is complete: copy it as is, replacing only `NAME` (the TV's name
+as printed by `scan`, in quotes if it has spaces) and `APP` (an app ID such as
+`AbCdEf1234.MyTv`).
 
-Fastest start: `python3 tools/tizen.py new ./MyTv --name "My TV"` creates an app with a
-unique ID and host tests; `audit`, `pack` and `check-package` check it without an SDK.
-See [app flows](app-flows.md). The steps below use the copied example instead.
+## 1. What you need
 
-## 1. Copy the minimal app
+- **Python 3.10 or newer.** Check with `python3 --version` (Windows: `py -3 --version`).
+- **Tizen Studio** with the Web CLI and the Samsung TV and Samsung Certificate
+  extensions, from [Samsung's SDK instructions](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html).
+  The companion uses its `sdb` and `tizen` tools; see [prerequisites](prerequisites.md).
+- **openssl** for the one-click certificate (built into macOS; on Windows it comes with Git for Windows).
+- A Samsung account, for the certificate sign-in.
+- The TV and this computer on the same network.
 
-From this toolkit checkout, copy to a **new** owner-selected directory outside
-the toolkit. Replace every capitalized placeholder before running commands.
-Do not use temporary directories or put credentials in source.
+## 2. Get the companion
 
-macOS:
 ```sh
-cp -R examples/hello-tv "/ABSOLUTE/NEW/HelloTv"
-python3 tools/tizen.py validate "/ABSOLUTE/NEW/HelloTv"
+gh repo clone dragoshont/tizen-tv-builder
+cd tizen-tv-builder
+git checkout dragoshont-samsung-tv-remote-toolkit
+python3 tools/tizen.py tv setup
 ```
 
-Windows PowerShell:
-```powershell
-Copy-Item -Recurse examples/hello-tv 'C:\YOUR\NEW\HelloTv'
-py -3 tools/tizen.py validate 'C:\YOUR\NEW\HelloTv'
-if ($LASTEXITCODE -ne 0) { throw 'Manifest validation failed' }
-```
+`tv setup` checks Python, `sdb`, the `tizen` CLI, openssl and your signing profiles. It
+installs nothing. On Windows write `py -3 tools\tizen.py` instead of `python3 tools/tizen.py`
+in every command.
 
-Expected validation:
-```json
-{"app": "PlxHelloTv.Hello", "required_version": "2.3"}
-```
+## 3. Find your TV
 
-Before making a new product, edit config.xml: a unique **ten-alphanumeric**
-package, matching `PACKAGE.Application` ID, display name, content entry and a
-deliberate minimum `required_version`. Keep IDs/author for subsequent updates.
-The example's `2.3` floor is not a support claim. It displays runtime facts and
-one focused Refresh button with no network calls or account state. Its ES5
-JavaScript needs no API privileges; do not add ProductInfo/input privileges
-until implementing those features. [Old-engine lessons](lessons.md) explain why.
-
-## 2. Build the source without a TV
-
-Use Samsung CLI directly for a persistent, inspectable build in your app
-directory. Set paths to the **installed** SDK. No SDK install is implied.
-
-macOS:
 ```sh
-set -e
-TIZEN="$HOME/tizen-studio/tools/ide/bin/tizen"
-SDB="$HOME/tizen-studio/tools/sdb"
-"$TIZEN" build-web -- "/ABSOLUTE/NEW/HelloTv"
+python3 tools/tizen.py tv scan
 ```
 
-Windows:
-```powershell
-$Tizen = 'C:\tizen-studio\tools\ide\bin\tizen.bat'
-$Sdb = 'C:\tizen-studio\tools\sdb.exe'
-& $Tizen build-web -- 'C:\YOUR\NEW\HelloTv'
-if ($LASTEXITCODE -ne 0) { throw 'Unsigned build failed' }
-```
-
-Expect exit 0, a successful SDK build diagnostic and `.buildResult/config.xml`
-plus `.buildResult/index.html` in that copy. Stop if absent; SDK text varies
-by release. Do not treat an unsigned build as a widget/install/TV pass.
-The POSIX `tizen.py build` alternative stages an ephemeral unsigned build;
-Windows must not use that SDK wrapper.
-
-## Samsung TV certificates
-
-With the owner's existing scoped permission, use installed Certificate Manager:
-
-1. Add a profile of type **Samsung → TV**, not generic Tizen.
-2. Create/reuse the author certificate; preserve its identity for updates.
-3. Create a distributor certificate containing the **target TV DUID**. Obtain
-   the DUID through Samsung's UI/Device Manager, not a public diagnostic log.
-4. Select your profile (`YOUR_PROFILE` below), keep `.p12`/passwords/profile
-   files outside source, and close Certificate Manager before SDB work.
-
-Follow [Samsung's certificate instructions](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html).
-Signing preparation does not authorize a TV connection or installation.
-
-## 3. Sign and check the new artifact
-
-macOS:
-```sh
-"$TIZEN" package -t wgt -s YOUR_PROFILE -- "/ABSOLUTE/NEW/HelloTv/.buildResult"
-```
-
-Windows:
-```powershell
-& $Tizen package -t wgt -s YOUR_PROFILE -- 'C:\YOUR\NEW\HelloTv\.buildResult'
-if ($LASTEXITCODE -ne 0) { throw 'Signing failed' }
-```
-
-Expect exit 0 and an SDK-emitted `.wgt` path. Use **that new file**, not a
-previous artifact. The `<name>` may determine a filename with spaces: quote
-it. Package `.buildResult`, not a directory containing both source/build output.
-
-Structural check with Python (replace the widget path):
-```sh
-python3 -c "import zipfile; z=zipfile.ZipFile('/ABSOLUTE/NEW/HelloTv/OUTPUT.wgt'); n=set(z.namelist()); assert {'config.xml','index.html','author-signature.xml','signature1.xml'} <= n; assert z.testzip() is None; print('Widget entries and ZIP integrity OK; signatures not cryptographically verified')"
-shasum -a 256 "/ABSOLUTE/NEW/HelloTv/OUTPUT.wgt"
-```
-
-Windows:
-```powershell
-py -3 -c "import zipfile; z=zipfile.ZipFile(r'C:\YOUR\NEW\HelloTv\OUTPUT.wgt'); n=set(z.namelist()); assert {'config.xml','index.html','author-signature.xml','signature1.xml'} <= n; assert z.testzip() is None; print('Widget entries and ZIP integrity OK; signatures not cryptographically verified')"
-if ($LASTEXITCODE -ne 0) { throw 'Widget structure failed' }
-Get-FileHash -Algorithm SHA256 'C:\YOUR\NEW\HelloTv\OUTPUT.wgt'
-```
-
-Expect the exact structural message and a SHA256 digest. Signature XML presence
-and checksum do **not** validate trust, expiry, DUID coverage or cryptographic
-signatures. Inspect the archive for accidental private files before installation.
-Successful SDK signing is a requested-profile result, not Store approval.
+This lists the Samsung TVs on your network with their name, model, Tizen version and
+status. A TV that is switched off stays listed as "Not reachable"; turn it on and scan again.
 
 ## New-TV onboarding
 
-Do this for each new physical TV, not only the first:
+Turn on Developer Mode once per TV:
 
-1. In the current workbench, use new-TV discovery **only** within your granted
-   LAN scope while no other device lane is active. Bounded SSDP candidates
-   (DIAL, RemoteControlReceiver, MediaRenderer) need Samsung confirmation;
-   a discovery advertisement alone does not establish the intended Samsung TV.
-2. Where supported, the private Samsung `http://TV_IPV4:8001/api/v2/` response
-   can confirm a candidate. Treat model, name, OS, firmware, Developer Mode and
-   year as known **only if actually returned**; otherwise leave unknown and
-   verify through TV Settings/owner observation with provenance. It does not
-   always return every field. Do not publish raw responses or identifiers.
-3. Select/confirm the exact physical target. In the TV's Apps Developer Mode
-   screen enable Developer Mode and enter the **actual Host PC IP** of the
-   permitted computer/interface. Restart only as the vendor setup requires
-   and within the granted scope. Steps/keys vary by model.
-4. Connect/pair through Samsung Device Manager or SDB below. SDB readiness is
-   not a consumer remote-control pairing token; do not invent a pairing PIN
-   command. Follow a target's actual prompts.
-5. Obtain this target's DUID privately. Issue/update a Samsung TV distributor
-   certificate covering it, retaining the app's author identity. Re-sign for
-   the new distribution profile; never assume the old TV's certificate covers it.
-6. Permit installation on **this** target and verify install/launch on it.
-   Do not reuse the older target's debug port or acceptance results.
+1. On the TV open **Apps**, then type **1 2 3 4 5** on the remote.
+2. Switch **Developer mode** to **On**.
+3. Set **Host PC IP** to this computer's address (`python3 tools/tizen.py tv info NAME`
+   shows it as "this computer's IP for the TV").
+4. Restart the TV (hold the power button until it turns off and on again).
 
-For a manually known target, discovery is optional. Follow
-[Samsung device setup](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html).
-The [workbench contract](workbench.md) owns its actual UI/control availability.
-Already-granted scoped operations need not be re-confirmed per step; never break
-a live lock. Coordinate physical ownership across computers, since locks are local.
+Scan again: the TV now shows "Developer Mode ready". If it says "Not ready", Developer Mode
+is on but the Host PC IP points to another computer.
 
-## 4. Connect, permit, install and observe
+## 4. Allow installing your apps on this TV
 
-Build/sign first; then use the canonical Samsung lane for one bounded run.
-The following raw SDK commands do **not** acquire a lease themselves. Do not
-run them concurrently with workbench setup/preview or somebody else's device run.
-Replace `TV_IPV4:26101` and `TARGET_SERIAL` with the privately confirmed target.
-
-macOS:
 ```sh
-set -e
-"$SDB" connect TV_IPV4:26101
-"$SDB" devices
-"$TIZEN" install-permit -s TARGET_SERIAL
-"$TIZEN" install -n "/ABSOLUTE/NEW/HelloTv/OUTPUT.wgt" -s TARGET_SERIAL
-"$TIZEN" run -p PlxHelloTv.Hello -s TARGET_SERIAL
+python3 tools/tizen.py tv cert NAME
+python3 tools/tizen.py tv cert add NAME
 ```
 
-Windows:
-```powershell
-& $Sdb connect TV_IPV4:26101
-if ($LASTEXITCODE -ne 0) { throw 'Connection failed' }
-& $Sdb devices
-if ($LASTEXITCODE -ne 0) { throw 'Device enumeration failed' }
-& $Tizen install-permit -s TARGET_SERIAL
-if ($LASTEXITCODE -ne 0) { throw 'Install permission failed' }
-& $Tizen install -n 'C:\YOUR\NEW\HelloTv\OUTPUT.wgt' -s TARGET_SERIAL
-if ($LASTEXITCODE -ne 0) { throw 'Installation failed' }
-& $Tizen run -p PlxHelloTv.Hello -s TARGET_SERIAL
-if ($LASTEXITCODE -ne 0) { throw 'Launch failed' }
+`tv cert NAME` says whether your certificate already allows this TV. If it doesn't,
+`tv cert add NAME` creates or renews it: Samsung sign-in opens in your browser, and that
+is the only thing you do. There is no profile name to choose and no password to type; the
+companion makes the profile `tv-companion`, keeps a backup of your previous files and makes
+it the one used for installs. On macOS the password goes to the login Keychain, as Tizen
+Studio does it. If your apps were signed with a different author certificate, the result
+says they need to be reinstalled. Details: [live canvas](live-canvas.md).
+
+## 5. Install, open and check your app
+
+```sh
+python3 tools/tizen.py tv install NAME /path/to/MyApp.wgt
+python3 tools/tizen.py tv apps NAME
+python3 tools/tizen.py tv open NAME APP
+python3 tools/tizen.py tv screenshot NAME --app APP --out ~/Pictures/TV-Screenshots
+python3 tools/tizen.py tv info NAME --connect
+python3 tools/tizen.py tv uninstall NAME APP
 ```
 
-Use your edited full app ID if changed. Expected connection state: the exact
-serial is listed as `device`. Device Manager's **Permit to install applications**
-is the GUI equivalent of `install-permit`. Expect successful SDK install/run
-diagnostics; output spelling varies. An exit code alone is not app acceptance:
-observe **Hello Samsung TV**, a focused Refresh button and actual runtime facts
-on the selected TV. Test physical Enter/Back and restart separately, keeping
-back/exit behavior app-specific. This hello template is not a full navigation app.
+- `install` signs a private copy with your active certificate, installs it, and only
+  says "Installed" when the TV's own app list shows the app.
+- `apps` lists every app ID on the TV.
+- `open` restarts the app in debug mode so its screen can be seen.
+- `screenshot` saves the app's picture as a PNG (default folder `~/Pictures/TV Screenshots`).
+- `info --connect` shows every detail the portal shows, including the Tizen version,
+  certificate coverage and apps.
+- `uninstall` removes the app and checks the app list again. Some TVs (Tizen 5.0) report
+  success without removing it; then the command tells you to delete it on the TV.
 
-Keep a private receipt: source SHA, widget checksum, SDK/host/model/firmware,
-IDs, date, operation grants, actual observations and pass/fail/skip. Verify
-owned teardown and release the lane immediately, before writing the report.
-Update/uninstall/account testing require their respective scope; never delete
-another installation or use a household media account to verify this template.
+Each command connects, does its job and disconnects. The TV's real error is printed
+when something fails, with the next command to run.
+
+## The same steps in the web portal
+
+```sh
+python3 tools/tizen.py tv portal
+```
+
+Open the printed `http://127.0.0.1:47811/`. Ctrl+C stops it; `--port N` picks another port.
+
+1. The portal scans on its own. **Scan network for TVs** scans again.
+2. Pick your TV and choose **Connect**.
+3. If the card says "You can't install your apps on this TV yet", choose
+   **Allow installing my apps on this TV** and sign in to Samsung in your browser.
+4. **Choose .wgt…**, then **Install**.
+5. Choose **Open screen** on your app: the picture appears with **Refresh**,
+   **Save screenshot** and the remote.
+6. **TV details** shows everything `tv info` shows; **Uninstall** is next to each app
+   you installed from here.
+
+The portal needs macOS or Linux: its private profile relies on POSIX file permissions.
+On Windows use the `tv` commands, or the [TV Workbench](workbench.md).
 
 ## Debug and private viewer
 
-Prefer the [standalone workbench](workbench.md): start it with your installed SDB,
-choose the exact installed app, then Launch in debug. It stops the package first,
-launches debug, creates an owned forward and discovers current pages. Its private
-loopback URL is a bearer capability; do not share it.
+**Open screen** (or `tv open`) stops the app, launches it in debug mode, forwards its
+inspector port to this computer only and shows the app's picture. The picture is the web
+page as the browser engine paints it, not the TV panel: video playing through AVPlay does
+not appear, and neither does anything drawn by the TV itself. The viewer page has a
+private address on `127.0.0.1`; do not share it. The [lessons](lessons.md) explain the
+Tizen 3.0 inspector details.
 
-Manual SDK sequence for an already-authorized target under its lane:
+## Make your own app
 
-macOS:
 ```sh
-set -e
-"$SDB" -s TARGET_SERIAL shell 0 kill PlxHelloTv
-"$SDB" -s TARGET_SERIAL shell 0 debug PlxHelloTv.Hello
-# Only for the relevant legacy workaround, replace the previous debug command:
-# "$SDB" -s TARGET_SERIAL shell 0 debug PlxHelloTv.Hello 0
-"$SDB" forward --list
-"$SDB" -s TARGET_SERIAL forward tcp:LOCAL_PORT tcp:RETURNED_DEBUG_PORT
-python3 tools/tizen.py inspect --port LOCAL_PORT
+python3 tools/tizen.py new ./MyTv --name "My TV"
+python3 tools/tizen.py validate MyTv/app
+python3 tools/tizen.py audit MyTv/app
+python3 tools/tizen.py pack MyTv/app --output MyTv.wgt
+python3 tools/tizen.py check-package MyTv.wgt
+python3 tools/tizen.py tv install NAME MyTv.wgt
 ```
 
-Windows:
-```powershell
-& $Sdb -s TARGET_SERIAL shell 0 kill PlxHelloTv
-if ($LASTEXITCODE -ne 0) { throw 'Stop failed; reconcile before debug' }
-& $Sdb -s TARGET_SERIAL shell 0 debug PlxHelloTv.Hello
-if ($LASTEXITCODE -ne 0) { throw 'Debug failed; reconcile device state' }
-# Relevant legacy alternative only: & $Sdb -s TARGET_SERIAL shell 0 debug PlxHelloTv.Hello 0
-& $Sdb forward --list
-& $Sdb -s TARGET_SERIAL forward tcp:LOCAL_PORT tcp:RETURNED_DEBUG_PORT
-if ($LASTEXITCODE -ne 0) { throw 'Forward failed' }
-py -3 tools/tizen.py inspect --port LOCAL_PORT
-if ($LASTEXITCODE -ne 0) { throw 'HTTP discovery failed' }
-```
+- `new` creates a starter app with a unique ten-character package ID, an ES5 template
+  that runs on old TVs, and host tests (`node --test MyTv/tests/focus.test.js`).
+- `validate` and `audit` check the IDs, privileges, ES5 syntax and leaked credentials.
+- `pack` makes an unsigned `.wgt`; `tv install` signs it with your certificate.
+- To try the flow first, install the sample: `python3 tools/tizen.py pack examples/hello-tv --output HelloTv.wgt`.
 
-Expected: this debug launch returns a port; verify the exact forward mapping
-with `forward --list` and loopback `/json/version` + `/json/list` metadata.
-Ports are ephemeral. Choose an unused local port, never overwrite an existing
-mapping, and remove only your still-matching mapping in finally:
-`"$SDB" -s TARGET_SERIAL forward --remove tcp:LOCAL_PORT` (macOS), or
-`& $Sdb -s TARGET_SERIAL forward --remove tcp:LOCAL_PORT` (PowerShell).
-Stop on timeout/uncertain state and reconcile in Device Manager before retrying.
-Never kill shared SDB servers or use remove-all as cleanup.
+More checks (budgets, retail runs, the emulator): [app flows](app-flows.md).
+Old-engine pitfalls: [lessons](lessons.md). What each TV year supports: [compatibility](compatibility.md).
 
-HTTP discovery is not WebSocket/capture success. Paint preview is native
-renderer-layer replay, potentially incomplete—not panel/AVPlay capture,
-HDR/audio evidence or a full-TV recording. A recorded app-layer feed retains the
-same renderer-only boundary. Remote button inventory is not proof every
-key is injectable: only exposed/audited actions are enabled; extra app actions
-need consent. See [runtime/input/capture lessons](lessons.md).
+## What has been checked
 
-When the authenticated workbench exposes recording, inspect encoder capabilities
-before connecting: PNG requires no encoder; GIF/MP4/WebM/WebP depend on detected
-local encoder support. Missing support is unavailable, not permission to install
-tools. Pause preview streaming before a bounded recording. Choose a new absolute
-private output folder named `app-layer-INDEX-SUFFIX`, with an existing nonsymlink
-parent outside the repository. Keep paths/receipts in the authenticated local
-browser; public status must not disclose them. Stop the worker and release its
-resources before teardown. Exports retain layer/source/time provenance and are
-not atomic compositor, panel or AVPlay recordings. Recording/device acceptance
-must be established separately; a host encoder check proves only host capability.
+On a 2017 (Tizen 3.0) and a 2019 (Tizen 5.0) TV: scan, connect, app list, install,
+**Open screen**, the remote and screenshots. `tv cert add` is tested against a fake
+Samsung service only, not yet against Samsung's live one. Other TV years are unverified;
+a working command on one TV does not prove another model.
 
-## Troubleshooting without bypasses
+## When something fails
 
-| Symptom | Check / stop condition |
+| You see | Do this |
 |---|---|
-| Missing CLI or extension | Owner-approved SDK setup; no automatic installation |
-| SDB cannot connect while TCP works on Mac | Launching app's Local Network permission and actual Host PC route; no shared-server kill or bypass relay |
-| `install failed[118]` | Target install permission; also DUID/profile/expiry/identity. Upstream permit fixed one set, not every failure |
-| Signing/package failure | Samsung TV profile selected, author/distributor valid, target DUID covered, source/ID consistent; keep error details private |
-| Update refused | Same author and IDs, intended version and target; never uninstall automatically to hide identity failure |
-| Debug `closed`, no pages or port | Stop first, relevant legacy trailing `0`, fresh port, forward mapping and competing inspector ownership |
-| `SecurityError` in ProductInfo/input | Required privilege and API loading/registration, not a hardware-support conclusion |
-| Busy lane or cleanup mapping changed | Do not break/remove; coordinate owner and report blocked cleanup |
+| "Not reachable" | Turn the TV on, then scan again |
+| "Not ready" | Set the TV's Host PC IP to this computer, restart the TV |
+| "You can't install your apps on this TV yet" | `python3 tools/tizen.py tv cert add NAME` |
+| `install failed[118]` | The certificate doesn't list this TV: `tv cert add NAME` |
+| "No picture" after Open screen | Choose Open screen again; the app restarts |
+| sdb can't connect on a Mac | Allow Local Network access for your terminal in System Settings → Privacy & Security |
 
-Source-backed observations: [lessons](lessons.md) and
-[upstream walkthrough](https://github.com/dragoshont/plx-native/blob/dragoshont-samsung-tizen-feasibility/docs/samsung-getting-started.md).
+Keep certificates, passwords and device IDs out of git and public logs.

@@ -321,11 +321,9 @@ not connected to. `tv-abc123` is the alias printed by `scan`; aliases stay stabl
 between runs, and `list` keeps only names and status from the last scan
 (`last-scan.json`, 0600), never addresses or identities.
 
-`portal` starts the same page the canvas shows, on loopback only, and does not
-scan or contact a TV until you choose Scan. Further commands for configured
-inspector targets: `key SOURCE down back --yes` and
-`screenshot SOURCE --out ~/private-shots --yes`. `python3 tools/tv.py ...` is the
-same CLI.
+`portal` starts the same page the canvas shows, on loopback only. When the page opens
+before any scan, it runs one read-only scan on its own; it connects to a TV only when you
+choose Connect. `python3 tools/tv.py ...` is the same CLI.
 
 The CLI calls the same Fleet/Source code as the portal, accepts aliases only (never
 raw addresses), keeps the key allowlist and the OK safe-target gate, writes

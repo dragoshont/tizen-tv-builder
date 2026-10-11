@@ -15,6 +15,10 @@ python3 tools/tizen.py tv portal        # or: python3 tools/tv.py portal
   restart the TV.
 - Then: Scan → pick a TV → Connect → Open screen on your app.
 
+**New here?** [Getting started](docs/getting-started.md) is the one from-zero guide: TV
+Developer Mode, the one-click certificate, install, open, screenshot and uninstall, as
+`tv` commands and as portal steps, plus making your own app.
+
 This is a small toolkit for the things that slow you down: old browser engines,
 certificates, packaging, deployment and debugging. It comes with a coding agent
 that knows the workflow and the mistakes we have already found.
@@ -24,8 +28,8 @@ media client. It does not promise that one app will work on every TV from 2015
 to today. We keep [the model-year table](docs/compatibility.md), what was actually
 tested, and what is still unknown.
 
-**Start a new app:** follow [prerequisites](docs/prerequisites.md), then
-[the signed-app getting-started guide](docs/getting-started.md). Humans and
+**Start a new app:** follow [getting started](docs/getting-started.md)
+([prerequisites](docs/prerequisites.md) has the SDK details). Humans and
 agents use the same commands and checks; [AGENTS.md](AGENTS.md) indexes the
 focused workflows and lessons.
 
@@ -156,31 +160,13 @@ manifest validation and HTTP inspector discovery do not launch SDK processes.
 
 ## First install on a TV
 
-First identify the exact model, region, firmware and year. Enable Developer Mode
-using [Samsung's device instructions](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html).
-Connect with Device Manager; this toolkit does not connect for you.
+Follow [getting started](docs/getting-started.md): `python3 tools/tizen.py tv scan`, TV
+Developer Mode, `python3 tools/tizen.py tv cert add NAME` (one Samsung sign-in in your
+browser, no other prompts), then `python3 tools/tizen.py tv install NAME APP.wgt`. Keep
+certificates, passwords and device IDs private.
 
-Create a **Samsung TV** certificate profile in Certificate Manager: author
-certificate, distributor certificate, and the target TV's DUID. Then use Device
-Manager's **Permit to install applications** for that TV. Follow
-[Samsung's certificate guide](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html).
-Keep certificates, passwords and DUIDs private.
-
-Or let the companion do it: `python3 tools/tv.py cert add TV` (or "Allow installing my apps on
-this TV" in the portal) makes or renews the certificate with one Samsung sign-in in your
-browser, with no other prompts. See [docs/live-canvas.md](docs/live-canvas.md).
-
-With permission for the exact TV and these operations:
-
-```sh
-python3 tools/tizen.py package /path/to/app --profile YOUR_PROFILE --output /private/path/app.wgt
-python3 tools/tizen.py install /private/path/app.wgt --serial TV_IPV4:26101 --authorized
-python3 tools/tizen.py run --app PACKAGEID0.Application --serial TV_IPV4:26101 --authorized
-```
-
-Replace the placeholders. Package IDs must be ten letters/digits; use the app ID
-from `config.xml`. Only one worker should own that Samsung TV. `--authorized`
-acknowledges permission; it is not a lock and cannot prove consent.
+The lower-level `package`, `install` and `run` commands remain for agents and scripted
+acceptance runs; they need `--serial` and `--authorized`, see [app flows](docs/app-flows.md).
 
 Packaging stages common web assets and excludes known private/generated paths.
 It is **not a secret scanner**. A token in a JS file is still a token. Review what

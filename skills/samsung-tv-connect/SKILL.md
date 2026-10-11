@@ -17,7 +17,7 @@ then [prerequisites](../../docs/prerequisites.md).
    and model/firmware privately. Confirm Developer Mode's host IP is the
    interface actually used by the computer; follow Samsung's model instructions.
 2. Obtain explicit connection authorization and exclusive physical-TV ownership.
-   Use Device Manager or the [guide's SDB commands](../../docs/getting-started.md).
+   Use `tv connect` from the [getting-started guide](../../docs/getting-started.md) or Device Manager.
    Require the exact selected serial in `sdb devices` with state `device`;
    reachability or a successful TCP socket alone is insufficient.
 3. On macOS, a working Apple `nc` probe and failed SDB connection can indicate
