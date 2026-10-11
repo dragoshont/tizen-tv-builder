@@ -1,7 +1,9 @@
 # App flows: new app, checks, retail TV, emulator, budgets
 
 One CLI, the same on macOS and Windows (`python3` or `py -3`). Every command prints
-JSON and exits `0` on pass, `2` when a check fails, `1` on an error.
+JSON and exits `0` on pass and `2` on anything else: a failed check, step, teardown or
+budget, or an SDK/connection error (the error goes to stderr). A Python traceback
+(exit `1`) is a toolkit bug.
 
 ## Start and check an app (no SDK, no TV)
 
@@ -59,8 +61,11 @@ python3 tools/tizen.py retail --serial TV_IP:26101 --authorized \
 - Prints a JSON receipt: cold start, first frame, first Home per run and the budget
   verdict. `--output` gets real PNG captures only (unsupported capture is recorded in
   the receipt) and a redacted `dlog-tail.txt`.
-- `passed` is false (exit `2`) if any required step or teardown failed or the budget
-  did not pass; `failed_steps` names them. Budget limits and measurements must be
+- `passed` is false (exit `2`) if any required step, capture or teardown failed or the
+  budget did not pass; `failed_steps` names them. Kill counts as `not-running` only
+  when the SDK says the app is absent (wording unverified on a real TV); a timeout or
+  lost connection is `failed`. Any missing or non-numeric run sample makes that median
+  `invalid`. Budget limits and measurements must be
   finite, non-negative numbers; anything else is `invalid`.
 - `identify` never prints the DUID; use Device Manager / `sdb shell 0 getduid` privately.
 

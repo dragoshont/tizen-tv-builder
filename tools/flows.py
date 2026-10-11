@@ -96,10 +96,17 @@ def evaluate(metrics, tier, budgets=None):
             "passed": all(v["result"] == "pass" for v in verdict.values())}
 
 
+NOT_RUNNING = re.compile(r"\b(?:is\s+not\s+running|not\s+running|no\s+running\s+app|not\s+exist(?:s|ed)?)\b", re.I)
+
+
 def _median(values):
-    values = sorted(v for v in values if isinstance(v, (int, float)))
-    if not values:
+    """Median of raw samples. All missing -> unmeasured; any missing or non-millisecond sample -> invalid."""
+    values = list(values)
+    if all(v is None for v in values):
         return None
+    if not all(_milliseconds(v) for v in values):
+        return "invalid"
+    values = sorted(values)
     middle = len(values) // 2
     return values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
 
@@ -138,11 +145,15 @@ class Session:
         self.step("install", package_sha256=report["sha256"], signed=report["signed"])
 
     def kill(self):
+        """Only an SDK answer that the app is absent counts as not-running; timeouts/offline are failures."""
         try:
             self.sdb("shell", "0", "kill", self.app.split(".")[0])
             self.step("kill")
-        except LiveError:
-            self.step("kill", "not-running")
+        except LiveError as error:
+            if error.code == "sdk" and NOT_RUNNING.search(str(error)):
+                self.step("kill", "not-running")
+            else:
+                self.step("kill", "failed", reason=error.code)
 
     def launch(self):
         """Kill-before-debug, debug launch, owned forward and page readiness. Returns ms."""
@@ -306,7 +317,7 @@ def identify(serial, sdb=None, runner=run_tool):
             "tier": tier_for(platform)}
 
 
-FAILED_STEPS = {"partial", "failed", "error"}
+FAILED_STEPS = {"fail", "failed", "partial", "error"}
 
 
 def verdict(receipt):

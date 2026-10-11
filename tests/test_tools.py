@@ -263,7 +263,7 @@ class ToolkitTests(unittest.TestCase):
                             capture_output=True, text=True, timeout=6,
                         )
                         self.assertLess(time.monotonic() - started, 6)
-                        self.assertEqual(result.returncode, 1)
+                        self.assertEqual(result.returncode, 2)
                         self.assertIn("deadline", result.stderr)
                     finally:
                         server.shutdown()
@@ -365,7 +365,7 @@ class ToolkitTests(unittest.TestCase):
                      "--port", str(server.server_address[1])],
                     capture_output=True, text=True, timeout=6,
                 )
-                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.returncode, 2)
                 self.assertIn("deadline", result.stderr)
             finally:
                 server.shutdown()

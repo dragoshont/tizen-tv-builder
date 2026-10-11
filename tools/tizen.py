@@ -424,7 +424,7 @@ def main():
             return 2
     except (ValueError, OSError, ET.ParseError, http.client.HTTPException, subprocess.TimeoutExpired) as error:
         print("ERROR: " + redact(str(error)), file=sys.stderr)
-        return 1
+        return 2
     except KeyboardInterrupt as error:
         print("ERROR: cancelled", file=sys.stderr)
         return 128 + getattr(error, "signum", signal.SIGINT)

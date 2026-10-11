@@ -143,6 +143,61 @@ class Verdicts(Base):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
 
+class ReReview(Base):
+    def target(self):
+        return flows.identify(SERIAL, TOOL, Runner(Clock()))["fingerprint"]
+
+    def test_failed_capture_fails_the_receipt(self):
+        clock, runner = Clock(), Runner()
+        receipt = flows.retail(SERIAL, self.target(), "AbCdEfGhIj.App", lease_path=self.lock,
+                               **session_args(runner, clock, screenshot="YWJj"))
+        self.assertIn({"step": "capture", "result": "fail", "reason": "not-png"}, receipt["steps"])
+        self.assertFalse(receipt["passed"])
+        self.assertIn("capture", receipt["failed_steps"])
+
+    def test_only_confirmed_absent_app_counts_as_not_running(self):
+        class Kill(Runner):
+            error = None
+            def __call__(self, argv, timeout=60):
+                if argv[-3:-1] == ["0", "kill"] and self.error:
+                    self.calls.append(argv[1:])
+                    raise self.error
+                return super().__call__(argv, timeout)
+        for error, expected in ((LiveError("sdk_timeout", "SDK command timed out"), "failed"),
+                                (LiveError("sdk", "SDK command failed: error: device offline"), "failed"),
+                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running"), "not-running")):
+            with self.subTest(error=error.code, message=str(error)):
+                clock, runner = Clock(), Kill()
+                session = flows.Session(SERIAL, "AbCdEfGhIj.App", **session_args(runner, clock))
+                runner.error = error
+                session.teardown()
+                self.assertEqual([s["result"] for s in session.receipt["steps"] if s["step"] == "kill"], [expected])
+                self.assertEqual(flows.verdict(session.receipt)["passed"], expected == "not-running")
+
+    def test_invalid_raw_samples_are_invalid_not_aggregated(self):
+        self.assertEqual(flows._median([400, "invalid", 400]), "invalid")
+        self.assertEqual(flows._median([True, False]), "invalid")
+        self.assertEqual(flows._median([400, None]), "invalid")
+        self.assertIsNone(flows._median([None, None]))
+        self.assertEqual(flows._median([300, 500]), 400)
+        clock, runner = Clock(), Runner()
+        receipt = flows.retail(SERIAL, self.target(), "AbCdEfGhIj.App", runs=2, tier="legacy", lease_path=self.lock,
+                               **session_args(runner, clock, marks={"firstFrame": True, "home": False}))
+        self.assertEqual(receipt["perf"]["budget"]["metrics"]["firstFrameMs"]["result"], "invalid")
+        self.assertFalse(receipt["passed"])
+
+    def test_errors_and_invalid_budgets_exit_2(self):
+        import tizen
+        with patch.object(tizen, "run", side_effect=ValueError("SDK command failed")), \
+                patch.object(sys, "argv", ["tizen.py", "doctor"]):
+            self.assertEqual(tizen.main(), 2)
+        metrics = self.root / "m.json"
+        metrics.write_text(json.dumps({"coldStartMs": 1, "firstFrameMs": 1, "firstHomeMs": 1}))
+        with patch.object(flows, "evaluate", side_effect=LiveError("invalid", "Budget limits invalid")), \
+                patch.object(sys, "argv", ["tizen.py", "budgets", "--tier", "current", "--metrics", str(metrics)]):
+            self.assertEqual(tizen.main(), 2)
+
+
 class LargeScripts(Base):
     def test_oversized_script_fails_closed_and_blocks_packaging_input(self):
         (self.source / "js" / "big.js").write_text("var a = 1;\n" * 200)
