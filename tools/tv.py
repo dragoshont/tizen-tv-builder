@@ -498,7 +498,7 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
     if args.command == "portal":
         def announce(url):
             say("Samsung TV Developer Companion running. Open " + url + " in your browser.")
-            say("Nothing is scanned until you choose Scan. Press Ctrl+C to stop.")
+            say("Opening the page scans your network for TVs (read-only). Press Ctrl+C to stop.")
             out.flush()
         live_tv.serve(profile, port=args.port, announce=announce)
         return 0
