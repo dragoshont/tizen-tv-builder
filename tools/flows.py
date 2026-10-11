@@ -340,6 +340,11 @@ def perf(session, runs=1, tier=None):
 
 def identify(serial, sdb=None, runner=run_tool):
     """Stable, non-reversible target fingerprint. Fails closed; the DUID itself is never returned."""
+    return _identity(serial, sdb, runner)[0]
+
+
+def _identity(serial, sdb=None, runner=run_tool):
+    """Internal: public identity plus the raw DUID for an in-memory certificate check only."""
     tool = sdk_tool("sdb", sdb)
     capability = runner([tool, "-s", serial, "capability"], 20)
     fields = dict(line.split(":", 1) for line in capability.splitlines() if ":" in line)
@@ -352,7 +357,7 @@ def identify(serial, sdb=None, runner=run_tool):
     return {"fingerprint": "tv-" + hashlib.sha256(duid.encode()).hexdigest()[:16],
             "platform_version": platform if re.fullmatch(r"[0-9.]{1,12}", platform) else None,
             "profile": fields.get("profile_name") if re.fullmatch(r"[a-z]{1,16}", fields.get("profile_name", "")) else None,
-            "tier": tier_for(platform)}
+            "tier": tier_for(platform)}, duid
 
 
 FAILED_STEPS = {"fail", "failed", "partial", "error"}
@@ -382,8 +387,8 @@ def _flow(session, package, keys, runs, tier, capture, logs, uninstall):
 
 
 def retail(serial, target, app, package=None, keys=(), runs=1, tier=None, capture=True, uninstall=False,
-           output=None, lease_path=None, **session_args):
-    """Retail TV flow: holds the canonical lane throughout and refuses a different TV."""
+           output=None, lease_path=None, lease=None, **session_args):
+    """Retail TV flow: holds the canonical lane (or a caller-held per-TV lease) and refuses a different TV."""
     device_serial(serial)
     if not re.fullmatch(r"tv-[0-9a-f]{16}", target or ""):
         fail("invalid", "--target must be the fingerprint printed by `tizen.py identify`")
@@ -393,8 +398,12 @@ def retail(serial, target, app, package=None, keys=(), runs=1, tier=None, captur
             fail("package", "Retail install needs author+distributor signatures that pass `check-package --require-signed`")
         if report["app"] != application_id(app):
             fail("package", f"Package is for {report['app'] or 'an unset app ID'}, not --app {app}; nothing installed")
-    lease = Lease(lease_path or lane())
-    lease.acquire()
+    owned_lease = lease is None
+    if owned_lease:
+        lease = Lease(lease_path or lane())
+        lease.acquire()
+    elif lease.identity is None:
+        fail("device_lock_held", "Caller must already hold this TV's lease")
     receipt = {"flow": "retail", "target": target}
     try:
         runner = session_args.get("runner", run_tool)
@@ -412,8 +421,11 @@ def retail(serial, target, app, package=None, keys=(), runs=1, tier=None, captur
         receipt.update(verdict(receipt))
         return receipt
     finally:
-        lease.release()
-        receipt["lane"] = "released"
+        if owned_lease:
+            lease.release()
+            receipt["lane"] = "released"
+        else:
+            receipt["lane"] = "held by caller"
 
 
 def emulator(vm, app, package=None, keys=(), runs=1, tier="current", capture=True, logs=True,

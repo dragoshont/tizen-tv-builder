@@ -79,6 +79,19 @@ def metadata(value):
     return value
 
 
+def read_names(data):
+    if "tv_names" not in data:
+        return {}
+    names = data["tv_names"]
+    if not isinstance(names, dict) or len(names) > 32 or any(
+            not isinstance(key, str) or not re.fullmatch(r"tv-[0-9a-f]{6}", key) or not isinstance(value, str)
+            or not 1 <= len(value.strip()) <= 60 or len(value) > 60
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)
+            for key, value in names.items()):
+        fail("invalid", "TV names must map scanned aliases to short plain names")
+    return names
+
+
 def read_profile(path):
     if os.name != "posix":
         fail("platform", "Private canvas profiles require POSIX ownership; use TV Workbench on Windows")
@@ -96,10 +109,17 @@ def read_profile(path):
         if len(raw) > 65536:
             fail("invalid", "Profile exceeds its size limit")
         data = json.loads(raw)
-    exact(data, {"sources"})
+    if not isinstance(data, dict) or "sources" not in data or set(data) - {"sources", "certificate_duids", "tv_names"}:
+        fail("invalid", "Profile allows sources, certificate_duids and tv_names only")
+    if "certificate_duids" in data:
+        duids = data["certificate_duids"]
+        if not isinstance(duids, str) or not 1 <= len(duids) <= 1024 or not Path(duids).is_absolute() or \
+                Path(duids).resolve().is_relative_to(ROOT):
+            fail("invalid", "Certificate DUID list must be an absolute private path outside the repository")
+    read_names(data)
     sources = data["sources"]
-    if not isinstance(sources, list) or not 1 <= len(sources) <= 2:
-        fail("invalid", "Configure one TV, or a TV and an explicit emulator comparison")
+    if not isinstance(sources, list) or len(sources) > 8:
+        fail("invalid", "Configure up to eight TVs plus at most one emulator")
     ids = set()
     kinds = set()
     for source in sources:
@@ -107,8 +127,9 @@ def read_profile(path):
                        "safe_activation_ids"})
         if not isinstance(source["id"], str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", source["id"]):
             fail("invalid", "Source needs a stable non-secret alias")
-        if source["id"] in ids or not isinstance(source["kind"], str) or source["kind"] not in {"tv", "emulator"} or source["kind"] in kinds:
-            fail("invalid", "Source aliases and kinds must be unique")
+        if source["id"] in ids or not isinstance(source["kind"], str) or source["kind"] not in {"tv", "emulator"} or \
+                (source["kind"] == "emulator" and "emulator" in kinds):
+            fail("invalid", "Source aliases must be unique, with at most one emulator")
         ids.add(source["id"])
         kinds.add(source["kind"])
         endpoint(source["endpoint"])
@@ -119,8 +140,8 @@ def read_profile(path):
         lease = Path(source["lease_path"])
         if not lease.is_absolute() or lease.is_symlink() or lease.resolve().is_relative_to(ROOT):
             fail("invalid", "Lease path must be an absolute private canonical lane outside the repository")
-        if source["kind"] == "tv" and str(lease) != "/tmp/plx-samsung-device.lock":
-            fail("invalid", "Native TV requires the canonical /tmp/plx-samsung-device.lock lane")
+        if source["kind"] == "tv" and str(lease) not in {"/tmp/plx-samsung-device.lock", f"/tmp/tizen-tv-{source['id']}.lock"}:
+            fail("invalid", "Native TV requires the canonical lock or its own /tmp/tizen-tv-<id>.lock")
         if not number(source["lease_seconds"], 10, 120):
             fail("invalid", "Bounded run duration must be 10 to 120 seconds; this is not lease TTL")
         metadata(source["metadata"])
@@ -685,15 +706,41 @@ class Source:
 
 
 class App:
-    def __init__(self, path, config, factory=CDP):
+    def __init__(self, path, config, factory=CDP, fleet=None):
         self.path = path
         self.config = config
         self.sources = {s["id"]: Source(s, factory) for s in config["sources"]}
         self.token = secrets.token_urlsafe(32)
         self.persist_lock = threading.Lock()
+        self.fleet = fleet
 
     def state(self):
-        return {"sources": [source.summary() for source in self.sources.values()]}
+        result = {"sources": [source.summary() for source in self.sources.values()]}
+        if self.fleet is not None:
+            result.update(self.fleet.state())
+        return result
+
+    def _write_profile(self, current):
+        temporary = self.path.with_name(self.path.name + "." + secrets.token_hex(8))
+        try:
+            with temporary.open("x") as stream:
+                os.chmod(temporary, 0o600)
+                stream.write(json.dumps(current, indent=2) + "\n")
+            temporary.replace(self.path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def save_names(self, names):
+        # Names are keyed by scanned hashed aliases only; never by network address.
+        with self.persist_lock:
+            _, current = read_profile(self.path)
+            merged = dict(names)
+            current["tv_names"] = merged
+            read_names({"tv_names": merged})
+            self._write_profile(current)
+            self.config["tv_names"] = merged
+        return merged
 
     def save_metadata(self, alias, values):
         metadata(values)
@@ -706,15 +753,7 @@ class App:
                 _, current = read_profile(self.path)
                 entry = next(s for s in current["sources"] if s["id"] == alias)
                 entry["metadata"] = values
-                temporary = self.path.with_name(self.path.name + "." + secrets.token_hex(8))
-                try:
-                    with temporary.open("x") as stream:
-                        os.chmod(temporary, 0o600)
-                        stream.write(json.dumps(current, indent=2) + "\n")
-                    temporary.replace(self.path)
-                finally:
-                    if temporary.exists():
-                        temporary.unlink()
+                self._write_profile(current)
                 source.config["metadata"] = values
             finally:
                 source.lock.release()
@@ -722,6 +761,11 @@ class App:
 
     def close(self):
         failed = False
+        if self.fleet is not None:
+            try:
+                self.fleet.close()
+            except LiveError:
+                failed = True
         for source in self.sources.values():
             with source.lock:
                 try:
@@ -841,6 +885,13 @@ def handler(app):
                 if self.path == "/api/record" and hasattr(app, "record"):
                     self.reply(200, app.record(data))
                     return
+                if self.path == "/api/detect" and app.fleet is not None:
+                    self.reply(200, app.fleet.submit("detect", None, data))
+                    return
+                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|run|rename)/(tv-[0-9a-f]{6})", self.path)
+                if match and app.fleet is not None:
+                    self.reply(200, app.fleet.submit(match[1], match[2], data))
+                    return
                 match = re.fullmatch(r"/api/(connect|disconnect|capture|key|click|metadata|stream)/([a-z][a-z0-9-]{0,31})", self.path)
                 if not match or match[2] not in app.sources:
                     fail("route", "Unknown route")
@@ -869,7 +920,10 @@ def handler(app):
 
 def serve(profile, owner_stdin=False):
     path, config = read_profile(profile)
+    import tv_fleet
     app = App(path, config)
+    app.fleet = tv_fleet.Fleet(certificate_duids=config.get("certificate_duids"),
+                               names=config.get("tv_names", {}), save_names=app.save_names)
     server = BoundedServer(("127.0.0.1", 0), handler(app))
     server.daemon_threads = True
     server.timeout = 0.2

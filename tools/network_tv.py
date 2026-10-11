@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import http.client
 import ipaddress
 import json
+import re
 import socket
 import time
 
@@ -43,7 +44,7 @@ def metadata(data, address):
                               "off" if developer in ("0", 0, False, "false") else "unknown"}
 
 
-def confirm(address, budget=1):
+def confirm(address, budget=1, identity=False):
     if not local_address(address):
         raise ValueError("Discovery accepts private local IPv4 addresses only")
     connection = _DeadlineConnection(address, 8001, time.monotonic() + budget)
@@ -55,7 +56,15 @@ def confirm(address, budget=1):
         raw = response.read(65537)
         if len(raw) > 65536:
             raise ValueError("Samsung REST metadata exceeded its limit")
-        return metadata(json.loads(raw), address)
+        data = json.loads(raw)
+        result = metadata(data, address)
+        if identity:
+            # Private, in-memory only: a stable key so a DHCP address change keeps the TV's name.
+            device = data["device"]
+            uid = next((str(device[k]) for k in ("id", "wifiMac") if isinstance(device.get(k), str)
+                        and re.fullmatch(r"[A-Za-z0-9:._-]{4,80}", device[k])), None)
+            result["uid"] = uid
+        return result
     finally:
         connection.close()
 

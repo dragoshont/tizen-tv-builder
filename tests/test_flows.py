@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import appkit
 import flows
-from live_tv import LiveError
+from live_tv import Lease, LiveError
 
 TOOL = sys.executable
 SERIAL = "192.0.2.10:26101"
@@ -174,6 +174,23 @@ class FlowTests(unittest.TestCase):
         kills = [c for c in runner.calls if c[2:5] == ["shell", "0", "kill"]]
         debug = [i for i, c in enumerate(runner.calls) if c[2:5] == ["shell", "0", "debug"]]
         self.assertLess(runner.calls.index(kills[0]), debug[0])
+
+    def test_retail_with_caller_lease_requires_it_held_and_keeps_it(self):
+        clock, runner = Clock(), Runner()
+        lease = Lease(self.root / "tizen-tv-tv-abc123.lock")
+        with self.assertRaises(LiveError) as caught:
+            flows.retail(SERIAL, self.target(), "AbCdEfGhIj.App", lease=lease, **session_args(runner, clock))
+        self.assertEqual(caught.exception.code, "device_lock_held")
+        self.assertEqual(runner.calls, [])
+        lease.acquire()
+        try:
+            receipt = flows.retail(SERIAL, self.target(), "AbCdEfGhIj.App", lease=lease,
+                                   **session_args(runner, clock))
+            self.assertEqual(receipt["lane"], "held by caller")
+            self.assertTrue((self.root / "tizen-tv-tv-abc123.lock").is_dir())
+            self.assertFalse(self.lock.exists(), "A caller-held per-TV lease never takes the canonical lane")
+        finally:
+            lease.release()
 
     def test_changed_forward_mapping_is_not_deleted(self):
         clock, runner = Clock(), Runner(foreign_forward=True)

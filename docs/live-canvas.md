@@ -55,9 +55,11 @@ SDK open/status success alone does not prove the embedded page rendered.
 ## Private profile
 
 Keep this file outside the toolkit/repository, owned by your user, mode 0600.
-Use an existing authorized loopback inspector forward/relay. This provider does
-not launch SDB, create relays/forwards, discover TVs or acquire an outer lease.
-Replace these placeholders privately; never commit actual addresses or identities:
+Configured `sources` use an existing authorized loopback inspector forward/relay;
+that provider does not launch SDB or create relays/forwards. TVs found by
+**Scan network for TVs** need no profile entry (see below), so `"sources": []`
+is a valid profile. Replace these placeholders privately; never commit actual
+addresses or identities:
 
 ```json
 {
@@ -106,10 +108,41 @@ endpoint and target. TV remains the default when configured. Switching and
 side-by-side comparison preserve separate labels and capture timestamps.
 An unavailable source never substitutes another source's image.
 
+Optional private keys: `tv_names` (alias → your name, written by Rename) and
+`certificate_duids` (absolute path, outside the repository, to the distributor
+device-profile file used only for the install DUID gate). Up to 8 sources, at
+most one emulator; a TV lease is the canonical lock or `/tmp/tizen-tv-<id>.lock`.
+
+## Scan network for TVs
+
+The primary button at the top runs a user-triggered, bounded scan: each local
+private /24 for TCP 26101 (Developer Mode) plus the current `sdb devices` list.
+It writes nothing, never runs `kill-server` and never reboots. During Scan only,
+it reads the TV's unauthenticated `http://<tv>:8001/api/v2/` `device.name` and
+`modelName` with a short timeout to name the card (e.g. "Samsung 7 Series (55) ·
+UE55NU7…"); otherwise "Samsung TV (2018) #1". Rename (✎) stores your name in
+the 0600 profile keyed by the hashed alias, never by address.
+
+Each TV card shows Connected, Not connected or Busy (another session holds its
+lock; shown read-only). Connect asks once, then runs `sdb connect` and Identify
+under that TV's own lease `/tmp/tizen-tv-<alias>.lock`, so it never preempts the
+canonical lock. If the canonical lock is present you must type the alias. When
+Connect fails the card explains why and offers Retry: Developer Mode steps (Apps
+→ 1 2 3 4 5 → Developer mode On, Host PC IP = this computer's address shown on
+the card, restart TV), or "Connected, install blocked: needs certificate update"
+when the TV's DUID is not in `certificate_duids`. Install and run require typing
+the alias and a matching DUID. Addresses, DUIDs and lock paths appear only under
+Details, redacted; they are never shown on the card or written to receipts.
+The remote and screen view work for configured sources; for scanned TVs the
+remote stays off with an inline reason until an app is opened for inspection.
+Scan, naming and guidance are host-tested with a mocked SDB only; real 2018 TV
+wording, identify output and the 8001 fields are **unverified**.
+
 ## Human-operated capture and input
 
-Connect requires target/lane permission and separate private-pixel and input
-grants. Start feed requests a discrete genuine native LayerTree paint capture
+Connect shows one confirmation ("Screen images may show account info; remote
+keys will be sent.") which grants the session, private pixels and input for that
+run; the backend still checks each grant separately. Start feed requests a discrete genuine native LayerTree paint capture
 every 10 seconds (adjustable 10–60); Pause stops future requests, and Refresh
 captures manually. Pause does not cancel an already in-flight capture.
 Frames remain private in memory. A failed/disconnected capture retains the last
@@ -123,7 +156,7 @@ immediately rather than queued. Capture budgets are bounded, with separate
 bounded snapshot-release/disable cleanup. Closing the last panel, provider pipe
 EOF, process cancellation or the run deadline disconnects owned clients.
 
-Focus the remote or capture surface:
+Each card has its own on-screen Remote panel. Focus it or the screen view:
 
 | Shortcut | Command |
 |---|---|

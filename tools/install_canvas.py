@@ -19,7 +19,10 @@ def install(destination):
         raise ValueError("Extension parent must already exist")
     source = ROOT / ".github/extensions/tizen-live"
     payload = {name: source / name for name in ("extension.mjs", "index.html", "ui.js", "ui.css", "controls.mjs")}
-    payload.update({f"backend/{name}": ROOT / "tools" / name for name in ("live_tv.py", "tizen.py")})
+    payload.update({f"backend/{name}": ROOT / "tools" / name for name in (
+        "live_tv.py", "tizen.py", "tv_fleet.py", "flows.py", "network_tv.py", "workbench.py", "recording.py", "appkit.py")})
+    # flows.BUDGETS resolves to <destination>/docs/budgets.json from the backend folder.
+    payload["docs/budgets.json"] = ROOT / "docs/budgets.json"
     for path in payload.values():
         if path.is_symlink() or not path.is_file():
             raise ValueError("Canvas payload is missing or is a symlink")
@@ -37,8 +40,9 @@ def install(destination):
             target = destination / name
             if target.is_file():
                 target.unlink()
-        if (destination / "backend").exists():
-            (destination / "backend").rmdir()
+        for folder in ("backend", "docs"):
+            if (destination / folder).exists():
+                (destination / folder).rmdir()
         destination.rmdir()
         raise
     return {"installed": "tizen-live", "files": len(payload),

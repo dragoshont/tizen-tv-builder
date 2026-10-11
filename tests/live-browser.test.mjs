@@ -36,7 +36,7 @@ try {
   await rpc("Page.enable");
   await rpc("Page.navigate", { url: canvasUrl });
   await wait(1200);
-  assert.equal(await evaluate("document.getElementById('status').textContent.includes('disconnected')"), true);
+  assert.equal(await evaluate("document.getElementById('error').textContent.includes('Connection lost')"), true);
   assert.equal(await evaluate("document.querySelectorAll('img').length"), 0);
   assert.equal(await evaluate("document.querySelector('[data-key=up]').disabled"), true);
   for (const width of [1200, 390]) {
@@ -71,25 +71,25 @@ try {
   assert.equal(await evaluate("uiCalls.filter(c=>c.url.includes('/key/')).length"), 1, "Enter must not also click the native button");
   await key(" ", 32);
   assert.equal(await evaluate("uiCalls.filter(c=>c.url.includes('/key/')).length"), 2, "Space must not double dispatch");
-  await evaluate("document.getElementById('remote').focus()");
+  await evaluate("document.querySelector('.remote').focus()");
   for (const [name, code] of [["ArrowUp", 38], ["ArrowDown", 40], ["ArrowLeft", 37], ["ArrowRight", 39], ["Backspace", 8]]) await key(name, code);
   assert.deepEqual(await evaluate("uiCalls.map(c=>c.body.key)"), ["ok", "ok", "up", "down", "left", "right", "back"]);
-  await evaluate(`document.getElementById('remote').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',repeat:true,bubbles:true,cancelable:true}))`);
+  await evaluate(`document.querySelector('.remote').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',repeat:true,bubbles:true,cancelable:true}))`);
   assert.equal(await evaluate("uiCalls.length"), 7);
-  await evaluate("document.querySelector('details').open=true; document.getElementById('meta-model').focus()");
+  await evaluate("document.querySelector('details').open=true; document.querySelector('.device details input').focus()");
   await key("Enter", 13); // May save metadata through the form, but must never send remote input.
   assert.equal(await evaluate("uiCalls.filter(c=>c.url.includes('/key/')).length"), 7);
-  await evaluate("document.getElementById('views').focus()");
+  await evaluate("document.querySelector('.view').focus()");
   await key("ArrowUp", 38);
   assert.equal(await evaluate("uiCalls.filter(c=>c.url.includes('/key/')).length"), 8, "Focused capture surface shortcut");
-  await evaluate("window.uiDelay=500; document.getElementById('remote').focus()");
+  await evaluate("window.uiDelay=500; document.querySelector('.remote').focus()");
   await key("ArrowRight", 39); await key("Enter", 13);
   await wait(550);
   assert.equal(await evaluate("uiCalls.filter(c=>c.url.includes('/key/')).length"), 9, "Busy command must not grow a queue");
   await evaluate("window.uiFailed=true");
   await wait(1200); await key("Backspace", 8);
   assert.equal(await evaluate("uiCalls.filter(c=>c.url.includes('/key/')).length"), 9, "Disconnected shortcut must not send");
-  assert.equal(await evaluate("document.getElementById('error').textContent.includes('disconnected')"), true);
+  assert.equal(await evaluate("document.getElementById('error').textContent.includes('Connection lost')"), true);
   assert.equal(await evaluate("document.querySelectorAll('img').length"), 0);
   console.error("Isolated browser: offline rendering, narrow layout, focus/editing, Enter/Space single dispatch, backpressure and disconnect passed. UI fixture only.");
 } finally {

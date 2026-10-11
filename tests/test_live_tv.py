@@ -216,6 +216,109 @@ class LiveTests(unittest.TestCase):
             with self.assertRaisesRegex(live.LiveError, "0600"):
                 live.read_profile(profile)
 
+    @unittest.skipUnless(os.name == "posix", "Canvas private profiles use POSIX ownership; Windows uses workbench")
+    def test_profile_allows_scan_only_multiple_tvs_and_private_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / "profile.json"
+            def check(config):
+                profile.write_text(json.dumps(config)); profile.chmod(0o600)
+                return live.read_profile(profile)[1]
+            self.assertEqual(check({"sources": []})["sources"], [])
+            two = [source_config(root, "living-room"), source_config(root, "bedroom")]
+            two[0]["lease_path"] = "/tmp/plx-samsung-device.lock"
+            two[1]["lease_path"] = "/tmp/tizen-tv-bedroom.lock"
+            self.assertEqual(len(check({"sources": two})["sources"]), 2)
+            names = {"tv-0a1b2c": "Bedroom TV"}
+            self.assertEqual(check({"sources": [], "tv_names": names, "certificate_duids": str(root / "p.xml")})["tv_names"], names)
+            bad = [{"sources": two, "extra": 1},
+                   {"sources": [source_config(root, "a", "emulator"), source_config(root, "b", "emulator")]},
+                   {"sources": [source_config(root, "a"), source_config(root, "a")]},
+                   {"sources": [dict(two[1], lease_path="/tmp/other.lock")]},
+                   {"sources": [], "tv_names": {"192.0.2.1": "x"}},
+                   {"sources": [], "tv_names": {"tv-0a1b2c": "x" * 61}},
+                   {"sources": [], "certificate_duids": "relative.xml"},
+                   {"sources": [], "certificate_duids": str(ROOT / "p.xml")},
+                   {"sources": [source_config(root, f"tv{n}") for n in range(9)]}]
+            for config in bad:
+                with self.subTest(config=list(config)), self.assertRaises(live.LiveError):
+                    check(config)
+
+    @unittest.skipUnless(os.name == "posix", "Canvas profile persistence uses POSIX ownership")
+    def test_scan_and_tv_routes_are_authenticated_and_names_persist_privately(self):
+        class FakeFleet:
+            def __init__(self):
+                self.calls = []; self.closed = False
+            def state(self):
+                return {"scan": {"status": "done"}, "sdk": "available",
+                        "tvs": [{"alias": "tv-0a1b2c", "name": "Bedroom TV", "status": "not-connected"}]}
+            def submit(self, operation, alias, data):
+                self.calls.append((operation, alias, data))
+                if alias == "tv-ffffff":
+                    live.fail("route", "Unknown TV; scan the network again")
+                if operation == "rename":
+                    app.save_names({alias: data["name"]})
+                return self.state()
+            def close(self):
+                self.closed = True
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); path = root / "profile.json"
+            config = {"sources": []}
+            path.write_text(json.dumps(config)); path.chmod(0o600)
+            fleet = FakeFleet()
+            app = live.App(path, config, FakeCDP, fleet=fleet)
+            server = live.BoundedServer(("127.0.0.1", 0), live.handler(app))
+            thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+            import http.client
+            def request(method, route, data=None, **headers):
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                connection.request(method, route, None if data is None else json.dumps(data),
+                                   {"Content-Type": "application/json", **headers})
+                reply = connection.getresponse(); raw = reply.read(); connection.close()
+                return reply.status, json.loads(raw)
+            auth = {"Authorization": "Bearer " + app.token}
+            try:
+                self.assertEqual(request("POST", "/api/detect", {})[0], 403)
+                self.assertEqual(request("POST", "/api/detect", {}, **auth, Origin="https://untrusted.example")[0], 403)
+                self.assertEqual(request("POST", "/api/tv/connect/tv-0a1b2c", {"confirm": ""})[0], 403)
+                self.assertEqual(fleet.calls, [])
+                status, state = request("GET", "/api/state", **auth)
+                self.assertEqual((status, state["tvs"][0]["name"], state["sources"]), (200, "Bedroom TV", []))
+                self.assertEqual(request("POST", "/api/detect", {}, **auth)[0], 200)
+                self.assertEqual(request("POST", "/api/tv/connect/tv-0a1b2c", {"confirm": ""}, **auth)[0], 200)
+                self.assertEqual(request("POST", "/api/tv/connect/tv-ffffff", {"confirm": ""}, **auth)[0], 400)
+                self.assertEqual(request("POST", "/api/tv/format/tv-0a1b2c", {}, **auth)[0], 400)
+                self.assertEqual(request("POST", "/api/tv/connect/192.0.2.1", {}, **auth)[0], 400)
+                self.assertEqual(request("POST", "/api/tv/rename/tv-0a1b2c", {"name": "Den"}, **auth)[0], 200)
+                self.assertEqual(json.loads(path.read_text()), {"sources": [], "tv_names": {"tv-0a1b2c": "Den"}})
+                self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
+                self.assertEqual([c[0] for c in fleet.calls], ["detect", "connect", "connect", "rename"])
+            finally:
+                app.close(); server.shutdown(); server.server_close(); thread.join()
+            self.assertTrue(fleet.closed)
+
+    def test_portal_ui_leads_with_scan_and_plain_language(self):
+        canvas = Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live"
+        html = (canvas / "index.html").read_text()
+        script = (canvas / "ui.js").read_text()
+        style = (canvas / "ui.css").read_text()
+        self.assertLess(html.index('id="scan"'), html.index("<main"))
+        self.assertRegex(html, r'<button id="scan" class="primary[^"]*"[^>]*>Scan network for TVs</button>')
+        self.assertNotIn('type="checkbox"', html)
+        for text in (html, script):
+            for jargon in ("CDP", "Active source", "lane", "Before connecting", "Explicit emulator"):
+                self.assertNotIn(jargon, text)
+        self.assertIn("Screen images may show account info; remote keys will be sent.", script)
+        self.assertIn("authorized: true, pixels: true, input: true", script)
+        self.assertIn('"/api/detect"', script)
+        for op in ("connect", "identify", "disconnect", "rename", "run"):
+            self.assertIn(f'tvCommand("{op}"', script)
+        self.assertIn('"Remote"', script)
+        self.assertIn('"Emulator"', script)
+        self.assertIn(":focus-visible", style)
+        for text in (html, script, style):
+            self.assertNotRegex(text, r"https?://|@import|fonts\.googleapis")
+
     def test_endpoint_and_profile_do_not_allow_network_redirection(self):
         for bad in ("http://localhost:12345", "http://192.0.2.1:12345", "https://127.0.0.1:12345",
                     "http://127.0.0.1:12345/path", "http://127.0.0.1:12345?token=fixture",
