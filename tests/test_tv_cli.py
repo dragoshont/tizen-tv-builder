@@ -206,7 +206,8 @@ class TvCliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Developer Mode port: open", out)
         self.assertIn("Developer connection: refused", out)
-        self.assertIn("Needs to be configured: The Developer Mode port is open, but the TV refused this computer", out)
+        self.assertIn("Needs to be configured: Developer Mode is on, but the TV refused this computer: its Host PC IP "
+                      "most likely points to another computer", out)
         self.assertIn("Next: On the TV set Host PC IP to this computer", out)
         self.assertIn("Not ready", out)
         self.assertNotIn("Developer Mode ready", out)

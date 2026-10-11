@@ -218,11 +218,36 @@ python3 tools/tizen.py tv rename tv-abc123 "Den TV"
 python3 tools/tizen.py tv portal              # prints http://127.0.0.1:47811/ (or a free port)
 ```
 
+First run, from a terminal (unreleased; host-tested against a fake SDK, not yet run on a TV):
+
+```sh
+python3 tools/tizen.py tv setup                     # sdb, tizen CLI, signing profiles; installs nothing
+python3 tools/tizen.py tv cert tv-abc123            # which certificate; saves the DUID privately (0600)
+python3 tools/tizen.py tv duid tv-abc123 --out ~/duid.txt   # hidden unless --show or --out
+python3 tools/tizen.py tv install tv-abc123 app.wgt --sign MyTV --yes
+python3 tools/tizen.py tv launch tv-abc123 AbCdEf1234.App --yes
+python3 tools/tizen.py tv remove tv-abc123 AbCdEf1234.App --yes
+```
+
+Each command connects, acts, and disconnects what it connected. `install` re-signs a
+private copy named `app.wgt` (the SDK names its output after `<name>`, which may contain
+spaces) and passes the TV's device name with `-t`; without `-t` the Tizen CLI silently
+does nothing. In Developer Mode the default Tizen distributor certificate installed on
+the 2017 and 2019 TVs tested; other years are reported as unverified. The DUID comes
+from the developer link (`getduid`), not the network API's `duid`. `remove` re-lists
+the TV's apps (`0 vd_applist`) and only reports success when the app is gone: on
+Tizen 5.0 `tizen uninstall` exits 0 and changes nothing, so the command then says to
+delete the app on the TV (Apps, gear, the app, Delete). If the list cannot be read the
+result is "unconfirmed", never success. The `vd_applist` listing is not yet verified on
+a TV. Python 3.10 or newer is required; older versions stop with that message.
+
 `check` reports each stage separately and only says "Developer Mode ready" when
 all of them pass: Developer Mode port open (a TCP answer only), developer
 connection accepted by the TV (`sdb connect` listed as a device), and identity
 read (Tizen version; the DUID is only reported as present, never shown). An open
-port with a refused connection is "Not ready" with the Host PC IP fix. Busy TVs
+port with a refused connection is "Not ready": Developer Mode is on, but the TV's Host PC IP most
+likely points to another computer. A TV that reports Developer Mode off is told apart and
+not connected to. Busy TVs
 are not touched. `tv-abc123` is the alias printed by `scan`; aliases stay stable
 between runs, and `list` keeps only names and status from the last scan
 (`last-scan.json`, 0600), never addresses or identities.

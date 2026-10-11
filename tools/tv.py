@@ -37,6 +37,11 @@ def parser():
         "  list                   Show the TVs from the last scan (no network contact)\n"
         "  check ALIAS            Test Developer Mode: port open, connection accepted, identity\n"
         "  connect ALIAS          Connect, identify (install readiness), then disconnect\n"
+        "  setup                  What this computer has for signing and installing (detects only)\n"
+        "  duid ALIAS             Read the TV's certificate DUID (hidden unless --show or --out)\n"
+        "  cert ALIAS             Which certificate this TV needs, with the DUID saved privately\n"
+        "  install ALIAS WGT --sign PROFILE --yes   Re-sign a private copy and install it\n"
+        "  launch | remove ALIAS APP_ID --yes       Start or uninstall an app on the TV\n"
         "  rename ALIAS NAME      Name a scanned TV (saved in the private profile)\n"
         "  key TV KEY... --yes    Send remote keys to a profile TV: " + ", ".join(KEYS) + "\n"
         "  screenshot TV --out DIR --yes   Save the TV's renderer layers as private PNGs\n"
@@ -55,6 +60,23 @@ def parser():
     item = sub.add_parser("connect", help="Connect to a scanned TV, identify it, then disconnect")
     item.add_argument("alias")
     item.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)  # Accepted for older scripts.
+    sub.add_parser("setup", help="Check sdb, the tizen CLI and signing profiles; installs nothing")
+    item = sub.add_parser("duid", help="Read the TV's certificate DUID over the developer link")
+    item.add_argument("alias")
+    item.add_argument("--show", action="store_true", help="Print the DUID (it identifies this TV)")
+    item.add_argument("--out", type=Path, help="Save the DUID to this private file (mode 0600) instead")
+    item = sub.add_parser("cert", help="Explain which certificate this TV needs; saves its DUID privately")
+    item.add_argument("alias")
+    item = sub.add_parser("install", help="Re-sign a .wgt with a signing profile and install it")
+    item.add_argument("alias")
+    item.add_argument("package", type=Path)
+    item.add_argument("--sign", required=True, metavar="PROFILE", help="Tizen Studio signing profile name")
+    item.add_argument("--yes", action="store_true", help="Confirm: the app is installed on the TV")
+    for name, verb in (("launch", "started"), ("remove", "uninstalled")):
+        item = sub.add_parser(name, help=f"An app is {verb} on the TV")
+        item.add_argument("alias")
+        item.add_argument("app")
+        item.add_argument("--yes", action="store_true", help=f"Confirm: the app is {verb} on the TV")
     item = sub.add_parser("key", help="Send remote keys to a profile TV")
     item.add_argument("tv")
     item.add_argument("keys", nargs="+", metavar="key")
@@ -192,8 +214,99 @@ def private_output(folder):
     return folder
 
 
-def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR):
+def default_setup():
+    import tv_fleet
+    return tv_fleet.setup_report()
+
+
+def setup_lines(report):
+    for item in report["checks"]:
+        name = item["label"].split(" (")[0]
+        line = f"{name}: {item['status']}"
+        if item["id"] == "profiles" and report["profiles"]["names"]:
+            line += " · " + ", ".join(n + (" (active)" if n == report["profiles"]["active"] else "")
+                                      for n in report["profiles"]["names"])
+        yield line
+        if item["next"]:
+            yield "    How: " + item["next"]
+    yield report["note"]
+
+
+def write_private(path, text):
+    path = path.expanduser().absolute()
+    if path.resolve().is_relative_to(ROOT):
+        raise Usage("The DUID identifies your TV; save it outside this repository")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w") as stream:
+        os.chmod(path, 0o600)
+        stream.write(text + "\n")
+    return path
+
+
+CERT_TESTED_YEARS = {2017, 2019}  # Default certificate install observed in Developer Mode on these years.
+
+
+def first_run(args, fleet, tv, say, state_dir):
+    """duid/cert/install/launch/remove: connect, act, and always disconnect what was connected."""
+    alias = tv["alias"]
+    if args.command in {"install", "launch", "remove"} and not args.yes:
+        raise Usage("Add --yes to confirm: this changes the apps on " + tv["name"])
+    try:
+        fleet.connect(alias, {"confirm": alias})
+    except LiveError:
+        tv = find(fleet.state(), alias)
+        dev = tv.get("dev_mode") or {}
+        say(f"{tv['label']}: {dev.get('explanation') or tv['error'] or tv['headline']}")
+        if dev.get("next"):
+            say("Next: " + dev["next"])
+        return 1
+    try:
+        if args.command == "duid":
+            duid = fleet.read_duid(alias)
+            if args.out:
+                say("Saved the DUID to " + str(write_private(args.out, duid)) + " (mode 0600)")
+            elif args.show:
+                say(duid)
+            else:
+                say("DUID read; hidden because it identifies this TV. Add --show to print it or --out FILE to save it.")
+            say("This is the certificate DUID from the developer link, not the `duid` the TV's network API reports.")
+            return 0
+        if args.command == "cert":
+            duid = fleet.read_duid(alias)
+            handoff = write_private(private_dir(Path(state_dir)) / f"duid-{alias}.txt", duid)
+            year = ((tv.get("metadata") or {}).get("model_year") or {}).get("value")
+            tested = year in CERT_TESTED_YEARS
+            say(f"{tv['name']} ({year or 'model year unknown'})")
+            say("1. Try the default certificate first: a Tizen Studio author certificate with the default "
+                "Tizen distributor certificate. No Samsung account is needed in Developer Mode.")
+            say("   " + ("Installs were observed on a TV from this year." if tested else
+                         "Not yet tested, so unverified for this model year: installs were observed on 2017 and 2019 TVs only."))
+            say(f"2. If install says the certificate chain is invalid (-12), make a Samsung certificate with tizen-cert:")
+            say("   Create a new profile for TV, sign in with your Samsung account, and paste the DUID from")
+            say("   " + str(handoff) + " (private, mode 0600; delete it when done).")
+            say(f"3. Then: tv install {alias} APP.wgt --sign PROFILE --yes")
+            return 0
+        if args.command == "install":
+            result = fleet.install(alias, {"confirm": alias, "package": str(args.package.expanduser().absolute()),
+                                           "sign": args.sign})
+        else:
+            result = getattr(fleet, args.command)(alias, {"confirm": alias, "app": args.app})
+        say(result["message"])
+        if result.get("next"):
+            say("Next: " + result["next"])
+        return 0 if result["ok"] else 1
+    finally:
+        fleet.disconnect(alias, {})
+
+
+def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=default_setup):
     say = lambda line="": print(line, file=out)  # noqa: E731
+    if args.command == "setup":
+        report = setup()
+        for line in setup_lines(report):
+            say(line)
+        return 0 if report["ready"] else 1
     profile = config = app = None
     chosen = args.profile.expanduser().absolute() if args.profile is not None else \
         default_profile(state_dir, create=args.command in {"portal", "rename"})
@@ -275,6 +388,8 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR):
             return 0
         if args.command == "check":
             return check(fleet, tv, say)
+        if args.command in {"duid", "cert", "install", "launch", "remove"}:
+            return first_run(args, fleet, tv, say, state_dir)
         say(f"Connecting to {tv['name']}…")
         try:
             fleet.connect(args.alias, {"confirm": args.alias})
@@ -348,15 +463,18 @@ def check(fleet, tv, say):
 
 
 def main(argv=None, fleet_factory=default_fleet, cdp_factory=live_tv.CDP, stdout=None, stderr=None,
-         state_dir=STATE_DIR):
+         state_dir=STATE_DIR, setup=default_setup):
     out, err = stdout or sys.stdout, stderr or sys.stderr
+    if sys.version_info < (3, 10):
+        print("tv: Python 3.10 or newer is required (this is " + sys.version.split()[0] + ")", file=err)
+        return 1
     cli = parser()
     try:
         args = cli.parse_args(argv)
     except SystemExit as stop:
         return stop.code
     try:
-        return run(args, fleet_factory, cdp_factory, out, state_dir)
+        return run(args, fleet_factory, cdp_factory, out, state_dir, setup)
     except Usage as error:
         print("tv: " + str(error), file=err)
         return 2

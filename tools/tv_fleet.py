@@ -11,7 +11,10 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
 import threading
 import time
 
@@ -19,6 +22,7 @@ import flows
 import live_tv
 from live_tv import Lease, LiveError, exact, fail
 import network_tv
+import appkit
 import samsung_models
 from tizen import application_id
 from workbench import sdk_tool
@@ -89,6 +93,108 @@ def _info(host):
     return network_tv.confirm(host, budget=1, identity=True)
 
 
+def appkit_signed(path):
+    """Structural check that the CLI produced both signatures; the TV verifies the digests."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
+    return "author-signature.xml" in names and "signature1.xml" in names
+
+
+def _find_tool(name):
+    try:
+        return sdk_tool(name, None)
+    except (LiveError, OSError, ValueError):
+        return None
+
+
+def default_data_root():
+    return Path.home() / "tizen-studio-data"
+
+
+def signing_profiles(data_root):
+    """Profile names from Tizen Studio's profiles.xml. Names only; keys and passwords are never read."""
+    path = Path(data_root) / "profile" / "profiles.xml"
+    try:
+        if path.is_symlink() or path.stat().st_size > MAX_CERTIFICATE:
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+        return None
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+    names = [p.get("name") for p in root.iter("profile") if p.get("name")]
+    return {"names": names, "active": root.get("active") if root.get("active") in names else None}
+
+
+INSTALL_HELP = {
+    "tizen-studio": "Install Tizen Studio with the Samsung TV extension (https://developer.samsung.com/smarttv), "
+                    "or set TIZEN_SDK_ROOT to an existing installation",
+    "profile": "Create a signing profile: for Developer Mode the default Tizen distributor certificate works on "
+               "the 2017 and 2019 TVs tested. Run `tv cert TV` for the steps",
+    "tizen-cert": "Optional, only for Samsung certificates: curl -fsSL https://tizen-cert-cli.vercel.app/install.sh | sh "
+                  "(Windows: the project's install.ps1)",
+}
+
+
+def setup_report(sdb="auto", tizen="auto", data_root=None, which=shutil.which):
+    """What this computer has for the first-run journey. Detects only; never installs or runs anything."""
+    sdb = _find_tool("sdb") if sdb == "auto" else sdb
+    tizen = _find_tool("tizen") if tizen == "auto" else tizen
+    profiles = signing_profiles(data_root or default_data_root())
+    cert = which("tizen-cert")
+    checks = [
+        {"id": "sdb", "label": "sdb (connects to the TV)", "status": "found" if sdb else "missing",
+         "next": None if sdb else INSTALL_HELP["tizen-studio"]},
+        {"id": "tizen", "label": "tizen CLI (signs and installs)", "status": "found" if tizen else "missing",
+         "next": None if tizen else INSTALL_HELP["tizen-studio"]},
+        {"id": "profiles", "label": "Signing profiles", "status": "found" if profiles and profiles["names"] else "missing",
+         "next": None if profiles and profiles["names"] else INSTALL_HELP["profile"]},
+        {"id": "tizen-cert", "label": "tizen-cert (Samsung certificates, optional)",
+         "status": "found" if cert else "missing", "next": None if cert else INSTALL_HELP["tizen-cert"]},
+    ]
+    ready = all(c["status"] == "found" for c in checks if c["id"] != "tizen-cert")
+    return {"ready": ready, "checks": checks,
+            "profiles": {"names": profiles["names"], "active": profiles["active"]} if profiles else
+                        {"names": [], "active": None},
+            "note": "Nothing was installed or changed; this only looks at what is already on this computer."}
+
+
+DELETE_ON_TV = "Delete it on the TV: open Apps, select the gear (Settings), choose the app, then Delete"
+APP_ID_TOKEN = re.compile(r"(?<![A-Za-z0-9.])[A-Za-z0-9]{10}\.[A-Za-z0-9]{1,52}(?![A-Za-z0-9.])")
+
+
+# Plain-language meaning of what the Tizen CLI prints. Order matters: the first match wins.
+INSTALL_ERRORS = (
+    ("author-mismatch", re.compile(r"-11\b|author certificate not match", re.I),
+     "The TV already has this app signed by someone else (a different author certificate)",
+     "Remove the other version first: tv remove TV APP_ID --yes, then install again"),
+    ("certificate-expired", re.compile(r"expired", re.I),
+     "The signing certificate has expired",
+     "Renew the certificate (tizen-cert: Renew, or create a new Tizen Studio author certificate), then install again"),
+    ("certificate-chain", re.compile(r"-12\b|invalid certificate chain|check certificate error", re.I),
+     "The certificate does not list this TV, so the TV rejects the app",
+     "Create a certificate that includes this TV: tv cert TV"),
+    ("signing-password", re.compile(r"inva[il]{2}d password", re.I),
+     "The signing profile's password could not be read (common without a desktop keyring)",
+     "Re-create the profile, or store its passwords in profiles.xml; details are in "
+     "~/tizen-studio-data/cli/logs/cli.log"),
+)
+
+
+def explain(output, fallback_code, fallback_message, fallback_next):
+    for code, pattern, message, nxt in INSTALL_ERRORS:
+        if pattern.search(output):
+            return code, message, nxt
+    return fallback_code, fallback_message, fallback_next
+
+
 class _HeldLease:
     """The fleet already holds this TV's lease; the preview source must not take or drop it."""
 
@@ -106,13 +212,14 @@ class Fleet:
     def __init__(self, sdb_path="auto", runner=flows.run_tool, interfaces=network_tv.interfaces,
                  sweep=network_tv.sweep, info=_info, ssdp=network_tv.ssdp_hosts, key_path=None, lease_root=None, canonical=None,
                  certificate_duids=None, retail=flows.retail, names=None, save_names=None,
-                 session=None, cdp=live_tv.CDP, discover=None):
+                 session=None, cdp=live_tv.CDP, discover=None, tizen_path="auto", data_root=None):
         if sdb_path == "auto":
-            try:
-                sdb_path = sdk_tool("sdb", None)
-            except (LiveError, OSError, ValueError):
-                sdb_path = None
+            sdb_path = _find_tool("sdb")
+        if tizen_path == "auto":
+            tizen_path = _find_tool("tizen")
         self.sdb = sdb_path
+        self.tizen = tizen_path
+        self.data_root = Path(data_root) if data_root else default_data_root()
         self.runner = runner
         self.interfaces = interfaces
         self.sweep = sweep
@@ -161,6 +268,15 @@ class Fleet:
             if len(parts) >= 2 and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", parts[0]):
                 found[parts[0]] = parts[1]
         return found
+
+    def _device_name(self, serial):
+        """The `tizen -t` target: the third column of `sdb devices` (the serial alone is ignored)."""
+        output = self.runner([self.sdb, "devices"], 10)
+        for line in output.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 3 and parts[0] == serial and re.fullmatch(r"[A-Za-z0-9_.:<>-]{1,64}", parts[2]):
+                return parts[2]
+        fail("connect", "The TV is no longer connected; connect again")
 
     def detect(self):
         if not self.scan_lock.acquire(blocking=False):
@@ -318,6 +434,7 @@ class Fleet:
 
     def dev_mode(self, record, status):
         """Developer readiness from observed evidence only; separate from connection status."""
+        diagnosis = None
         if record["lease"] is not None or record["sdb_state"] == "device" or record.get("dev_proven"):
             state, why = "enabled", "This computer has a working developer connection to the TV"
             nxt = ("Open an app for preview" if status == "developer"
@@ -325,8 +442,10 @@ class Fleet:
         elif record["reachable"] and record.get("dev_refused"):
             # Only an observed refusal means setup is needed; an untried port is not a failure.
             state = "needs-config"
-            why = "The Developer Mode port is open, but the TV refused this computer"
+            why = ("Developer Mode is on, but the TV refused this computer: its Host PC IP most likely "
+                   "points to another computer")
             nxt = "On the TV set Host PC IP to this computer, restart the TV, then Retry"
+            diagnosis = "host-ip-elsewhere"
         elif record["reachable"]:
             state = "reachable"
             why = "The Developer Mode port is open; this computer has not connected yet"
@@ -339,7 +458,8 @@ class Fleet:
                 nxt = "Restart the TV (hold Power until the logo), then scan again"
             elif reported in ("off", "0"):
                 state = "not-enabled"
-                why = "The TV reports Developer Mode off and its Developer Mode port is closed"
+                why = "Developer Mode is off: the TV reports Developer Mode off and its Developer Mode port is closed"
+                diagnosis = "developer-mode-off"
                 nxt = "On the TV open Apps, type 1 2 3 4 5, switch Developer mode On with this computer as Host PC IP, restart, then scan again"
             else:
                 # A closed port alone is not proof: Developer Mode may be off, or something blocks the port.
@@ -349,7 +469,7 @@ class Fleet:
         else:
             state, why = "unknown", "Neither the Developer Mode port nor the TV's API answered"
             nxt = "Turn the TV on, make sure it is on this network, then scan again"
-        return {"state": state, "label": DEV_LABELS[state], "explanation": why, "next": nxt}
+        return {"state": state, "label": DEV_LABELS[state], "explanation": why, "next": nxt, "diagnosis": diagnosis}
 
     @staticmethod
     def install_line(record):
@@ -443,7 +563,7 @@ class Fleet:
     # ---- user operations --------------------------------------------------
     def _require_sdk(self):
         if not self.sdb:
-            fail("sdk", "Tizen Studio's sdb was not found. Install Tizen Studio with the TV extension, then scan again")
+            fail("sdk", "Tizen Studio's sdb was not found. " + INSTALL_HELP["tizen-studio"] + ", then run `tv setup`")
 
     def _devices_ready(self, serial):
         return (self._devices() or {}).get(serial) == "device"
@@ -562,7 +682,7 @@ class Fleet:
         with self.lock:
             record = self.record(alias)
             self._gate(record, data)
-            if record["job"] and record["job"]["status"] == "running":
+            if record["job"] and record["job"].get("status") == "running":
                 fail("busy", "A run is already in progress on this TV")
             try:
                 app = application_id(data["app"]) if isinstance(data["app"], str) else application_id("")
@@ -597,7 +717,7 @@ class Fleet:
             record = self.record(alias)
             if record["lease"] is None:
                 fail("connect", "This portal is not connected to that TV")
-            if record["job"] and record["job"]["status"] == "running":
+            if record["job"] and record["job"].get("status") == "running":
                 fail("busy", "Wait for the run to finish before disconnecting")
         self._release(record)
         return self.state()
@@ -735,6 +855,138 @@ class Fleet:
         return self.state()
 
     # ---- async wrapper for HTTP -------------------------------------------
+    # ---- first run: DUID, signing, install, launch, remove --------------------
+    def read_duid(self, alias):
+        """The certificate DUID from `getduid` over the developer link. Never the REST API's `duid`."""
+        with self.lock:
+            record = self.record(alias)
+            if record["lease"] is None:
+                fail("connect", "Connect to this TV first")
+        try:
+            _, duid = flows._identity(record["serial"], self.sdb, self.runner)
+        except (LiveError, ValueError) as error:
+            fail("identity", "Could not read the TV's DUID: " + scrub(error))
+        return duid
+
+    def _change(self, alias, data, keys, verb):
+        exact(data, keys)
+        with self.lock:
+            record = self.record(alias)
+            if record["lease"] is None:
+                fail("connect", "Connect to this TV first")
+            if data["confirm"] != alias:
+                fail("confirm", f"Type {alias} to confirm you want to {verb} on this TV")
+        if not self.tizen:
+            fail("sdk", "Tizen Studio's tizen CLI was not found. " + INSTALL_HELP["tizen-studio"])
+        return record
+
+    def _finish(self, record, result):
+        with self.lock:
+            record["job"] = result
+        return result
+
+    def _app(self, value):
+        try:
+            return application_id(value if isinstance(value, str) else "")
+        except ValueError as error:
+            fail("invalid", str(error))
+
+    def install(self, alias, data):
+        """Re-sign a private copy with the user's profile, then install it. Errors in plain language."""
+        record = self._change(alias, data, {"confirm", "package", "sign"}, "install an app")
+        package, sign = data["package"], data["sign"]
+        if not isinstance(package, str) or not package.lower().endswith(".wgt") or not Path(package).is_file():
+            fail("invalid", "Package must be an existing .wgt file")
+        if not isinstance(sign, str) or not re.fullmatch(r"[A-Za-z0-9 _.-]{1,64}", sign):
+            fail("invalid", "Signing profile name is not valid")
+        profiles = signing_profiles(self.data_root) or {"names": []}
+        if sign not in profiles["names"]:
+            names = ", ".join(profiles["names"]) or "none yet"
+            return self._finish(record, {"op": "install", "ok": False, "code": "no-profile",
+                                         "message": f"There is no signing profile called {sign}",
+                                         "next": f"Use one of: {names}. Or create one: tv cert {alias}"})
+        try:
+            app = appkit.check_package(package)["app"]
+        except (ValueError, OSError, KeyError, zipfile.BadZipFile):
+            app = None
+        if not app:
+            fail("invalid", "That file is not a valid Tizen TV web app package (config.xml needs an app ID and the tv profile)")
+        device = self._device_name(record["serial"])
+        with tempfile.TemporaryDirectory(prefix="tizen-install-") as folder:
+            source = Path(folder) / "in" / "app.wgt"  # Safe name: the CLI chokes on spaces.
+            source.parent.mkdir()
+            shutil.copyfile(package, source)
+            out = Path(folder) / "out"
+            out.mkdir()
+            output = self._tizen(["package", "-t", "wgt", "-s", sign, "-o", str(out), "--", str(source)])
+            built = sorted(out.glob("*.wgt"))
+            if output[0] or len(built) != 1 or not appkit_signed(built[0]):
+                code, message, nxt = explain(output[1], "signing-failed", "The package could not be signed",
+                                             "Check the profile with tv setup, then try again")
+                return self._finish(record, {"op": "install", "ok": False, "code": code, "message": message,
+                                             "next": nxt.replace("TV", alias), "app": app})
+            safe = out / "app.wgt"  # The CLI names the output after <name>, which may hold spaces.
+            built[0].replace(safe)
+            failed, text = self._tizen(["install", "-n", safe.name, "-t", device, "--", str(out)], timeout=180)
+        if failed or not re.search(r"successfully installed|install completed", text, re.I):
+            code, message, nxt = explain(text, "install-failed", "The TV did not install the app",
+                                         "Run tv check " + alias + ", then try again")
+            return self._finish(record, {"op": "install", "ok": False, "code": code, "message": message,
+                                         "next": nxt.replace("TV APP_ID", f"{alias} {app}").replace("tv cert TV",
+                                                                                                    "tv cert " + alias),
+                                         "app": app})
+        return self._finish(record, {"op": "install", "ok": True, "code": "installed",
+                                     "message": "Installed " + app, "next": f"tv launch {alias} {app} --yes",
+                                     "app": app})
+
+    def launch(self, alias, data):
+        record = self._change(alias, data, {"confirm", "app"}, "launch an app")
+        app = self._app(data["app"])
+        failed, text = self._tizen(["run", "-p", app, "-t", self._device_name(record["serial"])])
+        if failed or not re.search(r"successfully launched", text, re.I):
+            return self._finish(record, {"op": "launch", "ok": False, "code": "launch-failed",
+                                         "message": "The TV did not start " + app + " (is it installed?)",
+                                         "next": f"tv install {alias} APP.wgt --sign PROFILE --yes", "app": app})
+        return self._finish(record, {"op": "launch", "ok": True, "code": "launched",
+                                     "message": "Started " + app, "next": None, "app": app})
+
+    def remove(self, alias, data):
+        """Uninstall, then re-list: on Tizen 5.0 `tizen uninstall` can exit 0 and change nothing."""
+        record = self._change(alias, data, {"confirm", "app"}, "remove an app")
+        app = self._app(data["app"])
+        failed, text = self._tizen(["uninstall", "-p", app, "-t", self._device_name(record["serial"])])
+        listed = self._installed_apps(record["serial"])
+        result = {"op": "remove", "app": app, "next": None}
+        if listed is None:
+            result.update(ok=False, code="remove-unconfirmed",
+                          message="Sent the uninstall, but the TV's app list could not be read to confirm it",
+                          next=DELETE_ON_TV)
+        elif app in listed:
+            result.update(ok=False, code="still-installed",
+                          message=app + " is still installed: the TV ignored the uninstall command "
+                                        "(observed on Tizen 5.0)", next=DELETE_ON_TV)
+        elif failed or re.search(r"not exist", text, re.I):
+            result.update(ok=False, code="not-installed", message=app + " is not installed on this TV")
+        else:
+            result.update(ok=True, code="removed", message="Removed " + app + " (confirmed by the TV's app list)")
+        return self._finish(record, result)
+
+    def _installed_apps(self, serial):
+        """App IDs the TV lists, or None when the list cannot be read. Never inferred from exit codes."""
+        try:
+            text = self.runner([self.sdb, "-s", serial, "shell", "0", "vd_applist"], 30)
+        except LiveError:
+            return None
+        apps = set(APP_ID_TOKEN.findall(text))
+        return apps or None
+
+    def _tizen(self, args, timeout=120):
+        """(failed, scrubbed output). The Tizen CLI often exits 0 on failure, so callers read the text."""
+        try:
+            return False, scrub(self.runner([self.tizen] + args, timeout))
+        except LiveError as error:
+            return True, scrub(error)
+
     def submit(self, operation, alias, data):
         """Start a slow operation in the background; progress and errors appear in state()."""
         if operation == "detect":

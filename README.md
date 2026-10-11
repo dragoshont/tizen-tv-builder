@@ -50,7 +50,8 @@ That describes the published **0.1.0** package. The checkout now also contains a
 replace your installed plugin or publish it yet. See [live canvas setup](docs/live-canvas.md)
 for the standalone adapter, explicit private profile and SDK opening steps.
 It also adds unreleased TV commands with no setup: `python3 tools/tizen.py tv scan`,
-`tv list`, `tv check TV`, `tv connect TV` and `tv portal` (the same features in a
+`tv list`, `tv check TV`, `tv connect TV`, first-run `tv setup`, `tv cert`, `tv install`,
+`tv launch`, `tv remove` and `tv portal` (the same features in a
 loopback web page). See [live canvas setup](docs/live-canvas.md#same-features-from-the-terminal-tizenpy-tv).
 
 For a fixed version, download the release instead:
