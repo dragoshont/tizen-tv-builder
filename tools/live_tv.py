@@ -76,6 +76,8 @@ def metadata(value):
 
 
 def read_profile(path):
+    if os.name != "posix":
+        fail("platform", "Private canvas profiles require POSIX ownership; use TV Workbench on Windows")
     path = Path(path)
     if not path.is_absolute() or path.is_symlink() or not path.is_file():
         fail("invalid", "Profile must be an existing absolute private file, not a symlink")

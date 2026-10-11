@@ -17,7 +17,7 @@ import struct
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from recording import Recorder, Encoder
+from recording import Recorder, Encoder, WindowsDirectory
 
 
 def fixture_png():
@@ -78,12 +78,19 @@ def main():
             if route == "/api/state":
                 assert data["sources"] == []
         print("test result: authenticated Windows loopback setup/state/record PASS")
+        probe = WindowsDirectory(parent / "acl-probe")
+        try:
+            fd = probe.file("fixture.png")
+            os.write(fd, fixture_png())
+            os.close(fd)
+        finally:
+            probe.close()
         recorder = Recorder(FixtureSource(), parent / "app-layer-0-windows-fixture",
                             duration=.1, encoder=Encoder())
         recorder.start()
         recorder.thread.join(10)
         receipt = recorder.stop()
-        assert receipt["state"] == "stopped" and receipt["frames"] >= 1
+        assert receipt["state"] == "stopped" and receipt["frames"] >= 1, receipt["error"]
         exported = recorder.export("png")
         assert Path(exported["manifest"]).is_file()
         assert base64.b64encode(Path(exported["paths"][0]).read_bytes()).startswith(b"iVBOR")

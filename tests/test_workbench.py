@@ -272,7 +272,7 @@ class RemoteTests(unittest.TestCase):
                 source.disconnect()
 
     def test_full_remote_buttons_are_present(self):
-        html = (workbench.ASSETS / "index.html").read_text()
+        html = (workbench.ASSETS / "index.html").read_text(encoding="utf-8")
         for name in set(live_tv.KEYS) | set(workbench.REMOTE_NAMES):
             self.assertIn(f'data-key="{name}"', html)
 

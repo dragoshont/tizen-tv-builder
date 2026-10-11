@@ -118,9 +118,12 @@ class RecordingTests(unittest.TestCase):
         manifest = json.loads((result.path / "manifest.json").read_bytes())
         self.assertEqual(manifest["frames"][0]["width"], 20)
         self.assertIn("not panel", manifest["limitations"])
-        self.assertEqual(result.path.stat().st_mode & 0o777, 0o700)
-        for path in result.path.iterdir():
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        if os.name == "posix":
+            self.assertEqual(result.path.stat().st_mode & 0o777, 0o700)
+            for path in result.path.iterdir():
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        else:
+            result.windows_directory.check()
         public = json.dumps(result.status())
         self.assertNotIn(str(result.path), public)
         self.assertNotIn("sha256", public)
@@ -376,6 +379,7 @@ class RecordingTests(unittest.TestCase):
     def test_windows_backend_file_read_write_close_delegation(self):
         result = self.completed()
         backend = Mock()
+        original = result.windows_directory
         result.windows_directory = backend
         try:
             backend.file.return_value = 123
@@ -384,7 +388,7 @@ class RecordingTests(unittest.TestCase):
             result._unlink("still.png")
             backend.unlink.assert_called_once_with("still.png")
         finally:
-            result.windows_directory = None
+            result.windows_directory = original
         result.close()
         result.windows_directory = backend
         result.directory_fd = -1

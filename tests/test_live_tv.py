@@ -113,6 +113,7 @@ class LiveTests(unittest.TestCase):
             finally:
                 source.disconnect()
 
+    @unittest.skipUnless(os.name == "posix", "Canvas private profiles use POSIX ownership; Windows uses workbench")
     def test_owner_pipe_eof_stops_service_without_touching_device(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); profile = root / "profile.json"
@@ -198,6 +199,7 @@ class LiveTests(unittest.TestCase):
             finally:
                 source.disconnect()
 
+    @unittest.skipUnless(os.name == "posix", "Canvas private profiles use POSIX ownership; Windows uses workbench")
     def test_profile_optional_metadata_and_no_inferred_hardware(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -351,6 +353,7 @@ class LiveTests(unittest.TestCase):
             with self.subTest(value=value[:40]), self.assertRaises((live.LiveError, ValueError)):
                 live.png(value)
 
+    @unittest.skipUnless(os.name == "posix", "Canvas profile persistence uses POSIX ownership; workbench routes tested separately")
     def test_http_auth_origin_route_metadata_and_cleanup(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); path = root / "profile.json"
