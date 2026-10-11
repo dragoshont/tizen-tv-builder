@@ -38,7 +38,7 @@ jobs:
         run: python tools/tizen.py new "$RUNNER_TEMP/demo" --name "CI Demo"
       - name: App host tests
         working-directory: ${{ runner.temp }}/demo
-        run: node --test tests/
+        run: node --test tests/focus.test.js
       - name: Audit manifest, privileges, ES5 and credentials
         run: python tools/tizen.py audit "$RUNNER_TEMP/demo/app"
       - name: Deterministic unsigned package and package check

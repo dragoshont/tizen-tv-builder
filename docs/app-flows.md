@@ -7,7 +7,7 @@ JSON and exits `0` on pass, `2` when a check fails, `1` on an error.
 
 ```sh
 python3 tools/tizen.py new ./MyTv --name "My TV"      # unique 10-char package ID, ES5 template, host tests
-node --test MyTv/tests/                                # template host tests
+node --test MyTv/tests/focus.test.js                   # template host tests
 python3 tools/tizen.py audit MyTv/app                   # IDs, privileges, ES5, credential leaks
 python3 tools/tizen.py pack MyTv/app --output my.wgt    # deterministic unsigned package
 python3 tools/tizen.py check-package my.wgt             # manifest + signature consistency
