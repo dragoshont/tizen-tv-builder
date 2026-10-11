@@ -424,7 +424,7 @@ class Fleet:
     def dev_mode(self, record, status):
         """Developer readiness from observed evidence only; separate from connection status."""
         diagnosis = None
-        if record["lease"] is not None or record["sdb_state"] == "device" or record.get("dev_proven"):
+        if record["lease"] is not None or record["sdb_state"] == "device":
             state, why = "enabled", "This computer has a working developer connection to the TV"
             nxt = ("Choose an app on this TV" if status == "developer"
                    else "Connect to use it" if status == "not-connected" else "None")
@@ -435,9 +435,15 @@ class Fleet:
                    "points to another computer")
             nxt = "On the TV set Host PC IP to this computer, restart the TV, then Retry"
             diagnosis = "host-ip-elsewhere"
+        elif record.get("missing"):
+            # Cached API answers from an earlier scan say nothing about the TV now.
+            state, why = "unknown", "The TV did not answer the last scan; it may be off or on another network"
+            nxt = "Turn the TV on, make sure it is on this network, then scan again"
         elif record["reachable"]:
             state = "reachable"
-            why = "The Developer Mode port is open; this computer has not connected yet"
+            why = ("The Developer Mode port is open; this computer connected earlier this session but is not connected now"
+                   if record.get("dev_proven") else
+                   "The Developer Mode port is open; this computer has not connected yet")
             nxt = "Connect to check"
         elif record.get("api"):
             reported = (record.get("info") or {}).get("developer_mode")

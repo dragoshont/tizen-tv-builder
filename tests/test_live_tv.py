@@ -382,7 +382,10 @@ class LiveTests(unittest.TestCase):
         # Opening a preview restarts the app, so it always asks first and says what is (not) shown.
         self.assertIn("This restarts ${appId} on the TV. Only the app's own drawing is shown, not the whole TV", script)
         self.assertIn("restart: true", script)
-        self.assertIn('"Preview not connected', script)
+        # One status per TV: a held link with no picture is "No app open", never a dev-mode restatement.
+        self.assertIn('"No app open"', script)
+        for duplicate in ("Preview not connected", "Dev mode enabled", "Developer Mode ready"):
+            self.assertNotIn(duplicate, script)
         self.assertIn("authorized: true, pixels: true, input: true", script)
         self.assertIn('"/api/detect"', script)
         for op in ("connect", "identify", "disconnect", "rename", "run", "preview"):
