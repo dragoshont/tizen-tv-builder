@@ -53,7 +53,7 @@ class TvCliTests(unittest.TestCase):
         self.profile.write_text(json.dumps(data))
         self.profile.chmod(0o600)
 
-    def fleet(self, certificate_duids=None, names=None, save_names=None):
+    def fleet(self, certificate_duids=None, names=None, save_names=None, known=None, save_known=None):
         test = self
         class Session:
             def __init__(self, serial, app, legacy):

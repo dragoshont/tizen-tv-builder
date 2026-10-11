@@ -261,12 +261,13 @@ class FirstRunBase(unittest.TestCase):
     def calls(self, tool):
         return [c[1:] for c in self.state()["calls"] if c[0] == tool]
 
-    def fleet(self, certificate_duids=None, names=None, save_names=None):
+    def fleet(self, certificate_duids=None, names=None, save_names=None, known=None, save_known=None):
         return tv_fleet.Fleet(sdb_path=str(self.sdb), tizen_path=str(self.tizen), runner=flows.run_tool,
                               interfaces=lambda: ["10.255.255.10"], sweep=self.tv.sweep, info=self.tv.info,
                               ssdp=lambda: set(), key_path=self.root / "alias.key", lease_root=self.root,
                               canonical=self.root / "canonical.lock", certificate_duids=certificate_duids,
-                              names=names or {}, save_names=save_names, data_root=self.data)
+                              names=names or {}, save_names=save_names, known=known, save_known=save_known,
+                              data_root=self.data)
 
     def profiles(self, names=("MyTV",), active="MyTV"):
         folder = self.data / "profile"
@@ -295,7 +296,11 @@ class FleetFirstRunTests(FirstRunBase):
             tv_state = self.detected(fleet)
             self.assertTrue(tv_state["reachable"])
             self.assertEqual(tv_state["dev_mode"]["state"], "reachable")
-            self.assert_private(json.dumps(fleet.state()))
+            # The full address and DUID are shown on the local page (details) only, nowhere else in state.
+            shown = fleet.state()
+            for tv in shown["tvs"]:
+                tv.pop("details", None)
+            self.assert_private(json.dumps(shown))
         finally:
             fleet.close()
 
@@ -352,18 +357,18 @@ class FleetFirstRunTests(FirstRunBase):
         fleet = self.fleet()
         try:
             alias = self.detected(fleet)["alias"]
-            self.assertEqual(fleet.state()["tvs"][0]["apps"], {"state": "unknown", "items": []})
+            self.assertEqual(fleet.state()["tvs"][0]["apps"], {"state": "unknown", "items": [], "store": [], "installed_here": []})
             with self.assertRaises(tv_fleet.LiveError):
                 fleet.apps(alias, {})  # Not connected: nothing is read.
             fleet.connect(alias, {"confirm": alias})
             before = [c for c in self.calls("tizen")]
             fleet.apps(alias, {})
-            self.assertEqual(fleet.state()["tvs"][0]["apps"], {"state": "listed", "items": ["SyStEmApp1.Home"]})
+            self.assertEqual(fleet.state()["tvs"][0]["apps"], {"state": "listed", "items": ["SyStEmApp1.Home"], "store": [], "installed_here": []})
             self.assertEqual(self.calls("tizen"), before)  # Listing never installs, launches or removes.
             self.set_scenario(applist="closed")
             with self.assertRaises(tv_fleet.LiveError):
                 fleet.apps(alias, {})
-            self.assertEqual(fleet.state()["tvs"][0]["apps"], {"state": "unreadable", "items": []})
+            self.assertEqual(fleet.state()["tvs"][0]["apps"], {"state": "unreadable", "items": [], "store": [], "installed_here": []})
         finally:
             fleet.close()
         self.assertEqual(self.state()["connected"], [])
@@ -430,7 +435,7 @@ class FleetFirstRunTests(FirstRunBase):
         result = self.install_failure("author")
         self.assertEqual(result["code"], "author-mismatch")
         self.assertIn("signed by someone else", result["message"])
-        self.assertIn("tv remove", result["next"])
+        self.assertIn("tv uninstall", result["next"])
 
     def test_invalid_chain_routes_to_the_certificate_step(self):
         result = self.install_failure("chain")
@@ -460,7 +465,7 @@ class FleetFirstRunTests(FirstRunBase):
         finally:
             fleet.close()
 
-    def test_changes_to_the_tv_need_a_connection_and_typed_confirmation(self):
+    def test_changes_to_the_tv_need_a_connection_and_no_typed_confirmation(self):
         fleet = self.fleet()
         try:
             alias = self.detected(fleet)["alias"]
@@ -470,13 +475,10 @@ class FleetFirstRunTests(FirstRunBase):
                 with self.assertRaises(tv_fleet.LiveError) as raised:
                     getattr(fleet, operation)(alias, data)
                 self.assertEqual(raised.exception.code, "connect")
-            fleet.connect(alias, {"confirm": alias})
-            with self.assertRaises(tv_fleet.LiveError) as raised:
-                fleet.launch(alias, {"confirm": "tv-000000", "app": APP})
-            self.assertEqual(raised.exception.code, "confirm")
+            fleet.connect(alias, {})
+            fleet.launch(alias, {"app": APP})  # A trusted developer: no typed alias prompt.
         finally:
             fleet.close()
-        self.assertEqual(self.calls("tizen"), [])
 
     def test_portal_path_records_the_same_result_object(self):
         fleet = self.fleet()
@@ -593,58 +595,36 @@ class CliFirstRunTests(FirstRunBase):
         self.assertEqual(code, 0)
         self.assertIn("MyTV (active)", out)
 
-    def test_duid_is_hidden_unless_asked_and_never_the_rest_value(self):
+    def test_duid_is_shown_and_never_the_rest_value(self):
         alias = self.alias()
         code, out, _ = self.run_cli("duid", alias)
         self.assertEqual(code, 0)
-        self.assertNotIn(DUID, out)
-        self.assertIn("--show", out)
-        self.assertIn("not the", out)  # Warns that the REST `duid` is a different ID.
-        code, out, _ = self.run_cli("duid", alias, "--show")
         self.assertIn(DUID, out)
         self.assertNotIn(SMARTTHINGS, out)
-        saved = self.root / "out" / "duid.txt"
-        code, out, _ = self.run_cli("duid", alias, "--out", str(saved))
-        self.assertEqual(saved.read_text().strip(), DUID)
-        self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
-        self.assertNotIn(DUID, out)
 
-    def test_cert_offers_the_default_route_for_a_2018_tv(self):
-        code, out, _ = self.run_cli("cert", self.alias())
+    def test_cert_names_this_tv_and_the_one_command_that_adds_it(self):
+        alias = self.alias()
+        code, out, _ = self.run_cli("cert", alias)
         self.assertEqual(code, 0)
-        self.assertIn("default certificate", out)
-        self.assertIn("unverified", out)
-        self.assertIn("tizen-cert", out)  # The fallback if the TV answers -12.
-        self.assertNotIn(DUID, out)
+        self.assertIn(f"This TV is {DUID}", out)
+        self.assertIn(f"tv cert add {alias}", out)
 
-    def test_cert_hands_off_to_tizen_cert_with_the_duid_ready_to_paste(self):
-        code, out, _ = self.run_cli("cert", self.alias())
-        handoff = next(self.state_dir.glob("duid-tv-*.txt"))
-        self.assertEqual(handoff.read_text().strip(), DUID)
-        self.assertEqual(handoff.stat().st_mode & 0o777, 0o600)
-        self.assertIn(str(handoff), out)
-        self.assertIn("Create a new profile", out)
-
-    def test_install_needs_yes_then_maps_errors_in_plain_language(self):
+    def test_install_runs_without_yes_and_maps_errors_in_plain_language(self):
         self.profiles()
         alias = self.alias()
         wgt = str(package(self.root))
-        code, _, err = self.run_cli("install", alias, wgt, "--sign", "MyTV")
-        self.assertEqual(code, 2)
-        self.assertIn("--yes", err)
-        self.assertEqual(self.calls("tizen"), [])
         self.set_scenario(install="chain")
-        code, out, _ = self.run_cli("install", alias, wgt, "--sign", "MyTV", "--yes")
+        code, out, _ = self.run_cli("install", alias, wgt, "--sign", "MyTV")
         self.assertEqual(code, 1)
         self.assertIn("does not list this TV", out)
         self.assertIn("Next: ", out)
         self.assert_private(out)
         self.set_scenario(install="ok")
-        code, out, _ = self.run_cli("install", alias, wgt, "--sign", "MyTV", "--yes")
+        code, out, _ = self.run_cli("install", alias, wgt, "--sign", "MyTV")
         self.assertEqual(code, 0, out)
-        code, out, _ = self.run_cli("launch", alias, APP, "--yes")
+        code, out, _ = self.run_cli("launch", alias, APP)
         self.assertEqual(code, 0, out)
-        code, out, _ = self.run_cli("remove", alias, APP, "--yes")
+        code, out, _ = self.run_cli("uninstall", alias, APP)
         self.assertEqual(code, 0, out)
         self.assertEqual(self.state()["installed"], [])
 
@@ -652,7 +632,8 @@ class CliFirstRunTests(FirstRunBase):
         self.set_scenario(connect="refuse")
         code, out, _ = self.run_cli("check", self.alias())
         self.assertEqual(code, 1)
-        self.assertIn("Developer Mode is on, but", out)
+        self.assertIn("answered but refused this computer", out)
+        self.assertIn("Connection problem", out)
         self.assertNotIn("Developer Mode is off", out)
 
 

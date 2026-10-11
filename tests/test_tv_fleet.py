@@ -342,6 +342,34 @@ class FleetTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "sdk", "No typed confirmation; only the missing CLI stops it")
         fleet.close()
 
+    def test_offline_tv_keeps_last_known_name_model_and_last_seen_without_an_address(self):
+        saved = []
+        fleet = self.fleet(save_known=saved.append)
+        fleet.detect()
+        alias = self.only(fleet)["alias"]
+        self.assertTrue(saved, "A seen TV's facts are persisted")
+        fact = saved[-1][alias]
+        self.assertEqual((fact["name"], fact["model"]), ("[TV] Samsung 7 Series (55)", "UE55NU7400"))
+        self.assertNotIn(LAN_A, json.dumps(saved[-1]), "The network address is never persisted")
+        live.read_known({"known_tvs": saved[-1]})  # The persisted shape passes the profile validator.
+        # Next run, the TV is off: it still has its card, name and model, plainly "Not reachable".
+        later = self.fleet(hits=[], known=saved[-1])
+        later.detect()
+        tv = self.only(later)
+        self.assertEqual(tv["alias"], alias)
+        self.assertEqual((tv["label"], tv["missing"]), ("Not reachable", True))
+        self.assertEqual(tv["headline"], tv_fleet.OFFLINE)
+        self.assertIsNone(tv["dev_mode"].get("next"))
+        self.assertEqual(tv["metadata"]["model"], "UE55NU7400")
+        self.assertIn("Samsung 7 Series", tv["name"])
+        self.assertEqual(tv["last_seen"], fact["last_seen"])
+
+    def test_known_tvs_reject_addresses_and_unknown_fields(self):
+        for bad in ({"tv-abcdef": {"host": "192.0.2.4"}}, {"tv-abcdef": {"name": "192.0.2.4:26101"}},
+                    {"192.0.2.4": {"name": "TV"}}, {"tv-abcdef": {"last_seen": "yesterday"}}):
+            with self.subTest(bad=bad), self.assertRaises(live.LiveError):
+                live.read_known({"known_tvs": bad})
+
     def test_known_tv_missed_by_one_scan_stays_as_not_found(self):
         hits, answering = [LAN_A, LAN_B], {LAN_A, LAN_B}
 
@@ -362,7 +390,7 @@ class FleetTests(unittest.TestCase):
         tvs = {tv["alias"]: tv for tv in fleet.state()["tvs"]}
         self.assertEqual(set(tvs), set(before), "A TV missing from one scan keeps its card")
         self.assertEqual((tvs[bedroom]["label"], tvs[bedroom]["missing"], tvs[bedroom]["status"]),
-                         ("Not found", True, "not-connected"))
+                         ("Not reachable", True, "not-connected"))
         self.assertEqual(tvs[bedroom]["name"], before[bedroom])
         self.assertEqual(tvs[bedroom]["dev_mode"]["state"], "unknown", "Cached API info is not a diagnosis")
         self.assertEqual(fleet.records[held]["serial"], identity, "The held TV is never retargeted")
@@ -721,7 +749,7 @@ class DiscoveryAndReadinessTests(FleetTests):
         answering.clear()
         fleet.detect()  # Off or gone: the cached "developer_mode on" plus a closed port proves nothing now.
         tv = self.only(fleet)
-        self.assertEqual((tv["label"], tv["missing"]), ("Not found", True))
+        self.assertEqual((tv["label"], tv["missing"]), ("Not reachable", True))
         self.assertEqual(tv["dev_mode"]["state"], "unknown")
         self.assertNotEqual(tv["dev_mode"]["label"], "Needs to be configured")
         self.assertIsNone(tv["dev_mode"]["diagnosis"])
@@ -755,7 +783,7 @@ class DiscoveryAndReadinessTests(FleetTests):
         self.assertEqual(meta["model"], "UE43RU7092UXXH")
         self.assertEqual(meta["model_year"], {"value": 2019, "provenance": "inferred from the model code"})
         self.assertIsNone(meta["manufacture_date"])
-        self.assertEqual(meta["os"]["text"], "Tizen · version unavailable")
+        self.assertEqual(meta["os"]["text"], "Tizen")
         self.assertIsNone(meta["os"]["version"])
         self.assertIn("not this TV's observed version", meta["baseline"])
         self.assertIsNone(meta["firmware"])

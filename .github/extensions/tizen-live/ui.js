@@ -114,7 +114,8 @@ function usablePreview(card, preview) {
 function remotePanel() {
   const button = (key, label, text) => el("button", { type: "button", data: { key }, "aria-label": label }, text);
   const why = el("p", { class: "why" });
-  const hint = el("p", { class: "hint" }, "Keyboard: arrows, Enter = OK, Backspace = Back");
+  // Keyboard hints only while a picture is showing: before that, no key reaches anything.
+  const hint = el("p", { class: "hint", hidden: true }, "Keyboard: arrows, Enter = OK, Backspace = Back");
   const remote = el("div", { class: "remote", tabIndex: 0, role: "group", "aria-label": "Remote" },
     el("h3", {}, "Remote"),
     el("div", { class: "dpad" }, button("up", "Up", "▲"), button("left", "Left", "◀"), button("ok", "OK", "OK"),
@@ -132,6 +133,7 @@ function tvCard(alias) {
   const rename = el("button", { type: "button", class: "link", "aria-label": "Rename", title: "Rename" }, "✎ Rename");
   const connect = el("button", { type: "button", class: "primary" }, "Connect");
   const disconnect = el("button", { type: "button", class: "secondary" }, "Disconnect");
+  const rescan = el("button", { type: "button", class: "primary", hidden: true }, "Scan again");
   const guide = el("div", { class: "guide", hidden: true });
   // Screen
   const screenText = el("p", { class: "placeholder" }), frames = el("div", { class: "frames" }), age = el("p", { class: "note" });
@@ -165,14 +167,15 @@ function tvCard(alias) {
   const root = el("article", { class: "device", "aria-label": alias },
     el("div", { class: "device-main" },
       el("div", { class: "title-row" }, name, pill, rename), reason,
-      el("div", { class: "row" }, connect, disconnect), guide, cert, job, connected, details),
+      el("div", { class: "row" }, connect, rescan, disconnect), guide, cert, job, connected, details),
     remote);
-  const card = { root, name, pill, reason, connect, disconnect, guide, screenText, frames, age, refreshPicture, save,
+  const card = { root, name, pill, reason, connect, rescan, disconnect, guide, screenText, frames, age, refreshPicture, save,
     appsNote, appList, reloadApps, apps, pkg, choose, install, installSection, cert, certLine, certButton, copyDuid,
     certCommand, job, list, details, connected, remote, why, hint, keys, summary: "", revision: null, appRows: new Map() };
 
   connect.addEventListener("click", () => tvCommand("connect", alias, {}));
   disconnect.addEventListener("click", () => tvCommand("disconnect", alias));
+  rescan.addEventListener("click", scan);
   rename.addEventListener("click", async () => {
     const tv = current(); if (!tv) return;
     const value = await renamePrompt(tv.renamed ? tv.name : "");
@@ -278,17 +281,22 @@ async function updateTv(card, tv, keep) {
   card.pill.className = `pill ${shown.tone}`;
   card.reason.textContent = shown.detail;
   card.reason.className = `reason${shown.tone === "lost" ? " problem" : ""}`;
-  const canConnect = !tv.held && ["Ready to connect", "Connection problem", "Not reachable", "Not found"].includes(tv.label);
+  // Not reachable: one line ("Turn the TV on, then scan again") and a Scan button; nothing to connect to.
+  const unreachable = !tv.held && tv.label === "Not reachable";
+  const canConnect = !tv.held && ["Ready to connect", "Connection problem"].includes(tv.label);
   card.connect.hidden = !canConnect;
-  card.connect.textContent = tv.label === "Connection problem" || tv.label === "Not reachable" || tv.label === "Not found" ? "Try again" : "Connect";
+  card.connect.textContent = tv.label === "Connection problem" ? "Try again" : "Connect";
   card.connect.disabled = working || offline || state.sdk === "missing";
+  card.rescan.hidden = !unreachable;
+  card.rescan.disabled = offline || state.scan?.status === "scanning";
   card.disconnect.hidden = !tv.held;
   card.disconnect.disabled = working || offline;
   const meta = tv.metadata || {}, d = tv.details || {};
-  card.summary = [meta.model, meta.os?.text, d.address].filter(Boolean).join(" · ");
+  const seen = unreachable && tv.last_seen ? `last seen ${new Date(tv.last_seen * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+  card.summary = [meta.model, meta.os?.text, unreachable ? "" : d.address, seen].filter(Boolean).join(" · ");
   // Setup guidance appears only when it explains why this TV can't be used yet.
-  const guidance = tv.held && tv.status === "connected" ? null : tv.guidance;
-  const next = tv.dev_mode?.next && !tv.held && tv.label !== "Ready to connect" ? tv.dev_mode.next : "";
+  const guidance = (tv.held && tv.status === "connected") || unreachable ? null : tv.guidance;
+  const next = tv.dev_mode?.next && !tv.held && !unreachable && tv.label !== "Ready to connect" ? tv.dev_mode.next : "";
   card.guide.hidden = !guidance && !next;
   if (guidance) {
     const host = guidance.host_ip ? el("p", {}, "This computer's address: ", el("code", {}, guidance.host_ip)) : null;
@@ -322,6 +330,7 @@ async function updateTv(card, tv, keep) {
     try { localStorage.setItem(previewKey(tv.alias), p.app); } catch { /* storage unavailable */ }
   }
   for (const key of card.keys) key.disabled = busy || !live || !p.input_allowed;
+  card.hint.hidden = !live;
   card.why.textContent = offline ? "Connection lost. Keys are off until the page reconnects."
     : !tv.held ? "Connect to the TV, then open an app."
     : !live ? "Open an app's screen to use the remote." : busy ? "Sending…" : `Keys go to ${p.app}.`;
@@ -427,6 +436,7 @@ async function updateSource(card, s, keep) {
     key.disabled = busy || !ready || !s.input_allowed || (key.dataset.key === "ok" && !s.activation_allowed);
   }
   card.hint.textContent = ready && s.activation_allowed ? "Keyboard: arrows, Enter = OK, Backspace = Back" : "Keyboard: arrows, Backspace = Back";
+  card.hint.hidden = !ready;
   card.why.textContent = offline ? "Connection lost. Keys are off until the page reconnects."
     : !ready ? "Choose Connect on this card to turn the remote on."
     : busy ? "Sending…" : "Ready.";

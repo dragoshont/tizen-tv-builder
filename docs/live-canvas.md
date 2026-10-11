@@ -155,7 +155,7 @@ observed evidence only:
 | Nothing answered | Not reachable (unknown, never "not enabled") |
 
 An open port alone is never "Dev mode enabled". Certificate/install readiness is a
-separate line that appears only after Identify.
+separate line that appears once Connect has read the TV identity.
 
 ### TV details (shared by portal and CLI)
 
@@ -165,7 +165,8 @@ provenance (reported by the TV, or inferred from the model code), OS name and
 version, a platform baseline, and resolution, The Frame and firmware only when the
 TV reports them. Model year is not a manufacture date; the manufacture date stays
 unknown. The OS version is shown only when it was observed over the developer
-connection (Identify); otherwise it reads "Tizen · version unavailable". The
+connection (read automatically on Connect); otherwise only "Tizen" is shown, and
+unknown fields are omitted rather than printed as placeholders. The
 baseline ("2019 models shipped with Tizen 5.0") comes from Samsung's
 [TV Model Groups](https://developer.samsung.com/smarttv/develop/specifications/tv-model-groups.html)
 table and is never shown as the TV's version, because regional exceptions and
@@ -173,19 +174,23 @@ upgrades exist (for example 2017 ENTRY_CN1 ran Tizen 2.4). Model codes are parse
 with anchored family patterns (LED `UE43RU7092` → 2019, QLED, Neo QLED, OLED, The
 Frame/Serif/Sero); unknown or ambiguous codes give "Model year unknown".
 
-Each TV card shows one of three states. **Connected** means both a developer
-link and a current app picture that the page has decoded; a non-empty list of
-returned layers is not enough. Nothing else earns that label, and the page fails
-closed (keys stay off) if the helper reports Connected without a decodable,
-current picture. **Developer Mode ready** means the developer link works
-but no preview is attached ("Preview not connected"). **Not connected** covers
-the rest. A TV found earlier that one scan misses keeps its card, name and
-alias, labelled **Not found** until a later scan sees it again; a held connection
-is never retargeted. If the TV's info request times out when it returns, it keeps
-the same card rather than gaining a second one.
+Each TV has one status, identical in the pill, the list row and the CLI: **Not
+reachable**, **Developer Mode off**, **Ready to connect**, **Connecting…**,
+**Connected** (a working developer link; an app picture adds "· Showing APP") or
+**Connection problem** (with the TV's real error). Inspector failures name the
+step that failed (target discovery, WebSocket handshake, or the awaited method)
+and the real exception, instead of a generic message.
+
+A TV seen once keeps its card. The private profile remembers its last-known
+name, model, OS and Device ID per alias (`known_tvs`), never its network address.
+When it is off, the card reads "Name · model · last seen HH:MM" with one line,
+"Turn the TV on, then scan again", and a **Scan again** button; no Connect, no
+setup steps. A held connection is never retargeted. If the TV's info request
+times out when it returns, it keeps the same card rather than gaining a second one.
+The keyboard hint appears only while an app picture is showing.
 
 Connections are stateless. Connect has no confirmation dialog: it launches no app
-and sends no keys. It runs `sdb connect` and Identify and keeps that link in this
+and sends no keys. It runs `sdb connect`, reads the TV identity and keeps that link in this
 portal's memory only. No lock or lease file reserves the TV, so there is no Busy
 state and nothing to unlock: lock files left by other sessions (including
 `/tmp/tizen-tv-<alias>.lock` and the canonical lock) are ignored, never deleted.

@@ -147,9 +147,10 @@ def load_cache(state_dir):
         return None
 
 
-def default_fleet(certificate_duids=None, names=None, save_names=None):
+def default_fleet(certificate_duids=None, names=None, save_names=None, known=None, save_known=None):
     import tv_fleet
-    return tv_fleet.Fleet(certificate_duids=certificate_duids, names=names or {}, save_names=save_names)
+    return tv_fleet.Fleet(certificate_duids=certificate_duids, names=names or {}, save_names=save_names,
+                          known=known or {}, save_known=save_known)
 
 
 def card_lines(state):
@@ -197,7 +198,7 @@ def guidance_lines(tv):
         return
     yield guide["title"]
     for number, step in enumerate(guide.get("steps", []), 1):
-        yield f"  {number}. {step}"
+        yield f"  {number}. " + step.replace("{host}", guide.get("host_ip") or "this computer's address")
     if guide.get("host_ip"):
         yield "This computer's IP to enter on the TV: " + guide["host_ip"]
 
@@ -297,6 +298,13 @@ def release(fleet, alias, say):
 def connect(fleet, tv, say):
     """Connect, read identity and apps like the portal's Connect. Returns the fresh TV or None."""
     alias = tv["alias"]
+    if (tv.get("dev_mode") or {}).get("state") == "not-enabled":
+        # Same as the portal: a TV that reports Developer Mode off gets the next step, not a Connect.
+        say(f"{tv['name']}: {tv['label']}")
+        say(tv["dev_mode"].get("explanation") or tv["headline"])
+        for line in guidance_lines(tv):
+            say(line)
+        return None
     say(f"{tv['name']}: Connecting…")
     try:
         fleet.connect(alias, {})
@@ -477,11 +485,13 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
     if args.command in {"key", "screenshot"} and args.tv in ((config or {}).get("sources") and
                                                              {s["id"] for s in config["sources"]} or ()):
         return profile_source(args, profile, config, cdp_factory, say)
-    save = None
+    save = save_known = None
     if profile is not None:
-        save = live_tv.App(profile, config, cdp_factory).save_names
+        app = live_tv.App(profile, config, cdp_factory)
+        save, save_known = app.save_names, app.save_known
     fleet = fleet_factory(certificate_duids=(config or {}).get("certificate_duids"),
-                          names=(config or {}).get("tv_names", {}), save_names=save)
+                          names=(config or {}).get("tv_names", {}), save_names=save,
+                          known=(config or {}).get("known_tvs", {}), save_known=save_known)
     try:
         state = fleet.detect()
         save_cache(state_dir, state)

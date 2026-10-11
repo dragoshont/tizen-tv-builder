@@ -60,6 +60,92 @@ class FakeCDP:
         self.closed = True
 
 
+class Chrome47Inspector:
+    """Raw-socket fake shaped like the Tizen 3.0 Chrome 47 inspector (protocol 1.1): plain HTTP/1.1
+    discovery, an uncompressed RFC6455 upgrade, events before replies. Host fixture, not TV evidence."""
+
+    def __init__(self, silent=(), garbage=()):
+        self.silent, self.garbage, self.methods = set(silent), set(garbage), []
+        self.server = socket.socket(); self.server.bind(("127.0.0.1", 0)); self.server.listen(4)
+        self.port = self.server.getsockname()[1]
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def loop(self):
+        while True:
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.serve, args=(conn,), daemon=True).start()
+
+    @staticmethod
+    def frame(payload):
+        n = len(payload)
+        head = bytes([0x81, n]) if n < 126 else (bytes([0x81, 126]) + struct.pack("!H", n) if n < 65536
+                                                  else bytes([0x81, 127]) + struct.pack("!Q", n))
+        return head + payload
+
+    def serve(self, conn):
+        with conn:
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+            head = data.split(b"\r\n\r\n")[0].decode()
+            if head.startswith("GET /json/list"):
+                body = json.dumps([{"description": "", "devtoolsFrontendUrl": "/devtools/inspector.html?ws=x",
+                                    "id": "chrome47-page", "title": "Hello", "type": "page", "url": "file:///index.html",
+                                    "webSocketDebuggerUrl": "ws://192.0.2.10:7011/devtools/page/chrome47-page"}]).encode()
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type:application/json; charset=UTF-8\r\nContent-Length:"
+                             + str(len(body)).encode() + b"\r\n\r\n" + body)
+                return
+            key = [l.split(":", 1)[1].strip() for l in head.split("\r\n") if l.lower().startswith("sec-websocket-key")][0]
+            accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+            conn.sendall(("HTTP/1.1 101 WebSocket Protocol Handshake\r\nUpgrade: WebSocket\r\nConnection: Upgrade\r\n"
+                          f"Sec-WebSocket-Accept: {accept}\r\n\r\n").encode())
+            buffer = b""
+            while True:
+                while len(buffer) < 2:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        return
+                    buffer += chunk
+                n, offset = buffer[1] & 127, 2
+                if n == 126:
+                    n, offset = struct.unpack("!H", buffer[2:4])[0], 4
+                while len(buffer) < offset + 4 + n:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        return
+                    buffer += chunk
+                mask, body = buffer[offset:offset + 4], buffer[offset + 4:offset + 4 + n]
+                buffer = buffer[offset + 4 + n:]
+                call = json.loads(bytes(b ^ mask[i % 4] for i, b in enumerate(body)))
+                method = call["method"]; self.methods.append(method)
+                if method in self.silent:
+                    continue  # Like Page.captureScreenshot on this engine: recognized, never answered.
+                if method in self.garbage:
+                    conn.sendall(self.frame(b"\xff not json")); continue
+                result = {}
+                if method == "Runtime.evaluate":
+                    result = {"result": {"type": "object", "value": {"width": 100, "height": 80, "scale": 1}}, "wasThrown": False}
+                elif method == "LayerTree.enable":
+                    conn.sendall(self.frame(json.dumps({"method": "LayerTree.layerTreeDidChange", "params": {"layers": [
+                        {"layerId": "7", "drawsContent": True, "offsetX": 0, "offsetY": 0, "width": 100, "height": 80},
+                        {"layerId": "8", "drawsContent": False}]}}).encode()))
+                elif method == "LayerTree.makeSnapshot":
+                    conn.sendall(self.frame(b'{"method":"LayerTree.layerPainted","params":{"layerId":"7","clip":{}}}'))
+                    result = {"snapshotId": "1"}
+                elif method == "LayerTree.replaySnapshot":
+                    result = {"dataURL": "data:image/png;base64," + base64.b64encode(native_fixture()).decode()}
+                conn.sendall(self.frame(json.dumps({"id": call["id"], "result": result}).encode()))
+
+    def close(self):
+        self.server.close()
+
+
 class LiveTests(unittest.TestCase):
     def test_pause_during_capture_stops_next_capture_without_waiting(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -132,6 +218,42 @@ class LiveTests(unittest.TestCase):
                 if child.poll() is None:
                     child.kill(); child.wait()
                 child.stdout.close(); child.stderr.close()
+
+    def chrome47_source(self, inspector):
+        config = source_config(Path(tempfile.gettempdir()), alias="chrome47")
+        config.update(endpoint=f"http://127.0.0.1:{inspector.port}", target_id="chrome47-page", user_activation=True)
+        return live.Source(config, live.CDP)
+
+    def test_chrome47_style_inspector_captures_paint_layers_end_to_end(self):
+        inspector = Chrome47Inspector()
+        try:
+            source = self.chrome47_source(inspector)
+            source.operate("connect", {"authorized": True, "pixels": True, "input": True, "run_seconds": 10})
+            summary = source.operate("capture", {})
+            self.assertEqual([(f["width"], f["height"]) for f in summary["frames"]], [(100, 80)])
+            self.assertEqual(inspector.methods, ["Runtime.evaluate", "LayerTree.enable", "LayerTree.makeSnapshot",
+                                                 "LayerTree.replaySnapshot", "LayerTree.releaseSnapshot", "LayerTree.disable"])
+            source.disconnect()
+        finally:
+            inspector.close()
+
+    def test_inspector_failures_name_the_step_and_the_real_cause(self):
+        for kwargs, expected in (({"silent": {"LayerTree.makeSnapshot"}}, "LayerTree.makeSnapshot reply"),
+                                 ({"garbage": {"Runtime.evaluate"}}, "not valid JSON/UTF-8 .*Runtime.evaluate")):
+            inspector = Chrome47Inspector(**kwargs)
+            try:
+                source = self.chrome47_source(inspector)
+                source.operate("connect", {"authorized": True, "pixels": True, "input": True, "run_seconds": 10})
+                with self.assertRaisesRegex(live.LiveError, expected) as caught:
+                    source.operate("capture", {})
+                self.assertNotIn("transport or response was invalid", str(caught.exception))
+                self.assertEqual(source.error, str(caught.exception))
+            finally:
+                inspector.close()
+        message = live.inspector_failure(ConnectionResetError(54, "Connection reset by peer"),
+                                         type("C", (), {"phase": "WebSocket handshake"})())
+        self.assertEqual(message, "Inspector failed during WebSocket handshake: ConnectionResetError: "
+                                  "[Errno 54] Connection reset by peer")
 
     def test_real_discovery_handshake_uses_only_loopback_without_compression(self):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -378,17 +500,15 @@ class LiveTests(unittest.TestCase):
         for text in (html, script):
             for jargon in ("CDP", "Active source", "lane", "Before connecting", "Explicit emulator"):
                 self.assertNotIn(jargon, text)
-        self.assertIn("may include account info", script)
-        # Opening a preview restarts the app, so it always asks first and says what is (not) shown.
-        self.assertIn("This restarts ${appId} on the TV. Only the app's own drawing is shown, not the whole TV", script)
+        # No consent dialogs: the restart is stated on the button itself.
+        self.assertIn("Open screen (restarts app)", script)
         self.assertIn("restart: true", script)
-        # One status per TV: a held link with no picture is "No app open", never a dev-mode restatement.
-        self.assertIn('"No app open"', script)
-        for duplicate in ("Preview not connected", "Dev mode enabled", "Developer Mode ready"):
-            self.assertNotIn(duplicate, script)
+        self.assertNotIn("confirm(", script)
+        for removed in ("No app open", "Preview not connected", "Dev mode enabled", "Developer Mode ready", "Identify"):
+            self.assertNotIn(removed, script)
         self.assertIn("authorized: true, pixels: true, input: true", script)
         self.assertIn('"/api/detect"', script)
-        for op in ("connect", "identify", "disconnect", "rename", "run", "preview"):
+        for op in ("connect", "disconnect", "rename", "preview", "apps", "install", "remove", "screenshot", "cert"):
             self.assertIn(f'tvCommand("{op}"', script)
         self.assertIn('"Remote"', script)
         self.assertIn('"Emulator"', script)
@@ -402,10 +522,8 @@ class LiveTests(unittest.TestCase):
         card = script[script.index("function tvCard("):script.index("function updateTv(")]
         self.assertEqual(card.count('"Connect")'), 1)
         self.assertNotIn("screenAction", script)
-        for field in ("tv.dev_mode", "tv.install", "tv.metadata", "meta.model_year", "meta.os?.text",
-                      "meta.baseline", '"Model year"', '"Manufacture date"'):
+        for field in ("tv.dev_mode", "tv.metadata", "meta.model_year", "meta.os?.text", '"Model year"'):
             self.assertIn(field, script)
-        self.assertIn('class: "row-meta"', script)
         self.assertNotIn("Developer Mode reachable", script)
 
     def test_connected_pane_hides_certificate_machinery_and_never_renders_null(self):
@@ -415,10 +533,24 @@ class LiveTests(unittest.TestCase):
         self.assertIn("].filter(Boolean));", update)
         self.assertNotIn("tizen.py live", script)
         card = script[script.index("function tvCard("):script.index("function updateTv(")]
-        main = card[card.index('class: "device-main"'):card.index("screen, remote")]
-        for hidden in ("install", "identify", "certGuide"):
-            self.assertNotIn(hidden, main.replace("details", ""))
-        self.assertIn('"Advanced"), list, install, certGuide', card)
+        # Main card order: status, screen, apps, install; details last and collapsible.
+        self.assertIn('el("div", { class: "connected-body" }, screen, apps, installSection)', card)
+        self.assertIn('job, connected, details),', card)
+        self.assertIn('el("summary", {}, "TV details")', card)
+        self.assertNotIn('"Advanced"', card)
+
+    def test_unreachable_card_offers_only_scan_and_hints_need_a_picture(self):
+        script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text()
+        update = script[script.index("function updateTv("):script.index("function sourceCard(")]
+        self.assertIn('const unreachable = !tv.held && tv.label === "Not reachable";', update)
+        self.assertIn('["Ready to connect", "Connection problem"].includes(tv.label)', update)
+        self.assertIn("card.rescan.hidden = !unreachable;", update)
+        # No guidance or "Next:" for a TV that is off; a last-seen time instead of a stale address.
+        self.assertIn("|| unreachable ? null : tv.guidance", update)
+        self.assertIn("!unreachable && tv.label", update)
+        self.assertIn("unreachable ? \"\" : d.address, seen]", update)
+        self.assertIn("card.hint.hidden = !live;", update)
+        self.assertNotIn("version unavailable", script)
 
     def test_endpoint_and_profile_do_not_allow_network_redirection(self):
         for bad in ("http://localhost:12345", "http://192.0.2.1:12345", "https://127.0.0.1:12345",

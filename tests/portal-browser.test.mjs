@@ -70,8 +70,10 @@ try {
       sessionStorage.setItem("seeded", "1");
       localStorage.setItem("tizen-preview-app", "Leaked0001.FromAnotherTv");
     }
-    const tv = (alias,name,status) => ({alias,name,status,held:true,metadata:{model:"HOST-FIXTURE",os:{text:"Tizen 5.0"}},
-      dev_mode:{label:"Dev mode enabled",state:"enabled"},details:{},preview:{ready:false,input_allowed:false,activation_allowed:false,frames:[]}});
+    const tv = (alias,name,status) => ({alias,name,status,held:true,label:"Connected",tone:"ok",headline:"Tizen 5.0 · HOST-FIXTURE",
+      metadata:{model:"HOST-FIXTURE",os:{text:"Tizen 5.0"}},details:{},
+      apps:{state:"listed",items:["Fixture.SafeApp","Fixture.StoreApp"],store:["Fixture.StoreApp"],installed_here:[]},
+      preview:{ready:false,input_allowed:false,activation_allowed:false,frames:[]}});
     window.testState = {sdk:"ready",scan:{status:"done",found:2},sources:[],
       tvs:[tv("tv-fixture-a","Fixture A","connected"),tv("tv-fixture-b","Fixture B","developer")]};
     const originalFetch=window.fetch.bind(window);
@@ -94,70 +96,64 @@ try {
     "[...document.querySelectorAll('input[aria-label=\"App to preview\"]')].every(i=>i.value==='')", true);
   await check("The legacy global preview app key is removed",
     "localStorage.getItem('tizen-preview-app')", null);
-  await check("No Connected label without a usable preview",
-    "document.querySelector('.device:not([hidden]) .pill').textContent.includes('Connected')", false);
-  await check("A connected TV with no app shows one status: No app open",
-    "document.querySelector('.device:not([hidden]) .pill').textContent", "No app open");
+  await check("A working developer link reads Connected without a picture",
+    "document.querySelector('.device:not([hidden]) .pill').textContent", "Connected");
+  await check("No app open is never a status",
+    "document.body.innerText.includes('No app open')", false);
   await check("The list row shows exactly the card's status",
     "[...document.querySelectorAll('.tv-row')].every(row=>{const d=[...document.querySelectorAll('.device')].find(x=>x.querySelector('h2').textContent===row.querySelector('.row-name').textContent);return d&&row.querySelector('.row-status').textContent===d.querySelector('.pill').textContent;})", true);
   await check("No second developer-mode status is shown anywhere",
-    "/Dev mode enabled|Developer Mode ready|Preview not connected/.test(document.body.innerText)", false);
+    "/Dev mode enabled|Developer Mode ready|Preview not connected|Needs to be configured/.test(document.body.innerText)", false);
+  await check("Every app ID on the TV is shown in full",
+    "['Fixture.SafeApp','Fixture.StoreApp'].every(id=>[...document.querySelectorAll('.device:not([hidden]) .app-id')].some(c=>c.textContent===id))", true);
   await check("Missing preview has visible guidance",
-    "document.querySelector('.device:not([hidden]) .placeholder p').textContent.trim().length>0", true);
+    "document.querySelector('.device:not([hidden]) p.placeholder').textContent.includes('Pick an app')", true);
   await check("Missing preview keeps all keys disabled",
     "[...document.querySelector('.device:not([hidden]) .remote').querySelectorAll('button')].every(b=>b.disabled)", true);
-  await evaluate("window.testState.tvs[0].error='Fixture TV accepted the connection but refused commands';window.testState.tvs[0].guidance={kind:'host-ip',title:'Check the TV\\'s Host PC IP',steps:[]};new Promise(r=>setTimeout(r,2600))");
+  await evaluate("window.testState.tvs[0].label='Connection problem';window.testState.tvs[0].tone='lost';window.testState.tvs[0].headline='Fixture TV accepted the connection but refused commands';window.testState.tvs[0].error='Fixture TV accepted the connection but refused commands';window.testState.tvs[0].guidance={kind:'host-ip',title:'Check the TV\\'s Host PC IP',steps:[]};new Promise(r=>setTimeout(r,2600))");
   await check("A held link with an error is a connection problem, never No app open",
     "document.querySelector('.device:not([hidden]) .pill').textContent", "Connection problem");
   await check("The connection problem says what failed",
     "document.querySelector('.device:not([hidden])').innerText.includes('refused commands')", true);
-  await evaluate("delete window.testState.tvs[0].error;delete window.testState.tvs[0].guidance;new Promise(r=>setTimeout(r,2600))");
+  await evaluate("Object.assign(window.testState.tvs[0],{label:'Connected',tone:'ok',headline:'Tizen 5.0'});delete window.testState.tvs[0].error;delete window.testState.tvs[0].guidance;new Promise(r=>setTimeout(r,2600))");
   await evaluate("document.querySelectorAll('.tv-row')[1].click()");
   await check("Selected-TV isolation", "document.querySelectorAll('.device:not([hidden])').length", 1);
   await check("Selection sends no provider commands", "window.testCalls.length", 0);
-  await check("Preview action is available after developer connection",
-    "[...document.querySelector('.device:not([hidden])').querySelectorAll('button')].some(b=>b.getClientRects().length&&!b.disabled&&/preview/i.test(b.textContent))", true);
-  await evaluate(`const pane=document.querySelector('.device:not([hidden])');
-    pane.querySelector('input[aria-label="App to preview"]').value="Fixture.SafeApp";
-    [...pane.querySelectorAll('button')].find(b=>/Open app for preview/.test(b.textContent)).click();`);
-  await check("Preview restart requires explicit consent",
-    "document.querySelector('#confirm').open&&document.querySelector('#confirm-text').textContent.includes('restarts')", true);
-  await rpc("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", windowsVirtualKeyCode: 27 });
-  await rpc("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", windowsVirtualKeyCode: 27 });
-  await evaluate("new Promise(r=>setTimeout(r,100))");
-  await check("Cancelling preview sends no provider commands", "window.testCalls.length", 0);
+  await check("Open screen is offered on every listed app, store apps included",
+    "[...document.querySelector('.device:not([hidden])').querySelectorAll('.app button')].filter(b=>/Open screen \\(restarts app\\)/.test(b.textContent)&&!b.disabled).length", 2);
+  await check("No consent dialog or typed app ID field remains",
+    "!document.querySelector('#confirm')&&!document.querySelector('input[aria-label=\"App to preview\"]')", true);
+  await check("Opening nothing sends no provider commands", "window.testCalls.length", 0);
   await check("A failed or cancelled preview remembers no app ID",
     "Object.keys(localStorage).filter(k=>k.startsWith('tizen-preview-app')).length", 0);
   await evaluate(`window.testState.tvs[1].status="connected";
     window.testState.tvs[1].preview.ready=true;
     window.testState.tvs[1].preview.input_allowed=true;
     new Promise(r=>setTimeout(r,1400));`);
-  await check("Empty captured frames cannot enable Connected",
-    "document.querySelector('.device:not([hidden]) .pill').textContent.includes('Connected')", false);
   await check("Empty captured frames cannot enable remote input",
     "[...document.querySelector('.device:not([hidden]) .remote').querySelectorAll('button')].every(b=>b.disabled)", true);
   await check("Empty captured frames retain actionable guidance",
-    "document.querySelector('.device:not([hidden]) .placeholder').getClientRects().length>0&&document.querySelector('.device:not([hidden]) .placeholder p').textContent.trim().length>0", true);
+    "document.querySelector('.device:not([hidden]) p.placeholder').getClientRects().length>0&&document.querySelector('.device:not([hidden]) p.placeholder').textContent.trim().length>0", true);
   await evaluate(`window.testState.tvs[1].preview.frames=[{width:64,height:64}];
     window.testState.tvs[1].preview.revision=1;
     new Promise(r=>setTimeout(r,1400));`);
-  await check("Undecodable image cannot enable Connected",
-    "document.querySelector('.device:not([hidden]) .pill').textContent.includes('Connected')", false);
   await check("Undecodable image cannot enable remote input",
     "[...document.querySelector('.device:not([hidden]) .remote').querySelectorAll('button')].every(b=>b.disabled)", true);
   await check("Undecodable image shows an actionable error",
-    "/Could not display.*retry/.test(document.querySelector('.device:not([hidden]) .placeholder p').textContent)", true);
+    "/Could not show the picture/.test(document.querySelector('.device:not([hidden]) p.placeholder').textContent)", true);
   await evaluate(`document.querySelector('.device:not([hidden]) .remote').dispatchEvent(
     new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true,cancelable:true}));`);
   await check("Undecodable image cannot dispatch keyboard input", "window.testCalls.length", 0);
   await evaluate(`window.testValidImage=true; window.testState.tvs[1].preview.revision=2;
     new Promise(r=>setTimeout(r,1400));`);
-  await check("Decoded fixture image enables Connected",
+  await check("Decoded fixture image keeps Connected",
     "document.querySelector('.device:not([hidden]) .pill').textContent==='Connected'", true);
   await check("Decoded fixture image is visible",
     "document.querySelector('.device:not([hidden]) img')?.naturalWidth>0", true);
-  await check("Unaudited OK remains disabled with a decoded image",
-    "document.querySelector('.device:not([hidden]) [data-key=ok]').disabled", true);
+  await check("OK is enabled once a picture is showing",
+    "document.querySelector('.device:not([hidden]) [data-key=ok]').disabled", false);
+  await check("Keyboard hint appears with a picture",
+    "!document.querySelector('.device:not([hidden]) .remote').parentElement.querySelector('.hint, [class*=hint]')?.hidden", true);
   for (const width of [1200, 390]) {
     await rpc("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await check(`No horizontal overflow at ${width}px`, "document.documentElement.scrollWidth<=innerWidth", true);

@@ -41,7 +41,7 @@ DEV_LABELS = {"enabled": "Developer Mode on", "not-enabled": "Developer Mode off
               "closed": "Developer port closed",
               "unknown": "Not reachable"}
 # The only status words a TV card, list row or CLI line may show.
-STATUSES = ("Not found", "Not reachable", "Developer Mode off", "Ready to connect", "Connecting…",
+STATUSES = ("Not reachable", "Developer Mode off", "Ready to connect", "Connecting…",
             "Connected", "Connection problem")
 STORE_APP = "Samsung doesn't allow debugging this store app. Only apps you install can be viewed."
 MAX_TVS = 16
@@ -320,12 +320,13 @@ _Link = _HeldLease = live_tv.MemoryLink
 
 
 PREVIEW_SECONDS = 900
+OFFLINE = "Turn the TV on, then scan again"
 
 
 class Fleet:
     def __init__(self, sdb_path="auto", runner=flows.run_tool, interfaces=network_tv.interfaces,
                  sweep=network_tv.sweep, info=_info, ssdp=network_tv.ssdp_hosts, key_path=None, lease_root=None, canonical=None,
-                 certificate_duids=None, retail=flows.retail, names=None, save_names=None,
+                 certificate_duids=None, retail=flows.retail, names=None, save_names=None, known=None, save_known=None,
                  session=None, cdp=live_tv.CDP, discover=None, tizen_path="auto", data_root=None,
                  which=shutil.which, launcher=None, clipboard=None, pictures=None, clock=time.time,
                  chooser=None):
@@ -354,6 +355,9 @@ class Fleet:
         self.retail = retail
         self.names = dict(names or {})
         self.save_names = save_names
+        # Last-known facts per alias (private profile): a TV that is off keeps its name and card.
+        self.known = {a: dict(v) for a, v in (known or {}).items()}
+        self.save_known = save_known
         self.session = session or (lambda serial, app, legacy: flows.Session(
             serial, app, sdb=self.sdb, runner=self.runner, legacy=legacy))
         self.cdp = cdp
@@ -364,6 +368,40 @@ class Fleet:
         self.scan_lock = threading.Lock()
         self.threads = []
         self.secret = None
+        for alias, fact in self.known.items():
+            self.records[alias] = self._blank(alias) | {
+                "serial": None, "host": None, "reachable": False, "sdb_state": None, "loopback": False,
+                "missing": True, "api": False, "duid": fact.get("duid"), "observed_tizen": fact.get("os"),
+                "info": {k: "unknown" for k in INFO_FIELDS} | {
+                    k: fact[k] for k in ("name", "model") if fact.get(k)}}
+
+    @staticmethod
+    def _blank(alias):
+        return {"alias": alias, "lease": None, "owned": False, "identity": None, "certificate": "unknown",
+                "guidance": None, "job": None, "pending": None, "error": None, "dev_proven": False,
+                "dev_refused": False}
+
+    def _remember(self, record):
+        """Persist last-known name/model/OS/DUID for this alias. Never the network address."""
+        info = record.get("info") or {}
+        fact = {k: info[k] for k in ("name", "model") if info.get(k, "unknown") != "unknown"}
+        if record.get("observed_tizen"):
+            fact["os"] = record["observed_tizen"]
+        if record.get("duid"):
+            fact["duid"] = record["duid"]
+        if record.get("serial"):
+            fact["serial_alias"] = self.alias("serial:" + record["serial"])
+        old = self.known.get(record["alias"], {})
+        fact = {k: v for k, v in old.items() if k != "last_seen"} | fact
+        fact["last_seen"] = int(self.clock())
+        self.known[record["alias"]] = fact
+        stable = lambda f: {k: v for k, v in f.items() if k != "last_seen"}
+        # Write when a fact changed, or at most once a minute for "last seen".
+        if self.save_known and (stable(fact) != stable(old) or fact["last_seen"] - old.get("last_seen", 0) >= 60):
+            try:
+                self.save_known(dict(self.known))
+            except (LiveError, OSError, ValueError):
+                pass  # Memory still has it; a profile write failure must not fail a scan.
 
     # ---- identity -------------------------------------------------------
     def alias(self, identity):
@@ -462,6 +500,8 @@ class Fleet:
                         # Its info timed out this time: keep the card this TV already has, not a second one.
                         alias = next((a for a, r in self.records.items() if r.get("serial") == serial
                                       and a not in seen and r.get("api")), alias)
+                        alias = next((a for a, f in self.known.items() if f.get("serial_alias") == alias
+                                      and a not in seen), alias)
                     if alias in seen:
                         # The same physical TV seen twice (e.g. two addresses): merge, keep the best path.
                         record = self.records[alias]
@@ -473,21 +513,22 @@ class Fleet:
                         record["api"] = record["api"] or bool(info)
                         continue
                     seen.add(alias)
-                    record = self.records.setdefault(alias, {"alias": alias, "lease": None, "owned": False,
-                                                             "identity": None, "certificate": "unknown",
-                                                             "guidance": None, "job": None, "pending": None,
-                                                             "error": None, "dev_proven": False,
-                                                             "dev_refused": False})
+                    record = self.records.setdefault(alias, self._blank(alias))
                     if record["lease"] is not None and record["serial"] != serial:
                         continue  # Never retarget a TV this portal is holding.
                     record.update(serial=serial, host=entry["host"], reachable=entry["reachable"],
                                   sdb_state=entry["sdb_state"], loopback=bool(entry.get("loopback")),
                                   missing=False)
-                    if info or not record.get("api"):
-                        record.update(api=bool(info), info={k: info.get(k, "unknown") for k in INFO_FIELDS})
+                    if info:
+                        record.update(api=True, info={k: info.get(k, "unknown") for k in INFO_FIELDS})
+                    elif not record.get("api"):
+                        # Keep last-known name/model rather than replacing them with "unknown".
+                        record.update(api=False, info={k: "unknown" for k in INFO_FIELDS} | {
+                            k: v for k, v in (record.get("info") or {}).items() if v != "unknown"})
+                    self._remember(record)
                 for alias, record in self.records.items():
                     if alias not in seen:
-                        # One missed scan must not make a known TV vanish: keep it, truthfully "Not found".
+                        # One missed scan must not make a known TV vanish: keep it, truthfully "Not reachable".
                         record["missing"] = True
                         if record["lease"] is None:
                             record.update(reachable=False, sdb_state=None)
@@ -551,7 +592,7 @@ class Fleet:
         if pending:
             return self.PENDING.get(pending, "Working…"), "progress", self.PENDING.get(pending, "Working…")
         if record.get("missing"):
-            return "Not found", "warn", "The TV did not answer the last scan. Check that it is on, then scan again"
+            return "Not reachable", "warn", OFFLINE
         if record.get("dev_refused") or (record["error"] and record["reachable"]):
             return "Connection problem", "lost", record["error"] or (
                 "The TV refused this computer. On the TV set Host PC IP to this computer, restart the TV, then Connect")
@@ -559,12 +600,12 @@ class Fleet:
             return "Ready to connect", "idle", reason or "Developer Mode port is open"
         if record.get("api"):
             return "Developer Mode off", "warn", reason or "The TV answers, but its Developer Mode port is closed"
-        return "Not reachable", "warn", reason or "Neither the TV nor its Developer Mode port answered"
+        return "Not reachable", "warn", OFFLINE
 
     def dev_mode(self, record, status):
         """Developer readiness from observed evidence only; separate from connection status."""
         diagnosis = label = None
-        if record["lease"] is not None or record["sdb_state"] == "device":
+        if record["lease"] is not None or (record["sdb_state"] == "device" and record["reachable"]):
             state, why = "enabled", "This computer has a working developer connection to the TV"
             nxt = "Connect to use it" if status == "not-connected" else None
         elif record["reachable"] and record.get("dev_refused"):
@@ -577,7 +618,7 @@ class Fleet:
         elif record.get("missing"):
             # Cached API answers from an earlier scan say nothing about the TV now.
             state, why = "unknown", "The TV did not answer the last scan; it may be off or on another network"
-            nxt = "Turn the TV on, make sure it is on this network, then scan again"
+            nxt = None  # The status line already says it: "Turn the TV on, then scan again".
         elif record["reachable"]:
             state = "reachable"
             why = ("The Developer Mode port is open; this computer connected earlier this session but is not connected now"
@@ -602,7 +643,7 @@ class Fleet:
                 nxt = "On the TV open Apps, type 1 2 3 4 5, switch Developer mode On with this computer as Host PC IP, restart, then scan again"
         else:
             state, why = "unknown", "Neither the Developer Mode port nor the TV's API answered"
-            nxt = "Turn the TV on, make sure it is on this network, then scan again"
+            nxt = None
         return {"state": state, "label": label or DEV_LABELS[state], "explanation": why, "next": nxt, "diagnosis": diagnosis}
 
     @staticmethod
@@ -626,7 +667,7 @@ class Fleet:
                        "text": "Tizen " + observed}
         else:
             os_info = {"name": os_name, "version": None, "provenance": "reported name only" if os_name != "unknown" else "unknown",
-                       "text": (os_name + " · version unavailable") if os_name != "unknown" else "Unknown"}
+                       "text": os_name if os_name != "unknown" else None}  # Unknown fields are omitted.
         baseline = samsung_models.BASELINE_TIZEN.get(year["value"])
         return {"manufacturer": info["manufacturer"] if info["manufacturer"] != "unknown" else
                 ("Samsung" if record.get("api") or record["reachable"] or record["sdb_state"] else "unknown"),
@@ -661,6 +702,7 @@ class Fleet:
                 "label": label, "tone": tone, "headline": headline,
                 "default_name": default, "renamed": record["alias"] in self.names,
                 "status": status, "not_connected_reason": reason,
+                "last_seen": self.known.get(record["alias"], {}).get("last_seen"),
                 "reachable": bool(record["reachable"]), "missing": record.get("missing", False),
                 "developer_mode": info.get("developer_mode", "unknown"),
                 "dev_mode": self.dev_mode(record, status),
@@ -807,6 +849,7 @@ class Fleet:
                                   "profile": public["profile"], "tier": public["tier"]}
             record["error"] = None
             record["guidance"] = None
+            self._remember(record)
         return self.state()
 
     def _refused(self, record, error):

@@ -100,6 +100,29 @@ def read_names(data):
     return names
 
 
+KNOWN_FIELDS = {"name": r"[^\x00-\x1f\x7f]{1,64}", "model": r"[A-Za-z0-9_.()/ -]{1,32}",
+                "os": r"[0-9]{1,2}(\.[0-9]{1,3}){0,2}", "duid": r"[A-Za-z0-9._-]{1,64}",
+                "serial_alias": r"tv-[0-9a-f]{6}"}
+
+
+def read_known(data):
+    """Last-known facts per scanned alias (private profile): never a network address."""
+    if "known_tvs" not in data:
+        return {}
+    known = data["known_tvs"]
+    if not isinstance(known, dict) or len(known) > 32:
+        fail("invalid", "Known TVs must map up to 32 scanned aliases to their last-known facts")
+    for key, value in known.items():
+        if not isinstance(key, str) or not re.fullmatch(r"tv-[0-9a-f]{6}", key) or not isinstance(value, dict) \
+                or set(value) - set(KNOWN_FIELDS) - {"last_seen"} or any(
+                    not isinstance(value[k], str) or not re.fullmatch(p, value[k])
+                    for k, p in KNOWN_FIELDS.items() if k in value) or (
+                    "last_seen" in value and (type(value["last_seen"]) is not int or value["last_seen"] < 0)) or any(
+                    isinstance(v, str) and re.search(r"\b\d{1,3}(\.\d{1,3}){3}\b", v) for v in value.values()):
+            fail("invalid", "Known TVs hold name, model, os, duid, serial_alias and last_seen only")
+    return known
+
+
 def read_profile(path):
     if os.name != "posix":
         fail("platform", "Private canvas profiles require POSIX ownership; use TV Workbench on Windows")
@@ -117,14 +140,15 @@ def read_profile(path):
         if len(raw) > 65536:
             fail("invalid", "Profile exceeds its size limit")
         data = json.loads(raw)
-    if not isinstance(data, dict) or "sources" not in data or set(data) - {"sources", "certificate_duids", "tv_names"}:
-        fail("invalid", "Profile allows sources, certificate_duids and tv_names only")
+    if not isinstance(data, dict) or "sources" not in data or set(data) - {"sources", "certificate_duids", "tv_names", "known_tvs"}:
+        fail("invalid", "Profile allows sources, certificate_duids, tv_names and known_tvs only")
     if "certificate_duids" in data:
         duids = data["certificate_duids"]
         if not isinstance(duids, str) or not 1 <= len(duids) <= 1024 or not Path(duids).is_absolute() or \
                 Path(duids).resolve().is_relative_to(ROOT):
             fail("invalid", "Certificate DUID list must be an absolute private path outside the repository")
     read_names(data)
+    read_known(data)
     sources = data["sources"]
     if not isinstance(sources, list) or len(sources) > 8:
         fail("invalid", "Configure up to eight TVs plus at most one emulator")
@@ -218,6 +242,14 @@ class CDP:
         self.sock = None
         self.next_id = 0
         self.layers = None
+        self.phase = "target discovery (/json/list)"
+        try:
+            self._open(port, target)
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            error.inspector_step = self.phase
+            raise
+
+    def _open(self, port, target):
         deadline = time.monotonic() + 4
         connection = _DeadlineConnection("127.0.0.1", port, deadline)
         response = None
@@ -234,7 +266,10 @@ class CDP:
                 raw.extend(chunk)
                 if len(raw) > 1024 * 1024:
                     fail("limit", "Inspector discovery exceeds one MiB")
-            pages = json.loads(raw)
+            try:
+                pages = json.loads(raw)
+            except ValueError as error:
+                fail("discovery", f"Inspector target list is not valid JSON ({error})")
             if not isinstance(pages, list):
                 fail("discovery", "Inspector target list is malformed")
             matches = [p for p in pages if isinstance(p, dict) and p.get("id") == target and p.get("type") == "page"]
@@ -252,6 +287,7 @@ class CDP:
             if response:
                 response.close()
             connection.close()
+        self.phase = "WebSocket handshake"
         sock = socket.create_connection(("127.0.0.1", port), timeout=4)
         self.sock = sock
         try:
@@ -266,10 +302,12 @@ class CDP:
                 headers.extend(self.read(1))
                 if len(headers) > 16384:
                     fail("limit", "WebSocket handshake is too large")
-            lines = headers.decode("ascii").split("\r\n")
+            lines = headers.decode("latin-1").split("\r\n")
             values = {}
             for line in lines[1:]:
                 if line:
+                    if ":" not in line:
+                        fail("protocol", f"WebSocket handshake header line has no colon: {line[:80]!r}")
                     name, value = line.split(":", 1)
                     if name.lower() in values:
                         fail("protocol", "Duplicate handshake header")
@@ -280,7 +318,8 @@ class CDP:
                     or values.get("upgrade", "").lower() != "websocket"
                     or "upgrade" not in [v.strip() for v in values.get("connection", "").lower().split(",")]
                     or "sec-websocket-extensions" in values):
-                fail("protocol", "WebSocket handshake rejected or attempted compression")
+                fail("protocol", "WebSocket handshake rejected or attempted compression (status line "
+                     f"{lines[0][:80]!r}, extensions {values.get('sec-websocket-extensions')!r})")
         except BaseException:
             self.close()
             raise
@@ -292,7 +331,10 @@ class CDP:
             if remaining <= 0:
                 fail("timeout", "Inspector RPC total deadline exceeded")
             self.sock.settimeout(remaining)
-            chunk = self.sock.recv(size - len(data))
+            try:
+                chunk = self.sock.recv(size - len(data))
+            except socket.timeout:
+                fail("timeout", f"No answer from the inspector in time ({getattr(self, 'phase', 'inspector request')})")
             if not chunk:
                 fail("disconnected", "Inspector disconnected")
             data.extend(chunk)
@@ -341,7 +383,10 @@ class CDP:
                 fail("protocol", "Only UTF-8 text messages are supported")
             data.extend(payload)
             if final:
-                value = json.loads(data.decode("utf-8"))
+                try:
+                    value = json.loads(data.decode("utf-8"))
+                except ValueError as error:
+                    fail("protocol", f"Inspector sent a message that is not valid JSON/UTF-8 ({getattr(self, 'phase', 'inspector request')}): {error}")
                 if not isinstance(value, dict):
                     fail("protocol", "Inspector message must be an object")
                 return value
@@ -358,6 +403,7 @@ class CDP:
     def rpc(self, method, params=None, timeout=3):
         self.next_id += 1
         call_id = self.next_id
+        self.phase = f"waiting for the {method} reply"
         self.deadline = time.monotonic() + timeout
         self.send(json.dumps({"id": call_id, "method": method, "params": params or {}}).encode())
         while True:
@@ -374,6 +420,7 @@ class CDP:
             return result
 
     def layer_list(self):
+        self.phase = "waiting for LayerTree.layerTreeDidChange"
         self.deadline = time.monotonic() + 3
         while self.layers is None:
             self.receive()
@@ -396,6 +443,13 @@ def png(data):
     if not 1 <= width <= 8192 or not 1 <= height <= 8192 or width * height > 16_777_216:
         fail("capture", "Replay PNG dimensions exceed limits")
     return raw, width, height
+
+
+def inspector_failure(error, client=None):
+    """The real cause: the step that failed, the exception class and its message."""
+    step = getattr(error, "inspector_step", None) or getattr(client, "phase", None) or "inspector request"
+    detail = str(error).strip() or "no message"
+    return f"Inspector failed during {step}: {type(error).__name__}: {detail}"
 
 
 class MemoryLink:
@@ -606,7 +660,7 @@ class Source:
             return self.summary()
         except (LiveError, OSError, ValueError, http.client.HTTPException) as error:
             code = error.code if isinstance(error, LiveError) else "transport"
-            message = str(error) if isinstance(error, LiveError) else "Inspector transport or response was invalid"
+            message = str(error) if isinstance(error, LiveError) else inspector_failure(error, self.client)
             self.error = message
             self.discard()
             if code not in {"invalid", "grant", "guard", "busy", "device_lock_held"}:
@@ -768,6 +822,19 @@ class App:
             self._write_profile(current)
             self.config["tv_names"] = merged
         return merged
+
+    def save_known(self, known):
+        # Last-known name/model/OS/DUID per hashed alias, in the private 0600 profile only.
+        clean = {a: {k: v for k, v in f.items() if k in KNOWN_FIELDS and re.fullmatch(KNOWN_FIELDS[k], str(v))}
+                 | ({"last_seen": f["last_seen"]} if type(f.get("last_seen")) is int else {})
+                 for a, f in list(known.items())[:32]}
+        read_known({"known_tvs": clean})
+        with self.persist_lock:
+            _, current = read_profile(self.path)
+            current["known_tvs"] = clean
+            self._write_profile(current)
+            self.config["known_tvs"] = clean
+        return clean
 
     def save_metadata(self, alias, values):
         metadata(values)
@@ -981,7 +1048,8 @@ def serve(profile, owner_stdin=False, port=0, announce=None):
     import tv_fleet
     app = App(path, config)
     app.fleet = tv_fleet.Fleet(certificate_duids=config.get("certificate_duids"),
-                               names=config.get("tv_names", {}), save_names=app.save_names)
+                               names=config.get("tv_names", {}), save_names=app.save_names,
+                               known=config.get("known_tvs", {}), save_known=app.save_known)
     server = bind(handler(app), port)
     server.daemon_threads = True
     server.timeout = 0.2
