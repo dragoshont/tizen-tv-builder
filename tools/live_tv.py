@@ -48,7 +48,11 @@ def exact(data, keys):
 
 
 def number(value, low, high):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and low <= value <= high
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    return low <= value <= high
 
 
 def endpoint(value):

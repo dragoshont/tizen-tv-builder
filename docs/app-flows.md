@@ -63,10 +63,12 @@ python3 tools/tizen.py retail --serial TV_IP:26101 --authorized \
   the receipt) and a redacted `dlog-tail.txt`.
 - `passed` is false (exit `2`) if any required step, capture or teardown failed or the
   budget did not pass; `failed_steps` names them. Kill counts as `not-running` only
-  when the SDK says the app is absent (wording unverified on a real TV); a timeout or
-  lost connection is `failed`. Any missing or non-numeric run sample makes that median
+  when the SDK names the exact app ID or package as absent (wording unverified on a
+  real TV); generic device/process errors, a timeout or lost connection are `failed`.
+  Any missing or non-numeric run sample makes that median
   `invalid`. Budget limits and measurements must be
-  finite, non-negative numbers; anything else is `invalid`.
+  finite, non-negative numbers no greater than `2 ** 53` milliseconds; anything else
+  is `invalid`, including oversized integers, without floating-point conversion.
 - `identify` never prints the DUID; use Device Manager / `sdb shell 0 getduid` privately.
 
 ## Emulator

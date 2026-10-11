@@ -73,8 +73,16 @@ def tier_for(platform_version):
     return "mid" if (major, minor) <= (5, 0) else "current"
 
 
+MAX_MS = 2 ** 53
+
+
 def _milliseconds(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    """Non-negative millisecond count; huge ints are compared exactly, never converted to float."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    return 0 <= value <= MAX_MS
 
 
 def evaluate(metrics, tier, budgets=None):
@@ -87,7 +95,7 @@ def evaluate(metrics, tier, budgets=None):
     verdict = {}
     for name, limit in limits.items():
         if not _milliseconds(limit):
-            fail("invalid", f"Budget {name} must be a finite, non-negative number of milliseconds")
+            fail("invalid", f"Budget {name} must be a finite number from 0 through {MAX_MS} milliseconds")
         value = metrics.get(name)
         result = "unmeasured" if value is None else "invalid" if not _milliseconds(value) \
             else "pass" if value <= limit else "fail"
@@ -96,7 +104,11 @@ def evaluate(metrics, tier, budgets=None):
             "passed": all(v["result"] == "pass" for v in verdict.values())}
 
 
-NOT_RUNNING = re.compile(r"\b(?:is\s+not\s+running|not\s+running|no\s+running\s+app|not\s+exist(?:s|ed)?)\b", re.I)
+def _app_absent(message, app):
+    """True only when the SDK names this package/app ID itself as not running or absent."""
+    ids = "|".join(re.escape(i) for i in sorted({app, app.split(".")[0]}, key=len, reverse=True))
+    return re.search(rf"(?<![\w.])(?:{ids})(?![\w.])\s+(?:is\s+not\s+running|is\s+not\s+installed|does\s+not\s+exist)\b",
+                     message) is not None
 
 
 def _median(values):
@@ -150,7 +162,7 @@ class Session:
             self.sdb("shell", "0", "kill", self.app.split(".")[0])
             self.step("kill")
         except LiveError as error:
-            if error.code == "sdk" and NOT_RUNNING.search(str(error)):
+            if error.code == "sdk" and _app_absent(str(error), self.app):
                 self.step("kill", "not-running")
             else:
                 self.step("kill", "failed", reason=error.code)

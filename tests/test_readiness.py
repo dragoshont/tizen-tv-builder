@@ -165,7 +165,13 @@ class ReReview(Base):
                 return super().__call__(argv, timeout)
         for error, expected in ((LiveError("sdk_timeout", "SDK command timed out"), "failed"),
                                 (LiveError("sdk", "SDK command failed: error: device offline"), "failed"),
-                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running"), "not-running")):
+                                (LiveError("sdk", "SDK command failed: error: device does not exist"), "failed"),
+                                (LiveError("sdk", "SDK command failed: error: target not found"), "failed"),
+                                (LiveError("sdk", "SDK command failed: process is not running"), "failed"),
+                                (LiveError("sdk", "SDK command failed: XyXyXyXyXy is not running"), "failed"),
+                                (LiveError("sdk", "SDK command failed: AbCdEfGhIjK is not running"), "failed"),
+                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj is not running"), "not-running"),
+                                (LiveError("sdk", "SDK command failed: AbCdEfGhIj.App does not exist"), "not-running")):
             with self.subTest(error=error.code, message=str(error)):
                 clock, runner = Clock(), Kill()
                 session = flows.Session(SERIAL, "AbCdEfGhIj.App", **session_args(runner, clock))
@@ -195,6 +201,37 @@ class ReReview(Base):
         metrics.write_text(json.dumps({"coldStartMs": 1, "firstFrameMs": 1, "firstHomeMs": 1}))
         with patch.object(flows, "evaluate", side_effect=LiveError("invalid", "Budget limits invalid")), \
                 patch.object(sys, "argv", ["tizen.py", "budgets", "--tier", "current", "--metrics", str(metrics)]):
+            self.assertEqual(tizen.main(), 2)
+
+
+class HugeIntegers(Base):
+    def test_huge_integers_are_invalid_not_overflow(self):
+        huge = 10 ** 400
+        self.assertTrue(flows._milliseconds(flows.MAX_MS))
+        self.assertFalse(flows._milliseconds(flows.MAX_MS + 1))
+        self.assertFalse(flows._milliseconds(-huge))
+        self.assertFalse(flows._milliseconds(huge))
+        self.assertEqual(flows._median([huge, 1]), "invalid")
+        result = flows.evaluate({"coldStartMs": huge, "firstFrameMs": 1, "firstHomeMs": 1}, "current")
+        self.assertEqual(result["metrics"]["coldStartMs"]["result"], "invalid")
+        self.assertFalse(result["passed"])
+        budgets = json.loads(flows.BUDGETS.read_text())
+        budgets["tiers"]["current"]["budgets_ms"]["coldStartMs"] = huge
+        with self.assertRaises(LiveError):
+            flows.evaluate({"coldStartMs": 1}, "current", budgets)
+        import live_tv
+        self.assertFalse(live_tv.number(huge, 0, 10))
+        import recording
+        for kwargs in ({"fps": huge}, {"duration": huge}):
+            with self.subTest(**{k: "huge" for k in kwargs}), self.assertRaises(recording.RecordingError):
+                recording.Recorder(None, self.root / "out", **kwargs)
+
+    def test_budgets_cli_with_huge_metric_exits_2(self):
+        import tizen
+        metrics = self.root / "m.json"
+        metrics.write_text('{"coldStartMs": 1' + "0" * 400 + ', "firstFrameMs": 1, "firstHomeMs": 1}')
+        with patch.object(sys, "argv", ["tizen.py", "budgets", "--tier", "current", "--metrics", str(metrics)]), \
+                patch("sys.stdout"):
             self.assertEqual(tizen.main(), 2)
 
 

@@ -278,6 +278,13 @@ class RecordingError(Exception):
         super().__init__(message)
 
 
+def _bounded(value, high):
+    """0 < value <= high without float conversion of huge ints."""
+    if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)):
+        return False
+    return 0 < value <= high
+
+
 def fail(code, message):
     raise RecordingError(code, message)
 
@@ -380,9 +387,7 @@ class Recorder:
 
     def __init__(self, source, output_path, fps=2, size=(960, 540), duration=30,
                  layer_index=0, *, encoder=None):
-        if (type(fps) not in (int, float) or not math.isfinite(fps) or not 0 < fps <= 15
-                or type(duration) not in (int, float) or not math.isfinite(duration)
-                or not 0 < duration <= 120):
+        if not _bounded(fps, 15) or not _bounded(duration, 120):
             fail("invalid", "fps must be above zero through 15; duration above zero through 120 seconds")
         if (not isinstance(size, (tuple, list)) or len(size) != 2
                 or any(type(v) is not int for v in size)
