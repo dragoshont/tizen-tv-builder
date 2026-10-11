@@ -217,12 +217,12 @@ INSTALL_HELP = {
 }
 
 
-def setup_report(sdb="auto", tizen="auto", data_root=None, which=shutil.which, cert_roots="auto"):
+def setup_report(sdb="auto", tizen="auto", data_root=None, which=shutil.which, cert_roots="auto", system=None):
     """What this computer has for the first-run journey. Detects only; never installs or runs anything."""
     sdb = _find_tool("sdb") if sdb == "auto" else sdb
     tizen = _find_tool("tizen") if tizen == "auto" else tizen
     profiles = signing_profiles(data_root or default_data_root())
-    openssl = samsung_cert.find_openssl(which)
+    openssl = samsung_cert.find_openssl(which, system)
     ca = samsung_cert.find_ca(samsung_cert.sdk_roots(sdb, tizen) if cert_roots == "auto" else cert_roots)
     checks = [
         {"id": "sdb", "label": "sdb (connects to the TV)", "status": "found" if sdb else "missing",

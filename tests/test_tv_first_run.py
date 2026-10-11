@@ -307,14 +307,14 @@ class FleetFirstRunTests(FirstRunBase):
     def test_setup_detects_tools_and_profiles_without_installing_anything(self):
         self.profiles(("MyTV", "Other"), active="MyTV")
         report = tv_fleet.setup_report(sdb=str(self.sdb), tizen=str(self.tizen), data_root=self.data,
-                                       which=lambda name: None, cert_roots=())
+                                       which=lambda name: None, cert_roots=(), system="Linux")
         self.assertTrue(report["ready"])
         self.assertEqual(report["profiles"], {"names": ["MyTV", "Other"], "active": "MyTV"})
         self.assertEqual({c["id"]: c["status"] for c in report["checks"]},
                          {"sdb": "found", "tizen": "found", "profiles": "found", "openssl": "missing",
                           "samsung-ca": "missing"})
         self.assertEqual(self.state()["calls"], [])  # Detection never runs an SDK tool.
-        missing = tv_fleet.setup_report(sdb=None, tizen=None, data_root=self.root / "none", which=lambda name: None, cert_roots=())
+        missing = tv_fleet.setup_report(sdb=None, tizen=None, data_root=self.root / "none", which=lambda name: None, cert_roots=(), system="Linux")
         self.assertFalse(missing["ready"])
         text = json.dumps(missing)
         self.assertIn("Install Tizen Studio", text)
