@@ -53,7 +53,8 @@ def safe_path(root, relative):
     return candidate
 
 
-def validate(source):
+def validate(source, app_id=None, allow_unset_id=False):
+    """app_id is supplied when the source omits it and staging injects it; it must match if both exist."""
     source = Path(source)
     if not source.is_dir() or source.is_symlink():
         raise ValueError("Source must be a real directory")
@@ -68,9 +69,18 @@ def validate(source):
     if len(apps) != 1:
         raise ValueError("Expected exactly one tizen:application")
     app = apps[0]
-    app_id = application_id(app.get("id", ""))
-    if app.get("package") != app_id.split(".")[0]:
-        raise ValueError("Application package and ID disagree")
+    declared = app.get("id") is not None or app.get("package") is not None
+    if declared:
+        declared_id = application_id(app.get("id", ""))
+        if app.get("package") != declared_id.split(".")[0]:
+            raise ValueError("Application package and ID disagree")
+        if app_id is not None and application_id(app_id) != declared_id:
+            raise ValueError("--id and the manifest application ID disagree")
+        app_id = declared_id
+    elif app_id is not None:
+        app_id = application_id(app_id)
+    elif not allow_unset_id:
+        application_id("")
     if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", app.get("required_version", "")):
         raise ValueError("Explicit required_version is required")
     profile = root.find(TIZEN + "profile")
@@ -258,6 +268,7 @@ def parser():
     command.add_argument("--package")
     command = sub.add_parser("audit", help="Manifest IDs, privileges vs API use, ES5 and credential scan")
     command.add_argument("source", type=Path)
+    command.add_argument("--id", help="PACKAGE.Application when config.xml omits it (injected at staging)")
     command = sub.add_parser("pack", help="Deterministic unsigned .wgt (CI receipt, not installable)")
     command.add_argument("source", type=Path)
     command.add_argument("--output", type=Path, required=True)
@@ -369,7 +380,7 @@ def _app_command(args):
     if args.command == "new":
         return appkit.scaffold(args.target, args.name, args.package)
     if args.command == "audit":
-        return appkit.audit(args.source)
+        return appkit.audit(args.source, app_id=args.id)
     if args.command == "pack":
         return appkit.pack(args.source, args.output)
     if args.command == "check-package":

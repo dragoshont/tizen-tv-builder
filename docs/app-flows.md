@@ -17,6 +17,14 @@ python3 tools/tizen.py check-package my.wgt             # manifest + signature c
 value, ID mismatch) also block `build` and `package`. Warnings (unused privilege,
 wildcard `<access>`, example ID) do not. It reports file:line only, never the value.
 
+If `config.xml` deliberately omits the application ID because staging injects it,
+`audit` warns `app-id-unset`; pass `--id PACKAGE.Application` to check it (a value
+that disagrees with a declared ID is an error). `validate`, `build` and `package`
+still require the ID. A network API passed by reference (`var f = fetch`) counts
+as using `internet`; `typeof fetch` feature detection does not. A private address
+inside a prose string (`"…such as http://192.168.1.10:32400"`) is treated as an
+example; one assigned as a value is still a warning.
+
 After signing with Tizen Studio, prove the signature covers every file:
 
 ```sh

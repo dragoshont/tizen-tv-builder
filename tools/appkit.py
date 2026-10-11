@@ -26,6 +26,10 @@ API_PRIVILEGES = {
     "http://tizen.org/privilege/application.launch": re.compile(r"\btizen\.application\b[\s\S]{0,80}?\blaunch(?:AppControl)?\s*\("),
     "http://tizen.org/privilege/internet": re.compile(r"\bnew\s+(?:XMLHttpRequest|WebSocket|EventSource)\b|\bsendBeacon\s*\(|(?:(?<![\w$.])|\bwindow\.|\bself\.)fetch\s*\("),
 }
+# Looser: the API is referenced (e.g. passed as a value), so a declared privilege is not unused.
+API_REFERENCES = {
+    "http://tizen.org/privilege/internet": re.compile(r"\b(?:XMLHttpRequest|WebSocket|EventSource|sendBeacon|fetch)\b"),
+}
 KNOWN = set(API_PRIVILEGES)
 SECRETS = [
     ("private-key", re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----")),
@@ -139,10 +143,24 @@ def _privileges(source):
     return root, [p.get("name", "") for p in root.findall(TIZEN + "privilege")]
 
 
+def _in_prose(text, start, end):
+    """An address inside a sentence-like string (e.g. a hint 'such as http://…') is an example, not config."""
+    head = text.rfind("\n", 0, start) + 1
+    tail = text.find("\n", end)
+    line = text[head:len(text) if tail < 0 else tail]
+    for literal in re.finditer(r"([\"'])((?:\\.|(?!\1).)*)\1", line):
+        if literal.start(2) <= start - head and end - head <= literal.end(2):
+            body = literal.group(2)
+            return " " in body.strip() and not re.search(r"(?i)token|secret|passw|api[_-]?key", line)
+    return False
+
+
 def scan_text(name, text):
     findings = []
     for code, pattern in SECRETS:
         for match in pattern.finditer(text):
+            if code == "private-address" and _in_prose(text, match.start(), match.end()):
+                continue
             line = text.count("\n", 0, match.start()) + 1
             level = "warning" if code == "private-address" else "error"
             findings.append(_finding(level, "secret-" + code, "Possible credential or private value; keep it out of the package", f"{name}:{line}"))
@@ -150,17 +168,19 @@ def scan_text(name, text):
     return findings
 
 
-def audit(source):
+def audit(source, app_id=None):
     """Manifest identity, privileges vs API use, ES5 syntax guard and credential scan."""
     source = Path(source)
     findings = []
-    identity = validate(source)
+    identity = validate(source, app_id=app_id, allow_unset_id=True)
+    if identity["app"] is None:
+        findings.append(_finding("warning", "app-id-unset", "No application ID in config.xml; pass --id or inject it at staging"))
     root, privileges = _privileges(source)
     version = root.get("version", "")
     if not re.fullmatch(r"\d{1,3}\.\d{1,3}\.\d{1,5}", version) or any(
             int(part) > limit for part, limit in zip(version.split("."), (255, 255, 65535))):
         findings.append(_finding("error", "version", "Widget version must be x.y.z (255.255.65535 max)"))
-    if identity["app"].split(".")[0] in {"PlxHelloTv", "AAAAAAAAAA"}:
+    if identity["app"] and identity["app"].split(".")[0] in {"PlxHelloTv", "AAAAAAAAAA"}:
         findings.append(_finding("warning", "example-id", "Example package ID; generate your own with `tizen.py new`"))
     seen = set()
     for name in privileges:
@@ -183,11 +203,14 @@ def audit(source):
                 finding["where"] = f"{file}:{int(line) + offset - 1}"
             findings.append(finding)
     usage = _strip_script("\n".join(code))
+    references = re.sub(r"\btypeof\s+(?:window\.|self\.)?[\w$]+|(?<=[{,])\s*[\w$]+\s*:", " ", usage)
     for privilege, pattern in API_PRIVILEGES.items():
         used = bool(pattern.search(usage))
         if used and privilege not in seen:
             findings.append(_finding("error", "privilege-missing", "API is used without its privilege; expect SecurityError on TV", privilege))
-        elif privilege in seen and not used:
+        elif not used and privilege not in seen and privilege in API_REFERENCES and API_REFERENCES[privilege].search(references):
+            findings.append(_finding("warning", "privilege-maybe-missing", "API is referenced indirectly; declare its privilege if the app calls it", privilege))
+        elif privilege in seen and not used and not (privilege in API_REFERENCES and API_REFERENCES[privilege].search(references)):
             findings.append(_finding("warning", "privilege-unused", "Declared but no matching API use found", privilege))
     for path in sorted(source.rglob("*")):
         relative = path.relative_to(source)

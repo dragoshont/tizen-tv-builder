@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -61,6 +62,45 @@ class AppKitTests(unittest.TestCase):
         for use in ("window.fetch('/a');", "fetch('/a');", "new XMLHttpRequest();", "new WebSocket(u);", "navigator.sendBeacon(u, d);"):
             script.write_text(base + "\n" + use + "\n")
             self.assertIn("privilege-missing", self.codes(appkit.audit(self.source)), use)
+
+    def test_indirect_network_reference_counts_as_use(self):
+        script = self.source / "js" / "app.js"
+        config = self.source / "config.xml"
+        base, manifest = script.read_text(), config.read_text()
+        script.write_text(base + '\nvar request = options.fetch || (typeof fetch === "function" ? fetch : null);\n')
+        codes = self.codes(appkit.audit(self.source))
+        self.assertNotIn("privilege-missing", codes)
+        self.assertIn("privilege-maybe-missing", codes)
+        self.assertTrue(appkit.audit(self.source)["passed"])
+        config.write_text(manifest.replace("</widget>", '<tizen:privilege name="http://tizen.org/privilege/internet"/></widget>'))
+        codes = self.codes(appkit.audit(self.source))
+        self.assertNotIn("privilege-unused", codes)
+        self.assertNotIn("privilege-maybe-missing", codes)
+
+    def test_private_address_in_prose_is_not_flagged(self):
+        script = self.source / "js" / "app.js"
+        base = script.read_text()
+        script.write_text(base + '\nthrow new Error("Enter a server origin such as http://192.168.1.10:32400.");\n')
+        self.assertNotIn("secret-private-address", self.codes(appkit.audit(self.source)))
+        script.write_text(base + '\nvar server = "http://192.168.1.10:32400";\n')
+        self.assertIn("secret-private-address", self.codes(appkit.audit(self.source)))
+
+    def test_unset_id_injected_at_staging_warns_or_uses_override(self):
+        config = self.source / "config.xml"
+        manifest = config.read_text()
+        package = appkit.audit(self.source)["app"].split(".")[0]
+        config.write_text(re.sub(r'\s(?:id|package)="[^"]*"(?=[^>]*required_version)', "", manifest))
+        report = appkit.audit(self.source)
+        self.assertTrue(report["passed"], report)
+        self.assertIsNone(report["app"])
+        self.assertIn("app-id-unset", self.codes(report))
+        self.assertEqual(appkit.audit(self.source, app_id="ABCDEFGHIJ.Tv")["app"], "ABCDEFGHIJ.Tv")
+        with self.assertRaises(ValueError):
+            appkit.audit(self.source, app_id="bad")
+        config.write_text(manifest)
+        with self.assertRaisesRegex(ValueError, "disagree"):
+            appkit.audit(self.source, app_id="ZZZZZZZZZZ.Tv")
+        self.assertEqual(appkit.audit(self.source)["app"].split(".")[0], package)
 
     def test_unused_privilege_and_wildcard_access_warn_only(self):
         config = self.source / "config.xml"
