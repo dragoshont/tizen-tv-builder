@@ -736,7 +736,7 @@ class Fleet:
                 "owned": bool(record["owned"]), "held": held,
                 "preview": self.preview_summary(record),
                 "apps": self.apps_summary(record),
-                "identity": record["identity"], "certificate": self.coverage(duid),
+                "identity": record["identity"], "certificate": self.coverage(duid, record["alias"]),
                 "cert_tool": "installed" if self.which("tizen-cert") else "missing",
                 "guidance": guidance, "pending": record["pending"], "error": record["error"],
                 "job": record["job"],
@@ -746,7 +746,23 @@ class Fleet:
                             "developer_port": "open" if record["reachable"] else "closed or unknown",
                             "sdk_link": record["sdb_state"] or "none", "host_ip": self.host_ip(record)}}
 
-    def coverage(self, duid):
+    def short_name(self, alias):
+        """What people call this TV: their rename, else its own name, else its model."""
+        if alias in self.names:
+            return self.names[alias]
+        record, fact = self.records.get(alias) or {}, self.known.get(alias, {})
+        info = record.get("info") or {}
+        for value in (info.get("name"), fact.get("name"), info.get("model"), fact.get("model")):
+            if value and value != "unknown":
+                return value.removeprefix("[TV] ").strip()
+        return None
+
+    def name_for_duid(self, duid):
+        aliases = [a for a, r in self.records.items() if r.get("duid") == duid]
+        aliases += [a for a, f in self.known.items() if f.get("duid") == duid and a not in aliases]
+        return next((n for n in map(self.short_name, aliases) if n), duid)
+
+    def coverage(self, duid, alias=None):
         """Certificate coverage of the active signing profile, cached briefly: state() is polled."""
         now = time.monotonic()
         cached = getattr(self, "_coverage", None)
@@ -756,6 +772,9 @@ class Fleet:
         base = dict(cached[1], duid=duid)
         if base["state"] in {"unknown-tv", "covered", "not-covered"}:
             base["state"] = "unknown-tv" if not duid else "covered" if duid in base["covers"] else "not-covered"
+        # TV names instead of bare device IDs; an ID no remembered TV has stays an ID.
+        base["covers_names"] = [self.name_for_duid(d) for d in base["covers"]]
+        base["tv_name"] = (self.short_name(alias) if alias else None) or "this TV"
         return base
 
     def state(self):
@@ -1294,14 +1313,21 @@ class Fleet:
         copied = self.clipboard(duid)
         self.launcher(command)
         profile = coverage["profile"] or "your profile"
-        steps = (f"In tizen-cert choose Renew → {profile}, add {duid}"
-                 + (" (already on the clipboard)" if copied else "")
-                 + ", then sign in with your Samsung account in the browser")
+        with self.lock:
+            name = self.short_name(alias) or "this TV"
+        # A checklist, not a paragraph: what is done, and what is waiting on the person.
+        checklist = [
+            {"text": "Backed up your certificate files", "done": True} if backup else None,
+            {"text": "Device ID copied to the clipboard", "done": True} if copied else None,
+            {"text": "tizen-cert opened in Terminal" if installed
+             else "Terminal opened: installing tizen-cert, then running it", "done": True},
+            {"text": f"In tizen-cert: Renew → {profile}, add {duid}", "done": False},
+            {"text": "Waiting for Samsung sign-in in your browser…", "done": False}]
         return self._finish(record, {
             "op": "cert", "ok": True, "code": "opened", "command": command,
             "backup": str(backup) if backup else None, "covers": coverage["covers"], "duid": duid,
-            "message": ("Opened tizen-cert in a terminal" if installed else
-                        "Opened a terminal that installs tizen-cert, then runs it") + ". " + steps,
+            "message": f"Allowing your apps on {name}",
+            "steps": [step for step in checklist if step],
             "next": "When tizen-cert finishes, this page re-checks the certificate by itself"})
 
     OPERATIONS = {"connect", "identify", "disconnect", "preview", "apps", "install", "remove",

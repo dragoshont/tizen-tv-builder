@@ -228,6 +228,9 @@ class TvCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(self.launches), 1)
         self.assertIn("tizen-cert", self.launches[0])
+        self.assertIn("[next] Waiting for Samsung sign-in in your browser...", out)
+        steps = [line for line in out.splitlines() if "[done]" in line or "[next]" in line]
+        self.assertTrue(steps and all("→" not in line and "…" not in line for line in steps))
         self.assertEqual(self.run_cli("cert", "add")[0], 2)
 
     def test_uninstall_and_remove_alias_need_tizen_cli_and_no_yes(self):

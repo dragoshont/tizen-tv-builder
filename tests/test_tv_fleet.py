@@ -291,6 +291,22 @@ class FleetTests(unittest.TestCase):
                 self.assertIsNone(self.only(fleet)["guidance"], "Coverage is information, never a block")
                 fleet.close()
 
+    def test_certificate_names_the_tvs_it_covers(self):
+        self.certificate.write_text(device_profile("OTHERDEVICE0002", "OTHERDEVICE0003"))
+        known = {"tv-living": {"name": "[TV]Livingroom", "model": "UE55MU6172", "duid": "OTHERDEVICE0002"}}
+        fleet = self.fleet(known=known)
+        alias = next(t["alias"] for t in fleet.detect()["tvs"] if t["alias"] != "tv-living")
+        fleet.connect(alias, {})
+        fleet.identify(alias, {})
+        tv = next(t for t in fleet.state()["tvs"] if t["alias"] == alias)
+        coverage = tv["certificate"]
+        self.assertEqual(coverage["state"], "not-covered")
+        # Known TVs by name; an ID nobody has seen stays an ID.
+        self.assertEqual(coverage["covers_names"], ["[TV]Livingroom", "OTHERDEVICE0003"])
+        self.assertTrue(coverage["tv_name"])
+        self.assertNotEqual(coverage["tv_name"], DUID)
+        fleet.close()
+
     def test_cert_add_backs_up_privately_copies_the_duid_and_opens_tizen_cert(self):
         self.certificate.write_text(device_profile("OTHERDEVICE0002"))
         (self.certs / "distributor.p12").write_bytes(b"key")
@@ -305,6 +321,10 @@ class FleetTests(unittest.TestCase):
         job = fleet.cert(alias, {})
         self.assertEqual((job["code"], job["duid"], job["covers"]), ("opened", DUID, ["OTHERDEVICE0002"]))
         self.assertEqual((copied, self.launches), ([DUID], ["tizen-cert"]))
+        self.assertEqual([(step["text"].split(":")[0], step["done"]) for step in job["steps"]],
+                         [("Backed up your certificate files", True), ("Device ID copied to the clipboard", True),
+                          ("tizen-cert opened in Terminal", True), ("In tizen-cert", False),
+                          ("Waiting for Samsung sign-in in your browser…", False)])
         backup = Path(job["backup"])
         self.assertEqual(sorted(p.name for p in backup.iterdir()),
                          ["device-profile.xml", "distributor.crt", "distributor.p12"])

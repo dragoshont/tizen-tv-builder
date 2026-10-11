@@ -170,7 +170,15 @@ observed evidence only:
 | Nothing answered | Not reachable (unknown, never "not enabled") |
 
 An open port alone is never "Dev mode enabled". Certificate/install readiness is a
-separate line that appears once Connect has read the TV identity.
+separate line that appears once Connect has read the TV identity. When the active
+certificate doesn't list the TV, the card says so in TV names ("You can't install your
+apps on <TV> yet: your certificate only allows <TVs>."). It falls back to the raw device
+ID only for an ID that no remembered TV has. One button, "Allow installing my apps on
+this TV", adds the TV to your Samsung certificate with tizen-cert (installed if needed);
+Samsung sign-in opens in your browser. While it runs, the card shows a short checklist
+(backed up, tizen-cert opened, waiting for Samsung sign-in).
+The raw device IDs are listed under TV details, together with a small "Disconnect" link
+(each action connects on its own, so you rarely need it).
 
 ### TV details (shared by portal and CLI)
 

@@ -552,6 +552,16 @@ class LiveTests(unittest.TestCase):
         self.assertIn("card.hint.hidden = !live;", update)
         self.assertNotIn("version unavailable", script)
 
+    def test_certificate_card_speaks_in_tv_names(self):
+        script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text()
+        for text in ("`You can't install your apps on ${c.tv_name || \"this TV\"} yet: ${certText(c)}`",
+                     "`your certificate only allows ${(c.covers_names", '"Allow installing my apps on this TV"',
+                     "Uses tizen-cert; Samsung sign-in opens in your browser.", 'el("ul", { class: "checklist" }',
+                     'el("summary", {}, "TV details"), list, disconnect)', '"Copy device ID"', '["Certificate", c.profile ? `${c.profile} · covers ${(c.covers'):
+            self.assertIn(text, script)
+        self.assertNotIn("This TV is ${d.duid}", script)
+        self.assertIn("el(\"div\", { class: \"row\" }, connect, rescan), guide", script)
+
     def test_page_scans_once_on_open_when_nothing_was_checked(self):
         script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text()
         refresh = script[script.index("async function refresh("):script.index('$("scan").addEventListener')]

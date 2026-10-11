@@ -285,9 +285,13 @@ def details_lines(tv):
 
 def certificate_text(tv):
     c, duid = tv.get("certificate") or {}, (tv.get("details") or {}).get("duid") or "this TV"
-    covers = ", ".join(c.get("covers") or []) or "no TVs"
+    ids, names = c.get("covers") or [], c.get("covers_names") or c.get("covers") or []
+    # TV names first, raw IDs alongside: the CLI shows every detail.
+    covers = ", ".join(n if n == i else f"{n} ({i})" for n, i in zip(names, ids)) or "no TVs"
+    who = c.get("tv_name") or "this TV"
     return {"covered": f"{c.get('profile')} covers this TV ({duid})",
-            "not-covered": f"{c.get('profile')} covers: {covers}. This TV is {duid}. Run: tv cert add {tv['alias']}",
+            "not-covered": f"You can't install your apps on {who} yet. Your certificate ({c.get('profile')}) "
+                           f"only allows: {covers}. This TV is {duid}. Run: tv cert add {tv['alias']}",
             "no-profile": f"No Samsung certificate yet. This TV is {duid}. Run: tv cert add {tv['alias']}",
             "default": f"The active profile {c.get('profile')} uses the default Tizen distributor. "
                        f"Run: tv cert add {tv['alias']}"}.get(c.get("state"), c.get("state") or "unknown")
@@ -353,6 +357,9 @@ def connect(fleet, tv, say):
 
 def result(say, job):
     say(job.get("message") or ("Done" if job.get("ok") else "Failed"))
+    for step in job.get("steps") or []:
+        # ASCII markers: a redirected Windows console may be cp1252.
+        say(("  [done] " if step["done"] else "  [next] ") + step["text"].replace("→", "->").replace("…", "..."))
     for key, label in (("backup", "Old certificate files backed up to"), ("command", "Command"), ("next", "Next")):
         if job.get(key):
             say(f"{label}: {job[key]}")

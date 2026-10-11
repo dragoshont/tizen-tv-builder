@@ -132,13 +132,17 @@ function remotePanel() {
 }
 
 // ---- scanned TV cards -------------------------------------------------------------
-const certText = (c) => c?.profile ? `Your certificate ${c.profile} covers: ${(c.covers || []).join(", ") || "no TVs"}.` : "";
+// Names, not device IDs: the backend maps each listed ID to a remembered TV, else keeps the ID.
+const certText = (c) => c?.state === "not-covered"
+  ? `your certificate only allows ${(c.covers_names || c.covers || []).join(", ") || "no TVs"}.`
+  : "you don't have a Samsung certificate yet.";
 function tvCard(alias) {
   const current = () => (state.tvs || []).find((t) => t.alias === alias);
   const name = el("h2"), pill = el("span", { class: "pill" }), reason = el("p", { class: "reason" });
   const rename = el("button", { type: "button", class: "link", "aria-label": "Rename", title: "Rename" }, "✎ Rename");
   const connect = el("button", { type: "button", class: "primary" }, "Connect");
-  const disconnect = el("button", { type: "button", class: "secondary" }, "Disconnect");
+  // Rarely needed (each action connects on its own), so a small link under TV details, not a big button.
+  const disconnect = el("button", { type: "button", class: "link" }, "Disconnect");
   const rescan = el("button", { type: "button", class: "primary", hidden: true }, "Scan again");
   const guide = el("div", { class: "guide", hidden: true });
   // Screen
@@ -160,23 +164,24 @@ function tvCard(alias) {
   const installSection = el("section", { class: "install", "aria-label": "Install app" },
     el("h3", {}, "Install app"), el("div", { class: "row" }, pkg, choose, install));
   // Certificate: appears only when this TV is not in the active certificate.
-  const certLine = el("p"), certButton = el("button", { type: "button", class: "primary" }, "Add this TV to my certificate");
+  const certHead = el("h3");
+  const certButton = el("button", { type: "button", class: "primary" }, "Allow installing my apps on this TV");
   const copyDuid = el("button", { type: "button", class: "secondary" }, "Copy device ID");
   const certCommand = el("p", { class: "subtle" });
   const cert = el("section", { class: "guide cert", "aria-label": "Certificate", hidden: true },
-    certLine, el("div", { class: "row" }, certButton, copyDuid), certCommand);
+    certHead, el("div", { class: "row" }, certButton, copyDuid), certCommand);
   const job = el("div", { class: "job", role: "status", "aria-live": "polite" });
   const list = el("dl");
-  const details = el("details", { class: "tv-details" }, el("summary", {}, "TV details"), list);
+  const details = el("details", { class: "tv-details" }, el("summary", {}, "TV details"), list, disconnect);
   const { remote, why, hint, keys } = remotePanel();
   const connected = el("div", { class: "connected-body" }, screen, apps, installSection);
   const root = el("article", { class: "device", "aria-label": alias },
     el("div", { class: "device-main" },
       el("div", { class: "title-row" }, name, pill, rename), reason,
-      el("div", { class: "row" }, connect, rescan, disconnect), guide, cert, job, connected, details),
+      el("div", { class: "row" }, connect, rescan), guide, cert, job, connected, details),
     remote);
   const card = { root, name, pill, reason, connect, rescan, disconnect, guide, screenText, frames, age, refreshPicture, save,
-    appsNote, appList, reloadApps, apps, pkg, choose, install, installSection, cert, certLine, certButton, copyDuid,
+    appsNote, appList, reloadApps, apps, pkg, choose, install, installSection, cert, certHead, certButton, copyDuid,
     certCommand, job, list, details, connected, remote, why, hint, keys, summary: "", revision: null, appRows: new Map() };
 
   connect.addEventListener("click", () => tvCommand("connect", alias, {}));
@@ -252,6 +257,10 @@ function renderJob(card, tv) {
   const j = tv.job;
   if (!j) { card.job.replaceChildren(); return; }
   const parts = [el("p", { class: j.ok ? "" : "problem" }, j.message || (j.ok ? "Done" : "Failed"))];
+  // Multi-step jobs (certificate) show a short checklist: what's done, what is waiting on you.
+  if (j.steps?.length) parts.push(el("ul", { class: "checklist" }, ...j.steps.map((step) =>
+    el("li", { class: step.done ? "done" : "waiting" }, el("span", { "aria-hidden": "true" }, step.done ? "✓" : "…"),
+      step.text))));
   for (const path of j.paths || []) parts.push(el("p", { class: "subtle" }, "Saved to ", el("code", {}, path)));
   if (j.backup) parts.push(el("p", { class: "subtle" }, "Old certificate files backed up to ", el("code", {}, j.backup)));
   if (j.command) parts.push(el("p", { class: "subtle" }, "Command: ", el("code", {}, j.command)));
@@ -313,13 +322,9 @@ async function updateTv(card, tv, keep) {
   const c = tv.certificate || {}, fix = tv.held && ["not-covered", "no-profile", "default"].includes(c.state) && d.duid;
   card.cert.hidden = !fix;
   if (fix) {
-    card.certLine.textContent = c.state === "not-covered" ? `${certText(c)} This TV is ${d.duid}.`
-      : `You have no Samsung distributor certificate yet. This TV is ${d.duid}.`;
-    card.certButton.textContent = tv.cert_tool === "installed"
-      ? (c.state === "not-covered" ? "Add this TV to my certificate" : "Create a certificate for this TV")
-      : "Install tizen-cert and add this TV";
-    card.certCommand.textContent = tv.cert_tool === "installed" ? "Opens tizen-cert in a terminal; Samsung sign-in happens in your browser."
-      : "Shows and runs the tizen-cert installer in a terminal, then opens tizen-cert. Samsung sign-in happens in your browser.";
+    card.certHead.textContent = `You can't install your apps on ${c.tv_name || "this TV"} yet: ${certText(c)}`;
+    card.certCommand.textContent = `Adds this TV to your Samsung certificate${c.profile ? ` (${c.profile})` : ""}. ` +
+      "Uses tizen-cert; Samsung sign-in opens in your browser.";
     card.certButton.disabled = card.copyDuid.disabled = working || offline;
   }
   renderJob(card, tv);
