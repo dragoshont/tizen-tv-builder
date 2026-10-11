@@ -558,7 +558,7 @@ async function render() {
     if (renderAgain) { renderAgain = false; queueMicrotask(render); }
   }
 }
-let polling = false;
+let polling = false, autoScanned = false;
 async function refresh() {
   if (polling || stopped) return;
   polling = true;
@@ -573,6 +573,8 @@ async function refresh() {
     polling = false;
   }
   await render();
+  // A fresh portal knows TVs only from memory; check them now (a scan is read-only).
+  if (!offline && !autoScanned && state.scan?.status === "never") { autoScanned = true; scan(); }
 }
 $("scan").addEventListener("click", scan);
 window.addEventListener("pagehide", () => {

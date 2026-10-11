@@ -166,6 +166,7 @@ observed evidence only:
 | Port 26101 open but the TV refused this computer | Needs to be configured (Host PC IP, restart TV) |
 | The TV API reports Developer Mode off and port 26101 is closed | Dev mode not enabled |
 | The TV API answers, does not report the mode, and port 26101 is closed | Dev mode port closed (off or blocked; not proof) |
+| Remembered TV, not scanned yet since the portal started | Checking… (the page scans on open) |
 | Nothing answered | Not reachable (unknown, never "not enabled") |
 
 An open port alone is never "Dev mode enabled". Certificate/install readiness is a

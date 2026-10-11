@@ -41,7 +41,7 @@ DEV_LABELS = {"enabled": "Developer Mode on", "not-enabled": "Developer Mode off
               "closed": "Developer port closed",
               "unknown": "Not reachable"}
 # The only status words a TV card, list row or CLI line may show.
-STATUSES = ("Not reachable", "Developer Mode off", "Ready to connect", "Connecting…",
+STATUSES = ("Checking…", "Not reachable", "Developer Mode off", "Ready to connect", "Connecting…",
             "Connected", "Connection problem")
 STORE_APP = "Samsung doesn't allow debugging this store app. Only apps you install can be viewed."
 MAX_TVS = 16
@@ -373,7 +373,8 @@ class Fleet:
         for alias, fact in self.known.items():
             self.records[alias] = self._blank(alias) | {
                 "serial": None, "host": None, "reachable": False, "sdb_state": None, "loopback": False,
-                "missing": True, "api": False, "duid": fact.get("duid"), "observed_tizen": fact.get("os"),
+                "missing": True, "unchecked": True, "api": False, "duid": fact.get("duid"),
+                "observed_tizen": fact.get("os"),
                 "info": {k: "unknown" for k in INFO_FIELDS} | {
                     k: fact[k] for k in ("name", "model") if fact.get(k)}}
 
@@ -533,7 +534,7 @@ class Fleet:
                         continue  # Never retarget a TV this portal is holding.
                     record.update(serial=serial, host=entry["host"], reachable=entry["reachable"],
                                   sdb_state=entry["sdb_state"], loopback=bool(entry.get("loopback")),
-                                  missing=False)
+                                  missing=False, unchecked=False)
                     if info:
                         record.update(api=True, info={k: info.get(k, "unknown") for k in INFO_FIELDS})
                     elif not record.get("api"):
@@ -544,7 +545,7 @@ class Fleet:
                 for alias, record in self.records.items():
                     if alias not in seen:
                         # One missed scan must not make a known TV vanish: keep it, truthfully "Not reachable".
-                        record["missing"] = True
+                        record.update(missing=True, unchecked=False)
                         if record["lease"] is None:
                             record.update(reachable=False, sdb_state=None)
                 self.scan = {"status": "done", "networks": len(networks), "found": len(seen),
@@ -552,6 +553,8 @@ class Fleet:
             return self.state()
         except Exception as error:
             with self.lock:
+                for record in self.records.values():
+                    record["unchecked"] = False  # The scan's own error is shown instead of a spinner.
                 self.scan = dict(self.scan, status="failed",
                                  error=scrub(error) if isinstance(error, LiveError) else "Scan failed")
             raise
@@ -606,6 +609,9 @@ class Fleet:
             return "Connection problem", "lost", record["error"] or "The developer link stopped working"
         if pending:
             return self.PENDING.get(pending, "Working…"), "progress", self.PENDING.get(pending, "Working…")
+        if record.get("unchecked"):
+            # Remembered from an earlier run and not scanned yet: we don't know, so don't say "off".
+            return "Checking…", "progress", "Checking whether this TV is on…"
         if record.get("missing"):
             return "Not reachable", "warn", OFFLINE
         if record.get("dev_refused") or (record["error"] and record["reachable"]):

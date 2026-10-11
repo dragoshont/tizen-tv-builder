@@ -552,6 +552,12 @@ class LiveTests(unittest.TestCase):
         self.assertIn("card.hint.hidden = !live;", update)
         self.assertNotIn("version unavailable", script)
 
+    def test_page_scans_once_on_open_when_nothing_was_checked(self):
+        script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text()
+        refresh = script[script.index("async function refresh("):script.index('$("scan").addEventListener')]
+        self.assertIn('if (!offline && !autoScanned && state.scan?.status === "never") { autoScanned = true; scan(); }',
+                      refresh)
+
     def test_unnamed_tv_card_is_titled_by_its_address(self):
         script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text()
         self.assertIn("return tv.unnamed && address ? `TV at ${address}` : tv.name;", script)

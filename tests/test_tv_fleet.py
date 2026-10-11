@@ -352,8 +352,12 @@ class FleetTests(unittest.TestCase):
         self.assertEqual((fact["name"], fact["model"]), ("[TV] Samsung 7 Series (55)", "UE55NU7400"))
         self.assertNotIn(LAN_A, json.dumps(saved[-1]), "The network address is never persisted")
         live.read_known({"known_tvs": saved[-1]})  # The persisted shape passes the profile validator.
-        # Next run, the TV is off: it still has its card, name and model, plainly "Not reachable".
+        # Next run, before any scan: remembered but unchecked, so "Checking…", never "Not reachable".
         later = self.fleet(hits=[], known=saved[-1])
+        before = self.only(later)
+        self.assertEqual((before["label"], before["tone"]), ("Checking…", "progress"))
+        self.assertIn("Checking…", tv_fleet.STATUSES)
+        # After the scan the TV is off: it still has its card, name and model, plainly "Not reachable".
         later.detect()
         tv = self.only(later)
         self.assertEqual(tv["alias"], alias)
