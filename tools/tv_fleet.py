@@ -720,7 +720,7 @@ class Fleet:
                 "details": {"address": record.get("host"), "duid": duid,
                             "model": meta["model"], "os": meta["os"]["text"], "firmware": meta["firmware"],
                             "developer_port": "open" if record["reachable"] else "closed or unknown",
-                            "sdk_link": record["sdb_state"] or "none"}}
+                            "sdk_link": record["sdb_state"] or "none", "host_ip": self.host_ip(record)}}
 
     def coverage(self, duid):
         """Certificate coverage of the active signing profile, cached briefly: state() is polled."""

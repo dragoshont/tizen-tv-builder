@@ -140,6 +140,24 @@ class TvCliTests(unittest.TestCase):
         self.assertIn("Check the TV's Host PC IP", out)
         self.assertIn("This computer's IP to enter on the TV: 10.255.255.10", out)
 
+    def test_info_shows_portal_details_without_contacting_the_tv(self):
+        alias = self.alias()
+        code, out, err = self.run_cli("info", alias)
+        self.assertEqual((code, err), (0, ""))
+        for value in (LAN_A, "UE55NU7400", "Developer port: open", "This computer's IP to enter on the TV: 10.255.255.10"):
+            self.assertIn(value, out)
+        self.assertEqual(self.sdb.mutations(), [])
+
+    def test_info_connect_shows_duid_certificate_and_apps_then_disconnects(self):
+        alias = self.alias()
+        for flag in ("--connect", "--show-duid"):
+            code, out, err = self.run_cli("info", alias, flag)
+            self.assertEqual((code, err), (0, ""))
+            for value in (DUID, APP, "Certificate:", "This computer's IP to enter on the TV: 10.255.255.10"):
+                self.assertIn(value, out)
+            self.assertEqual([c[0] for c in self.sdb.mutations()][-2:], ["connect", "disconnect"])
+        self.assertEqual(list(self.root.glob("tizen-tv-*.lock")), [])
+
     def test_unknown_tv_is_refused_with_the_list_of_names(self):
         code, _, err = self.run_cli("connect", "tv-ffffff")
         self.assertEqual(code, 1)

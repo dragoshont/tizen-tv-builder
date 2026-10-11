@@ -36,6 +36,7 @@ def parser():
         "commands (TV = name or tv-xxxxxx alias):\n"
         "  scan | list            Find TVs on your network / show the last scan\n"
         "  connect TV             Connect: status, details, certificate and apps, then disconnect\n"
+        "  info TV [--connect]    Every detail the portal shows; --connect also reads identity and apps\n"
         "  apps TV                Every app ID on the TV\n"
         "  open TV APP            Open an app's screen (restarts the app)\n"
         "  screenshot TV --app APP [--out DIR]   Save the app's picture as PNG\n"
@@ -59,6 +60,11 @@ def parser():
         item.add_argument("tv")
         item.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)  # Accepted, ignored.
         item.add_argument("--show", action="store_true", help=argparse.SUPPRESS)
+    item = sub.add_parser("info", help="Every detail the portal shows for a TV")
+    item.add_argument("tv")
+    item.add_argument("--connect", action="store_true",
+                      help="Also connect to read OS, DUID, certificate and apps, then disconnect")
+    item.add_argument("--show-duid", action="store_true", help="Same as --connect (the DUID is always shown)")
     item = sub.add_parser("rename", help="Name a TV")
     item.add_argument("tv")
     item.add_argument("name")
@@ -255,7 +261,10 @@ def write_private(path, text):
 def details_lines(tv):
     d, c = tv.get("details") or {}, tv.get("certificate") or {}
     for label, value in (("Network address", d.get("address")), ("Device ID (DUID)", d.get("duid")),
-                         ("Model", d.get("model")), ("OS", d.get("os")), ("Firmware", d.get("firmware"))):
+                         ("Model", d.get("model")), ("OS", d.get("os")), ("Firmware", d.get("firmware")),
+                         ("Developer port", d.get("developer_port")), ("Link", d.get("sdk_link")),
+                         ("Last seen", tv.get("last_seen") and time.strftime("%H:%M", time.localtime(tv["last_seen"]))),
+                         ("This computer's IP to enter on the TV", d.get("host_ip"))):
         if value:
             yield f"  {label}: {value}"
     yield "  Certificate: " + certificate_text(tv)
@@ -349,7 +358,7 @@ def act(args, fleet, tv, say):
         return 1
     alias = connected["alias"]
     try:
-        if command == "connect":
+        if command in {"connect", "info"}:
             say(f"{connected['name']}: {connected['label']}")
             say(connected["headline"])
             for line in details_lines(connected):
@@ -506,6 +515,12 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
         if args.command == "rename":
             tv = find(fleet.rename(tv["alias"], {"name": args.name}), tv["alias"])
             say(f"Renamed {tv['alias']} to {tv['name']}")
+            return 0
+        if args.command == "info" and not (args.connect or args.show_duid):
+            say(f"{tv['name']}: {tv['label']}")
+            say(tv["headline"])
+            for line in details_lines(tv):
+                say(line)
             return 0
         return act(args, fleet, tv, say)
     finally:
