@@ -48,7 +48,8 @@ def parser():
         "  cert use TV PROFILE    Make PROFILE the active signing profile (one that allows this TV)\n"
         "  duid TV                Print the TV's Device ID (DUID)\n"
         "  rename TV NAME         Name a TV\n"
-        "  setup                  What this computer has for signing and installing\n"
+        "  setup [TV]             Guided setup, step by step, to your app on the TV screen\n"
+        "  setup --check          Only report what this computer has; changes nothing\n"
         "  portal                 Open the Samsung TV Developer Companion in your browser\n"
         "aliases: status = scan, check/identify = connect, remove = uninstall\n"))
     cli.add_argument("--profile", type=Path, help="Private 0600 profile; optional, a default is created")
@@ -70,7 +71,10 @@ def parser():
     item = sub.add_parser("rename", help="Name a TV")
     item.add_argument("tv")
     item.add_argument("name")
-    sub.add_parser("setup", help="Check sdb, the tizen CLI and signing profiles; installs nothing")
+    item = sub.add_parser("setup", help="Guided setup: from a new TV to your app on screen")
+    item.add_argument("tv", nargs="?", help="The TV to set up (default: the one that answers)")
+    item.add_argument("--check", action="store_true",
+                      help="Only report what this computer has for signing and installing; changes nothing")
     item = sub.add_parser("cert", help="Certificate coverage for a TV, or `cert add TV`")
     item.add_argument("words", nargs="+", metavar="TV | add TV | use TV PROFILE")
     item = sub.add_parser("install", help="Sign a .wgt with the active profile and install it")
@@ -375,6 +379,174 @@ def result(say, job):
     return 0 if job.get("ok") else 1
 
 
+def cert_wait(fleet, alias, job, say, sleep=time.sleep):
+    """Follow the Samsung sign-in: each step once, as it happens; then the real outcome."""
+    say(job["message"])
+    say("Sign in to Samsung in your browser. If it didn't open, go to:")
+    say("  " + job["url"])
+    shown = set()
+    try:
+        while True:
+            job = fleet.cert_result(alias) or {}
+            for step in job.get("steps") or []:
+                if step["text"] not in shown:
+                    shown.add(step["text"])
+                    say(("  [done] " if step["done"] else "  [....] ") + step["text"].replace("\u2026", "..."))
+            if job.get("code") != "waiting":
+                break
+            sleep(CERT_POLL)
+    except KeyboardInterrupt:
+        say("Stopped waiting; the sign-in page no longer completes this request.")
+        return 1
+    return result(say, dict(job, steps=None))
+
+
+SETUP_POLL = 3.0  # Seconds between checks while waiting for the TV or the installer.
+
+
+def plain(text):
+    """ASCII for a Windows console that may be cp1252."""
+    return str(text).replace("\u2026", "...").replace("\u2713", "[done]").replace("\u2192", "->")
+
+
+def guided(args, fleet, say, ask, sleep=time.sleep):
+    """`tv setup`: the portal wizard's six steps and words, one prompt at a time."""
+    alias, shown, connected, finished = None, None, False, set()
+    say("Set up a TV: six steps from a new TV to your app on its screen. Ctrl+C stops at any time.")
+    if args.tv:
+        alias = find(fleet.detect(), args.tv)["alias"]
+
+    def attempt(work):
+        try:
+            return work()
+        except LiveError as error:
+            say(plain(error))
+            return None
+
+    def go(label):
+        answer = ask(f"Press Enter to {label[0].lower() + label[1:]} (q to quit): ")
+        return answer is not None and answer.strip().lower() not in {"q", "quit"}
+
+    try:
+        while True:
+            view = fleet.wizard({"tv": alias} if alias else {})
+            if view["done"]:
+                app = view["steps"][-1]["app"]
+                say("")
+                say(f"Done: {plain(view['steps'][-1]['text'])}")
+                say(f"  Remote:      python3 tools/tizen.py tv key {view['alias']} Down Enter --app {app}")
+                say(f"  Screenshot:  python3 tools/tizen.py tv screenshot {view['alias']} --app {app}")
+                say("  Or open the portal: python3 tools/tizen.py tv portal")
+                return 0
+            for item in view["steps"]:
+                if item["status"] == "done" and item["id"] not in finished:
+                    finished.add(item["id"])
+                    if shown and shown[0] == item["id"]:
+                        say("[done] " + plain(item["text"]))
+            step = next(s for s in view["steps"] if s["id"] == view["current"])
+            if (step["id"], step["status"], step["text"]) != shown:
+                shown = (step["id"], step["status"], step["text"])
+                say("")
+                say(f"Step {step['n']} of {len(view['steps'])}: {step['title']}")
+                say(plain(step["text"]))
+                for n, item in enumerate(step["items"], 1):
+                    say(f"  {n}. {plain(item)}" if step["id"] == "developer-mode" else f"  {plain(item)}")
+                for key, label in (("error", "Error"), ("output", "Output")):
+                    if step.get(key):
+                        say(f"{label}: {plain(step[key])}")
+                if step["status"] == "failed" and step.get("command"):
+                    say("Or do it by hand: " + step["command"])
+                if step.get("status_line"):
+                    say(plain(step["status_line"]))
+            action = (step["actions"] or [{}])[0]
+            status, ident = step["status"], step["id"]
+            if status == "working":
+                sleep(1 if ident == "computer" else SETUP_POLL)
+                continue
+            if ident == "computer" or action.get("action") == "install-sdk":
+                if step.get("command") and status != "failed":
+                    say("By hand instead: " + step["command"])
+                if not go(action.get("label") or "Install Tizen Studio tools"):
+                    return 1
+                job, last = fleet.install_sdk({}), None
+                while job.get("code") == "working":
+                    line = job.get("message") + (f" ({job['percent']}%)" if job.get("percent") is not None else "")
+                    if line != last:
+                        say("  " + plain(line))
+                        last = line
+                    sleep(1)
+                    job = dict(fleet.sdk_job)
+                continue
+            if ident == "developer-mode":
+                if status == "failed" and not go("check again"):
+                    return 1
+                sleep(SETUP_POLL)
+                state = fleet.detect()
+                ready = [t for t in state["tvs"] if t.get("reachable") or t.get("held")]
+                if not alias and len(ready) > 1:
+                    say("Several TVs answered:")
+                    for n, tv in enumerate(ready, 1):
+                        say(f"  {n}. {title(tv)} ({tv['alias']})")
+                    while alias is None:
+                        answer = ask(f"Which one (1-{len(ready)}, q to quit)? ")
+                        if answer is None or answer.strip().lower() in {"q", "quit"}:
+                            return 1
+                        if answer.strip().isdigit() and 1 <= int(answer) <= len(ready):
+                            alias = ready[int(answer) - 1]["alias"]
+                elif not alias and ready:
+                    alias = ready[0]["alias"]
+                continue
+            alias = alias or view["alias"]
+            if ident == "connect":
+                if status == "failed" and not go("try again"):
+                    return 1
+                connected = connect(fleet, find(fleet.state(), alias), say) is not None or connected
+                if not connected and not go("try again"):
+                    return 1
+                continue
+            if ident == "permission" or (ident == "app" and action.get("action") == "cert"):
+                if not action:
+                    if step.get("command"):
+                        say("Command: " + step["command"])
+                    if not go("check again"):
+                        return 1
+                    fleet._setup_report = None
+                    continue
+                if not go(action["label"]):
+                    return 1
+                if action["action"] == "profile":
+                    attempt(lambda: result(say, fleet.profile(alias, action["data"])))
+                    continue
+                job = attempt(lambda: fleet.cert(alias, {})) or {}
+                if job.get("code") == "waiting":
+                    cert_wait(fleet, alias, job, say, sleep)
+                elif job:
+                    result(say, job)
+                continue
+            if ident == "app":
+                answer = ask("Path to your .wgt, or press Enter to install a sample app (q to quit): ")
+                if answer is None or answer.strip().lower() in {"q", "quit"}:
+                    return 1
+                path = answer.strip().strip('"').strip("'")
+                if path:
+                    say("Installing (signing it with your certificate, then checking the TV's app list)...")
+                    attempt(lambda: result(say, fleet.install(alias, {"package": str(Path(path).expanduser().absolute())})))
+                else:
+                    say("Installing the sample app (signing it with your certificate)...")
+                    attempt(lambda: result(say, fleet.sample(alias, {})))
+                continue
+            if ident == "see":
+                if status == "failed" and not go("try again"):
+                    return 1
+                if attempt(lambda: fleet.preview(alias, action["data"]) or True) is None and not go("try again"):
+                    return 1
+                continue
+            return 1
+    finally:
+        if alias:
+            release(fleet, alias, say)
+
+
 def act(args, fleet, tv, say):
     """Everything that needs the developer link: connect, act, and always disconnect."""
     command = args.command
@@ -411,26 +583,7 @@ def act(args, fleet, tv, say):
                 if job.get("use_profile"):
                     say(f"Run: tv cert use {alias} {job['use_profile']}")
                 return code
-            say(job["message"])
-            say("Sign in to Samsung in your browser. If it didn't open, go to:")
-            say("  " + job["url"])
-            # Each step once, as it happens; then the real outcome from a fresh read of the certificate.
-            shown = set()
-            try:
-                while True:
-                    job = fleet.cert_result(alias) or {}
-                    for step in job.get("steps") or []:
-                        if step["text"] not in shown:
-                            shown.add(step["text"])
-                            say(("  [done] " if step["done"] else "  [....] ") +
-                                step["text"].replace("\u2026", "..."))
-                    if job.get("code") != "waiting":
-                        break
-                    time.sleep(CERT_POLL)
-            except KeyboardInterrupt:
-                say("Stopped waiting; the sign-in page no longer completes this request.")
-                return 1
-            return result(say, dict(job, steps=None))
+            return cert_wait(fleet, alias, job, say)
         if command == "open":
             try:
                 fleet.preview(alias, {"app": args.app})
@@ -505,10 +658,19 @@ def profile_source(args, profile, config, cdp_factory, say):
         app.close()
 
 
-def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=default_setup):
+def terminal_ask(prompt):
+    try:
+        return input(prompt)
+    except EOFError:
+        return None
+
+
+def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=default_setup, ask=None):
     say = lambda line="": print(line, file=out)  # noqa: E731
     args.command = ALIASES.get(args.command, args.command)
-    if args.command == "setup":
+    interactive = args.command == "setup" and not args.check and (
+        ask is not None or (sys.stdin.isatty() and getattr(out, "isatty", lambda: False)()))
+    if args.command == "setup" and not interactive:
         report = setup()
         for line in setup_lines(report):
             say(line)
@@ -555,6 +717,8 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
                           names=(config or {}).get("tv_names", {}), save_names=save,
                           known=(config or {}).get("known_tvs", {}), save_known=save_known)
     try:
+        if interactive:
+            return guided(args, fleet, say, ask or terminal_ask)
         state = fleet.detect()
         save_cache(state_dir, state)
         if args.command == "scan":
@@ -581,7 +745,7 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
 
 
 def main(argv=None, fleet_factory=default_fleet, cdp_factory=live_tv.CDP, stdout=None, stderr=None,
-         state_dir=STATE_DIR, setup=default_setup):
+         state_dir=STATE_DIR, setup=default_setup, ask=None):
     out, err = stdout or sys.stdout, stderr or sys.stderr
     if sys.version_info < (3, 10):
         print("tv: Python 3.10 or newer is required (this is " + sys.version.split()[0] + ")", file=err)
@@ -592,7 +756,7 @@ def main(argv=None, fleet_factory=default_fleet, cdp_factory=live_tv.CDP, stdout
     except SystemExit as stop:
         return stop.code
     try:
-        return run(args, fleet_factory, cdp_factory, out, state_dir, setup)
+        return run(args, fleet_factory, cdp_factory, out, state_dir, setup, ask)
     except Usage as error:
         print("tv: " + str(error), file=err)
         return 2

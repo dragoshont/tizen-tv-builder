@@ -218,5 +218,66 @@ class FleetSetupTests(FirstRunBase):
             fleet.close()
 
 
+class GuidedCliTests(FirstRunBase):
+    def setUp(self):
+        super().setUp()
+        import tv
+        self.cli = tv
+        previous = tv.SETUP_POLL
+        tv.SETUP_POLL = 0
+        self.addCleanup(lambda: setattr(tv, "SETUP_POLL", previous))
+
+    def run_setup(self, answers, *argv):
+        import io
+        answers, asked = list(answers), []
+
+        def ask(prompt):
+            asked.append(prompt)
+            return answers.pop(0) if answers else None
+        out, err = io.StringIO(), io.StringIO()
+        code = self.cli.main(["setup", *argv], fleet_factory=self.fleet, stdout=out, stderr=err,
+                             state_dir=self.state_dir, ask=ask)
+        self.assertEqual(self.state()["connected"], [], "setup disconnects what it connected")
+        return code, out.getvalue(), asked
+
+    def test_setup_walks_from_detection_to_the_sample_app(self):
+        self.profiles()
+        code, out, asked = self.run_setup([""])  # Enter: install the sample app.
+        self.assertIn("Step 2 of 6: ", out)
+        self.assertIn("[done] Found ", out)
+        self.assertIn("[done] Connected to ", out)
+        self.assertIn(tv_setup.SAMPLE_APP, self.state()["installed"])
+        self.assertTrue(any(".wgt" in prompt for prompt in asked))
+        # The fake TV has no debug launch: the real error and one fix, then quitting ends with failure.
+        self.assertIn("Step 6 of 6: See it", out)
+        self.assertIn("Could not open " + tv_setup.SAMPLE_APP, out)
+        self.assertIn("Press Enter to try again (q to quit): ", asked)
+        self.assertEqual(code, 1)
+        self.assert_private(out)
+
+    def test_finished_setup_prints_the_remote_and_screenshot_commands(self):
+        import io
+        import argparse
+        view = {"done": True, "alias": "tv-abc123", "current": None,
+                "steps": [{"id": "see", "text": "Living room shows App.x.", "app": "App.x"}]}
+        fleet = type("F", (), {"wizard": lambda self, data: view, "release": lambda self, a, d: None,
+                               "state": lambda self: {"tvs": []}})()
+        lines = []
+        code = self.cli.guided(argparse.Namespace(tv=None), fleet, lines.append, lambda p: None)
+        self.assertEqual(code, 0)
+        self.assertIn("  Remote:      python3 tools/tizen.py tv key tv-abc123 Down Enter --app App.x", lines)
+
+    def test_quit_stops_with_failure_and_releases_the_tv(self):
+        self.profiles()
+        code, out, _ = self.run_setup(["q"])
+        self.assertEqual(code, 1)
+        self.assertNotIn(tv_setup.SAMPLE_APP, self.state()["installed"])
+
+    def test_check_keeps_the_read_only_report(self):
+        code, out, asked = self.run_setup([], "--check")
+        self.assertEqual(asked, [])
+        self.assertIn("Nothing was installed", out)
+
+
 if __name__ == "__main__":
     unittest.main()
