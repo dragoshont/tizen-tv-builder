@@ -13,19 +13,23 @@
       <h1>TV Remote</h1>
       <p class="subtle">Find Samsung TVs on your network, connect, and use the remote.</p>
     </div>
-    <div class="scan">
-      <button id="scan" class="primary large" type="button">Scan network for TVs</button>
-      <p id="scan-status" class="subtle" role="status" aria-live="polite">Not scanned yet. Scanning only looks; it changes nothing on any TV.</p>
-    </div>
   </header>
   <div id="error" class="banner" role="alert" hidden></div>
-  <main>
-    <section aria-labelledby="tvs-title">
+  <div class="layout">
+    <aside class="rail" aria-labelledby="tvs-title">
+      <div class="scan">
+        <button id="scan" class="primary large" type="button">Scan network for TVs</button>
+        <p id="scan-status" class="subtle" role="status" aria-live="polite">Not scanned yet. Scanning only looks; it changes nothing on any TV.</p>
+      </div>
       <h2 id="tvs-title" class="section-title">Your TVs</h2>
-      <div id="tvs" class="devices"></div>
+      <ul id="tv-list" class="tv-list" aria-label="Your TVs"></ul>
       <p id="empty" class="empty-state" hidden>No TVs yet. Turn on Developer Mode on the TV, then choose <strong>Scan network for TVs</strong>.</p>
-    </section>
-  </main>
+    </aside>
+    <main aria-label="Selected TV">
+      <div id="tvs" class="devices"></div>
+      <p id="pick" class="empty-state" hidden>Choose a TV on the left to see it here.</p>
+    </main>
+  </div>
   <dialog id="confirm" aria-labelledby="confirm-title">
     <form method="dialog">
       <h2 id="confirm-title">Connect?</h2>

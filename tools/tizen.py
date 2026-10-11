@@ -242,6 +242,7 @@ def parser():
     cli.add_argument("--sdb")
     sub = cli.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor")
+    sub.add_parser("tv", help="Find and test TVs: tv scan | list | check TV | connect TV | portal", add_help=False)
     for name in ("validate", "build", "package"):
         command = sub.add_parser(name)
         command.add_argument("source", type=Path)
@@ -415,10 +416,15 @@ def _cancel(signum, frame):
     raise _Cancelled(signum)
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["tv"]:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import tv
+        return tv.main(argv[1:])
     previous_sigterm = signal.signal(signal.SIGTERM, _cancel)
     try:
-        result = run(parser().parse_args())
+        result = run(parser().parse_args(argv))
         print(json.dumps(result, indent=2))
         if isinstance(result, dict) and result.get("passed") is False:
             return 2

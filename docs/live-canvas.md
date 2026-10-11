@@ -120,46 +120,123 @@ most one emulator; a TV lease is the canonical lock or `/tmp/tizen-tv-<id>.lock`
 
 ## Scan network for TVs
 
-The primary button at the top runs a user-triggered, bounded scan: each local
-private /24 for TCP 26101 (Developer Mode) plus the current `sdb devices` list.
-It writes nothing, never runs `kill-server` and never reboots. During Scan only,
-it reads the TV's unauthenticated `http://<tv>:8001/api/v2/` `device.name` and
-`modelName` with a short timeout to name the card (e.g. "Samsung 7 Series (55) ·
-UE55NU7…"); otherwise "Samsung TV (2018) #1". Rename (✎) stores your name in
-the 0600 profile keyed by the hashed alias, never by address.
+The primary button above the TV list runs a user-triggered, bounded scan. It
+probes each local private /24 (at most 4 networks) concurrently for TCP 26101
+(Developer Mode) and TCP 8001 (Samsung's read-only TV API), sends one SSDP
+search, and reads the current `sdb devices` list. It writes nothing, never runs
+`kill-server` and never reboots. A host answering only 8001 or SSDP is listed
+only if its unauthenticated `http://<tv>:8001/api/v2/` reply says it is a Samsung
+TV, so an unrelated open port is never shown as a TV. This is how TVs with
+Developer Mode off appear. Several observations of one TV (for example 26101 and
+8001 on the same address) merge into one card by the TV's own ID, which is used
+only to derive the hashed alias and is never shown. The card is named from
+`device.name` and `modelName` (e.g. "Samsung 7 Series (55) · UE55NU7…"),
+otherwise "Samsung TV (2018) #1". Rename (✎) stores your name in the 0600 profile
+keyed by the hashed alias, never by address.
 
-Each TV card shows Connected, Not connected or Busy (another session holds its
-lock; shown read-only). Connect asks once, then runs `sdb connect` and Identify
-under that TV's own lease `/tmp/tizen-tv-<alias>.lock`, so it never preempts the
-canonical lock. If the canonical lock is present you must type the alias. When
-Connect fails the card explains why and offers Retry: Developer Mode steps (Apps
-→ 1 2 3 4 5 → Developer mode On, Host PC IP = this computer's address shown on
-the card, restart TV), or "Connected, install blocked: needs certificate update"
-when the TV's DUID is not in `certificate_duids`. Install and run require typing
-the alias and a matching DUID. Addresses, DUIDs and lock paths appear only under
-Details, redacted; they are never shown on the card or written to receipts.
-The remote and screen view work for configured sources; for scanned TVs the
-remote stays off with an inline reason until an app is opened for inspection.
-Each card shows one plain status pill (Ready to connect, Connecting…, Connected,
-Needs setup, In use, Not reachable) and a one-line sentence such as
-"Connected · Tizen 4.0 · ready to install".
+Discovery limits: TVs that are off or in deep standby, on another subnet/VLAN or
+guest network, or that block both ports and SSDP do not appear. At most 16 TVs
+are listed. This discovery path is host-tested with mocks only and is
+**unverified** on real TVs.
 
-### Same features from the terminal: `tv`
+### Developer Mode labels
+
+Each card and `tv scan`/`tv check` show one developer-readiness label with a next
+action. It is separate from Connected / Not connected / In use, and comes from
+observed evidence only:
+
+| Evidence | Label |
+|---|---|
+| Developer connection accepted (this session or sdb lists it) | Dev mode enabled |
+| Port 26101 open, not tried yet | Dev mode reachable · not checked (Connect to check) |
+| Port 26101 open but the TV refused this computer | Needs to be configured (Host PC IP, restart TV) |
+| The TV API reports Developer Mode off and port 26101 is closed | Dev mode not enabled |
+| The TV API answers, does not report the mode, and port 26101 is closed | Dev mode port closed (off or blocked; not proof) |
+| Nothing answered | Not reachable (unknown, never "not enabled") |
+
+An open port alone is never "Dev mode enabled". Certificate/install readiness is a
+separate line that appears only after Identify.
+
+### TV details (shared by portal and CLI)
+
+Scan builds one metadata record per TV, used by both the portal and the CLI:
+manufacturer, friendly name, full model, model family, **model year** with its
+provenance (reported by the TV, or inferred from the model code), OS name and
+version, a platform baseline, and resolution, The Frame and firmware only when the
+TV reports them. Model year is not a manufacture date; the manufacture date stays
+unknown. The OS version is shown only when it was observed over the developer
+connection (Identify); otherwise it reads "Tizen · version unavailable". The
+baseline ("2019 models shipped with Tizen 5.0") comes from Samsung's
+[TV Model Groups](https://developer.samsung.com/smarttv/develop/specifications/tv-model-groups.html)
+table and is never shown as the TV's version, because regional exceptions and
+upgrades exist (for example 2017 ENTRY_CN1 ran Tizen 2.4). Model codes are parsed
+with anchored family patterns (LED `UE43RU7092` → 2019, QLED, Neo QLED, OLED, The
+Frame/Serif/Sero); unknown or ambiguous codes give "Model year unknown".
+
+Each TV card shows one of four states. **Connected** means both a developer
+link and a working app preview (a capture with at least one picture); nothing
+else earns that label, and the page fails closed if the helper reports Connected
+without a usable picture. **Developer Mode ready** means the developer link works
+but no preview is attached ("Preview not connected"). **Not connected** and
+**Busy** (another session holds its lock; read-only) cover the rest.
+
+Connect asks once ("Connect to Developer Mode and read TV information. No app is
+launched or keys sent."), then runs `sdb connect` and Identify under that TV's
+own lease `/tmp/tizen-tv-<alias>.lock`, so it never preempts the canonical lock.
+If the canonical lock is present you must type the alias. When Connect fails the
+card explains why and offers Retry.
+
+From Developer Mode ready, **Open app for preview** takes an app ID and always
+asks first, because it restarts that app on the TV in debug mode (`tv preview`
+is never silent). The portal forwards the app's inspector to loopback, attaches,
+captures, and only then shows Connected. The picture is the app's own drawing
+(renderer paint layers), not the whole TV screen, other apps, AVPlay video, HDR
+or audio. Arrows and Back reach the app; OK is off because scanned apps have no
+audited safe buttons. Disconnect ends the preview and removes only the forward
+this portal created. Certificate, package and install controls live under
+Advanced; install needs the alias typed and a matching DUID. Addresses, DUIDs and
+lock paths appear only under Details, redacted.
+
+The left list shows each TV compactly (name, model · year, status). Selecting a
+row shows that TV on the right without contacting it; the TV has one Connect
+button. Its card shows model · model year · OS, the Dev mode label with the next
+action, and Details with provenance.
+
+### Same features from the terminal: `tizen.py tv`
+
+No setup is needed. On first use the kit creates an empty private profile at
+`~/.tizen-tv-builder/profile.json` (folder 0700, file 0600, `{"sources": []}`, no
+credentials); set `TIZEN_TV_PROFILE` or pass `--profile` to use another one.
 
 ```sh
-python3 tools/tv.py scan                       # or: status [--json] (same state as the portal)
-python3 tools/tv.py --profile P rename tv-abc123 "Den TV"
-python3 tools/tv.py connect tv-abc123 --yes    # connect, identify, then disconnect
-python3 tools/tv.py --profile P key SOURCE down back --yes
-python3 tools/tv.py --profile P screenshot SOURCE --out ~/private-shots --yes
-python3 tools/tv.py --profile P portal         # prints the URL to open
+python3 tools/tizen.py tv scan                # find Samsung TVs; shows model, model year, OS, Dev mode label
+python3 tools/tizen.py tv list                # last scan again, without contacting any TV
+python3 tools/tizen.py tv check tv-abc123     # is Developer Mode really working?
+python3 tools/tizen.py tv connect tv-abc123   # connect, identify, then disconnect
+python3 tools/tizen.py tv rename tv-abc123 "Den TV"
+python3 tools/tizen.py tv portal              # prints http://127.0.0.1:47811/ (or a free port)
 ```
+
+`check` reports each stage separately and only says "Developer Mode ready" when
+all of them pass: Developer Mode port open (a TCP answer only), developer
+connection accepted by the TV (`sdb connect` listed as a device), and identity
+read (Tizen version; the DUID is only reported as present, never shown). An open
+port with a refused connection is "Not ready" with the Host PC IP fix. Busy TVs
+are not touched. `tv-abc123` is the alias printed by `scan`; aliases stay stable
+between runs, and `list` keeps only names and status from the last scan
+(`last-scan.json`, 0600), never addresses or identities.
+
+`portal` starts the same page the canvas shows, on loopback only, and does not
+scan or contact a TV until you choose Scan. Further commands for configured
+inspector targets: `key SOURCE down back --yes` and
+`screenshot SOURCE --out ~/private-shots --yes`. `python3 tools/tv.py ...` is the
+same CLI.
 
 The CLI calls the same Fleet/Source code as the portal, accepts aliases only (never
 raw addresses), keeps the key allowlist and the OK safe-target gate, writes
 screenshots 0600 outside this repository only, and releases every connection,
-lease and forward before it exits. Use `py tools\tv.py ...` on Windows; private
-profiles (rename, key, screenshot, portal) require POSIX permissions.
+lease and forward before it exits. Use `py tools\tizen.py tv ...` on Windows; the
+private profile (rename, key, screenshot, portal) requires POSIX permissions.
 Scan, naming and guidance are host-tested with a mocked SDB only; real 2018 TV
 wording, identify output and the 8001 fields are **unverified**.
 

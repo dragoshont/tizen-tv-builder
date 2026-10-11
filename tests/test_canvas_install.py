@@ -17,8 +17,8 @@ class CanvasInstallTests(unittest.TestCase):
             result = installer.install(destination)
             self.assertEqual(result["installed"], "tizen-live")
             for name in ("extension.mjs", "index.html", "ui.js", "ui.css", "controls.mjs",
-                         "backend/live_tv.py", "backend/tizen.py", "backend/tv_fleet.py", "backend/flows.py",
-                         "backend/network_tv.py", "backend/workbench.py", "backend/recording.py",
+                         "backend/live_tv.py", "backend/tizen.py", "backend/tv.py", "backend/tv_fleet.py", "backend/flows.py",
+                         "backend/network_tv.py", "backend/samsung_models.py", "backend/workbench.py", "backend/recording.py",
                          "backend/appkit.py", "docs/budgets.json", "plugin.json"):
                 self.assertTrue((destination / name).is_file(), name)
             # Scan must import from the installed copy alone, without this checkout on sys.path.

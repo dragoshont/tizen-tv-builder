@@ -41,7 +41,7 @@ class TvCliTests(unittest.TestCase):
     def fleet(self, certificate_duids=None, names=None, save_names=None):
         return tv_fleet.Fleet(
             sdb_path=str(self.tool), runner=self.sdb, interfaces=lambda: ["10.255.255.10"],
-            sweep=lambda address, port, timeout: {LAN_A},
+            sweep=lambda address, port, timeout: {LAN_A}, ssdp=lambda: set(),
             info=lambda host: {"name": "[TV] Samsung 7 Series (55)", "model": "UE55NU7400", "year": "2018",
                                "developer_mode": "1", "uid": "uuid:fixture"},
             key_path=self.root / "alias.key", lease_root=self.root, canonical=self.root / "canonical.lock",
@@ -49,7 +49,8 @@ class TvCliTests(unittest.TestCase):
 
     def run_cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()
-        code = tv.main(list(argv), fleet_factory=self.fleet, cdp_factory=FakeCDP, stdout=out, stderr=err)
+        code = tv.main(list(argv), fleet_factory=self.fleet, cdp_factory=FakeCDP, stdout=out, stderr=err,
+                       state_dir=self.root / "state")
         return code, out.getvalue(), err.getvalue()
 
     def alias(self):
@@ -78,15 +79,12 @@ class TvCliTests(unittest.TestCase):
         self.assertEqual(state["tvs"][0]["label"], "Ready to connect")
         self.assert_private(out)
 
-    def test_connect_requires_yes_then_identifies_and_disconnects_owned(self):
+    def test_connect_identifies_then_disconnects_owned(self):
         alias = self.alias()
-        code, _, err = self.run_cli("--profile", str(self.profile), "connect", alias)
-        self.assertEqual(code, 2)
-        self.assertIn("--yes", err)
-        self.assertEqual(self.sdb.mutations(), [])
-        code, out, err = self.run_cli("--profile", str(self.profile), "connect", alias, "--yes")
+        code, out, err = self.run_cli("--profile", str(self.profile), "connect", alias)
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("Connected · Tizen 4.0 · ready to install", out)
+        self.assertIn("Preview not connected · Open an app for preview", out)
+        self.assertNotIn("Connected ·", out)
         self.assertIn("Disconnected", out)
         self.assertEqual([c[0] for c in self.sdb.mutations()], ["connect", "disconnect"])
         self.assertEqual(list(self.root.glob("tizen-tv-*.lock")), [])
@@ -118,7 +116,11 @@ class TvCliTests(unittest.TestCase):
         self.assertEqual(oct(self.profile.stat().st_mode & 0o777), "0o600")
         code, out, _ = self.run_cli("--profile", str(self.profile), "scan")
         self.assertIn("Den TV", out)
-        self.assertEqual(self.run_cli("rename", alias, "Den")[0], 2)  # Rename needs a profile.
+        # Without --profile, rename saves to the private default profile it creates.
+        self.assertEqual(self.run_cli("rename", alias, "Den")[0], 0)
+        default = self.root / "state" / "profile.json"
+        self.assertEqual(json.loads(default.read_text())["tv_names"], {alias: "Den"})
+        self.assertIn("Den", self.run_cli("list")[1])
 
     def test_key_sends_allowlisted_keys_then_disconnects(self):
         self.assertEqual(self.run_cli("--profile", str(self.profile), "key", "sample", "down")[0], 2)
@@ -150,10 +152,112 @@ class TvCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertFalse((ROOT / "shots").exists())
 
+    def test_default_profile_is_created_private_and_empty_without_credentials(self):
+        state = self.root / "state"
+        path = tv.default_profile(state, create=True)
+        self.assertEqual(path, state / "profile.json")
+        self.assertEqual(json.loads(path.read_text()), {"sources": []})
+        self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
+        self.assertEqual(oct(state.stat().st_mode & 0o777), "0o700")
+        self.assertEqual(tv.default_profile(state, create=True), path)  # Reused, not rewritten.
+        self.assertIsNone(tv.default_profile(self.root / "absent", create=False))
+        os.environ["TIZEN_TV_PROFILE"] = str(self.profile)
+        try:
+            self.assertEqual(tv.default_profile(state, create=True), self.profile)
+        finally:
+            del os.environ["TIZEN_TV_PROFILE"]
+
+    def test_scan_saves_private_list_without_addresses_and_list_never_scans(self):
+        code, before, _ = self.run_cli("list")
+        self.assertEqual(code, 0)
+        self.assertIn("tv scan", before)
+        alias = self.alias()
+        cache = self.root / "state" / "last-scan.json"
+        self.assertEqual(oct(cache.stat().st_mode & 0o777), "0o600")
+        self.assert_private(cache.read_text())
+        calls = len(self.sdb.calls)
+        out, err = io.StringIO(), io.StringIO()
+        def no_scan(**_):
+            raise AssertionError("list must not scan")
+        code = tv.main(["list"], fleet_factory=no_scan, stdout=out, stderr=err, state_dir=self.root / "state")
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        self.assertIn(alias, out.getvalue())
+        self.assertIn("Ready to connect", out.getvalue())
+        self.assertEqual(len(self.sdb.calls), calls)
+        self.assert_private(out.getvalue())
+
+    def test_check_separates_open_port_from_working_developer_connection(self):
+        alias = self.alias()
+        code, out, err = self.run_cli("check", alias)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Developer Mode port: open", out)
+        self.assertIn("Developer connection: accepted", out)
+        self.assertIn("Identity: Tizen 4.0, DUID present (hidden)", out)
+        self.assertIn("Developer Mode ready", out)
+        self.assertIn("Dev mode enabled", out)
+        self.assertIn("About: UE55NU7400 · Model year 2018 (reported) · Tizen · version unavailable", out)
+        self.assertEqual([c[0] for c in self.sdb.mutations()], ["connect", "disconnect"])
+        self.assert_private(out)
+
+    def test_check_reports_port_open_but_connection_refused_as_not_ready(self):
+        self.sdb.accept = False
+        alias = self.alias()
+        code, out, _ = self.run_cli("check", alias)
+        self.assertEqual(code, 1)
+        self.assertIn("Developer Mode port: open", out)
+        self.assertIn("Developer connection: refused", out)
+        self.assertIn("Needs to be configured: The Developer Mode port is open, but the TV refused this computer", out)
+        self.assertIn("Next: On the TV set Host PC IP to this computer", out)
+        self.assertIn("Not ready", out)
+        self.assertNotIn("Developer Mode ready", out)
+        self.assertNotIn(LAN_A, out)
+
+    def test_scan_and_list_share_portal_metadata_and_dev_labels(self):
+        code, out, _ = self.run_cli("scan")
+        self.assertEqual(code, 0)
+        self.assertIn("Dev mode reachable · not checked", out)
+        self.assertNotIn("Needs to be configured", out)
+        self.assertIn("UE55NU7400 · Model year 2018 (reported) · Tizen · version unavailable", out)
+        self.assertIn("Next: Connect to check", out)
+        code, listed, _ = self.run_cli("list")
+        self.assertEqual(code, 0)
+        self.assertIn("Model year 2018 (reported)", listed)
+        self.assertIn("Dev mode reachable · not checked", listed)
+        self.assert_private(out + listed)
+
+    def test_portal_uses_default_profile_and_prints_plain_url(self):
+        seen = {}
+        def fake_serve(profile, owner_stdin=False, port=0, announce=None):
+            seen["profile"] = profile
+            seen["port"] = port
+            announce("http://127.0.0.1:47811/")
+        original = tv.live_tv.serve
+        tv.live_tv.serve = fake_serve
+        try:
+            code, out, err = self.run_cli("portal")
+        finally:
+            tv.live_tv.serve = original
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(seen["profile"], self.root / "state" / "profile.json")
+        self.assertEqual(seen["port"], tv.PORTAL_PORT)
+        self.assertIn("Open http://127.0.0.1:47811/", out)
+        self.assertNotIn("Scanning", out)  # Starting the page never contacts TVs.
+
+    def test_kit_entrypoint_delegates_tv_commands(self):
+        import subprocess
+        result = subprocess.run([sys.executable, str(ROOT / "tools/tizen.py"), "tv", "--help"],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for command in ("scan", "list", "check", "connect", "portal"):
+            self.assertIn(command, result.stdout)
+        result = subprocess.run([sys.executable, str(ROOT / "tools/tizen.py"), "--help"],
+                                capture_output=True, text=True, timeout=30)
+        self.assertIn("tv", result.stdout)
+
     def test_help_lists_portal_capabilities(self):
         parser = tv.parser()
         text = parser.format_help()
-        for command in ("scan", "status", "rename", "connect", "key", "screenshot", "portal"):
+        for command in ("scan", "list", "check", "status", "rename", "connect", "key", "screenshot", "portal"):
             self.assertIn(command, text)
 
 

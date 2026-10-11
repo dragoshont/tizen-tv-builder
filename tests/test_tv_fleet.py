@@ -61,14 +61,14 @@ class FleetTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def fleet(self, hits=(LAN_A,), certificate=True, **kwargs):
+    def fleet(self, hits=(LAN_A,), certificate=True, api_hits=None, **kwargs):
         def sweep(address, port, timeout):
-            self.assertEqual(port, 26101)
-            return set(hits)
+            self.assertIn(port, (26101, 8001))
+            return set(hits if port == 26101 else (hits if api_hits is None else api_hits))
         args = dict(sdb_path=str(self.tool), runner=self.sdb, interfaces=lambda: ["10.255.255.10"], sweep=sweep,
                     info=lambda host: {"name": "[TV] Samsung 7 Series (55)", "model": "UE55NU7400",
                                        "year": "2018", "developer_mode": "1", "uid": "uuid:" + host},
-                    key_path=self.root / "alias.key", lease_root=self.root, canonical=self.canonical,
+                    ssdp=lambda: set(), key_path=self.root / "alias.key", lease_root=self.root, canonical=self.canonical,
                     certificate_duids=str(self.certificate) if certificate else None)
         args.update(kwargs)
         return tv_fleet.Fleet(**args)
@@ -93,8 +93,9 @@ class FleetTests(unittest.TestCase):
         for alias in tvs:
             self.assertRegex(alias, r"^tv-[0-9a-f]{6}$")
         statuses = sorted(tv["status"] for tv in tvs.values())
-        self.assertEqual(statuses, ["busy", "connected", "not-connected"])
-        lan = next(tv for tv in tvs.values() if tv["status"] == "not-connected")
+        # An sdb link this portal does not hold is not "Connected": that needs a working preview.
+        self.assertEqual(statuses, ["busy", "not-connected", "not-connected"])
+        lan = next(tv for tv in tvs.values() if tv["status"] == "not-connected" and tv["reachable"])
         self.assertTrue(lan["reachable"])
         self.assertEqual(lan["model"], {"value": "UE55NU7400", "provenance": "observed"})
         self.assertEqual(lan["name"], "Samsung 7 Series (55) · UE55NU7400")
@@ -145,7 +146,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "confirm")
         self.assertEqual(self.sdb.mutations(), [])
         fleet.connect(alias, {"confirm": alias})
-        self.assertEqual(self.only(fleet)["status"], "connected")
+        self.assertEqual(self.only(fleet)["status"], "developer")
         self.assertTrue(self.canonical.is_dir(), "The canonical lock is never touched")
         fleet.close()
 
@@ -154,7 +155,7 @@ class FleetTests(unittest.TestCase):
         alias = fleet.detect()["tvs"][0]["alias"]
         fleet.connect(alias, {"confirm": ""})
         tv = self.only(fleet)
-        self.assertEqual((tv["status"], tv["owned"]), ("connected", True))
+        self.assertEqual((tv["status"], tv["owned"]), ("developer", True))
         lease = self.root / f"tizen-tv-{alias}.lock"
         self.assertTrue(lease.is_dir())
         self.assertFalse(self.canonical.exists())
@@ -207,6 +208,22 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(tv["identity"], {"duid_present": True, "tizen": "4.0", "profile": "tv", "tier": "mid"})
         self.assertEqual(tv["certificate"], "match")
         self.assertNotIn("fingerprint", json.dumps(fleet.state()))
+        fleet.close()
+
+    def test_observed_os_version_survives_disconnect_and_rescan(self):
+        fleet = self.fleet()
+        alias = fleet.detect()["tvs"][0]["alias"]
+        fleet.connect(alias, {"confirm": ""})
+        fleet.identify(alias, {})
+        self.assertEqual(self.only(fleet)["metadata"]["os"]["version"], "4.0")
+        fleet.disconnect(alias, {})
+        tv = self.only(fleet)
+        self.assertIsNone(tv["identity"])
+        self.assertEqual(tv["metadata"]["os"]["version"], "4.0")
+        self.assertIn("observed", tv["metadata"]["os"]["provenance"])
+        fleet.detect()
+        self.assertEqual(self.only(fleet)["metadata"]["os"]["version"], "4.0")
+        self.assertPrivate(fleet.state())
         fleet.close()
 
     def test_certificate_missing_or_unconfigured_blocks_run(self):
@@ -311,7 +328,8 @@ class FleetTests(unittest.TestCase):
     def test_guidance_for_closed_port_wrong_host_ip_and_certificate(self):
         self.sdb.accept = False
         self.sdb.devices = {f"{LAN_B}:26101": "offline"}
-        fleet = self.fleet(hits=(LAN_A,))
+        fleet = self.fleet(hits=(LAN_A,), info=lambda host: None if host == LAN_B else
+                           {"name": "[TV] Samsung", "model": "UE55NU7400", "uid": "uuid:" + host})
         fleet.detect()
         tvs = {tv["reachable"]: tv["alias"] for tv in fleet.state()["tvs"]}
         for reachable, kind in ((True, "host-ip"), (False, "developer-mode")):
@@ -333,7 +351,8 @@ class FleetTests(unittest.TestCase):
     def test_plain_status_headline_for_every_card_state(self):
         self.sdb.accept = False
         self.sdb.devices = {f"{LAN_B}:26101": "offline"}
-        fleet = self.fleet(hits=(LAN_A,))
+        fleet = self.fleet(hits=(LAN_A,), info=lambda host: None if host == LAN_B else
+                           {"name": "[TV] Samsung", "model": "UE55NU7400", "uid": "uuid:" + host})
         fleet.detect()
         tvs = {tv["reachable"]: tv["alias"] for tv in fleet.state()["tvs"]}
         def card(alias):
@@ -347,15 +366,17 @@ class FleetTests(unittest.TestCase):
         self.assertIn("Host PC IP", tv["headline"])
         self.sdb.accept = True
         fleet.connect(tvs[True], {"confirm": ""})
-        self.assertEqual((card(tvs[True])["label"], card(tvs[True])["tone"]), ("Connected", "ok"))
-        self.assertEqual(card(tvs[True])["headline"], "Connected. Identify it to check install readiness")
+        # A developer link alone is never "Connected"; that label needs a working app preview.
+        dev = card(tvs[True])
+        self.assertEqual((dev["label"], dev["tone"], dev["status"]), ("Developer Mode ready", "idle", "developer"))
+        self.assertEqual(dev["headline"], "Preview not connected · Open an app for preview")
         fleet.identify(tvs[True], {})
-        tv = card(tvs[True])
-        self.assertEqual(tv["headline"], "Connected · Tizen 4.0 · ready to install")
         self.certificate.write_text("<profile><duid>OTHERDEVICE0002</duid></profile>")
         fleet.identify(tvs[True], {})
-        self.assertEqual(card(tvs[True])["label"], "Needs setup")
-        self.assertEqual(card(tvs[True])["headline"], "Connected · install blocked until the certificate includes this TV")
+        # The certificate problem is the install line, not the status.
+        self.assertEqual(card(tvs[True])["label"], "Developer Mode ready")
+        self.assertEqual(card(tvs[True])["install"], "Install: blocked until the certificate includes this TV")
+        self.assertEqual(card(tvs[True])["dev_mode"]["label"], "Dev mode enabled")
         fleet.close()
         self.canonical.write_text("{}")
         busy = self.fleet(hits=())
@@ -376,7 +397,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(state["tvs"][0]["pending"], "connect")
         fleet.wait()
         tv = self.only(fleet)
-        self.assertEqual((tv["status"], tv["pending"], tv["certificate"]), ("connected", None, "match"))
+        self.assertEqual((tv["status"], tv["pending"], tv["certificate"]), ("developer", None, "match"))
         with self.assertRaises(live.LiveError):
             fleet.submit("connect", "tv-000000", {"confirm": ""})
         fleet.close()
@@ -395,6 +416,196 @@ class FleetTests(unittest.TestCase):
     def test_emulator_is_not_listed_as_a_tv(self):
         self.sdb.devices = {"emulator-26101": "device"}
         self.assertEqual([tv["status"] for tv in self.fleet().detect()["tvs"]], ["not-connected"])
+
+
+
+class PreviewTests(FleetTests):
+    """Connected means developer link plus a captured app preview; a restart needs consent."""
+
+    def preview_fleet(self, capture_frames=True):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("live_fixture", Path(__file__).with_name("test_live_tv.py"))
+        fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
+        test = self
+        class Session:
+            made = []
+            def __init__(self, serial, app, legacy):
+                self.app, self.forward, self.client, self.launched, self.closed = app, None, None, 0, 0
+                Session.made.append(self)
+            def launch(self):
+                self.launched += 1
+                self.forward = (45555, 9222)
+            def close(self):
+                self.closed += 1
+                self.forward = None
+        class CDP(fixture.FakeCDP):
+            def layer_list(self):
+                return super().layer_list() if capture_frames else []
+        fleet = self.fleet(session=lambda serial, app, legacy: Session(serial, app, legacy), cdp=CDP,
+                           discover=lambda port: (test.assertEqual(port, 45555), ["page-1"])[1])
+        alias = fleet.detect()["tvs"][0]["alias"]
+        fleet.connect(alias, {"confirm": ""})
+        return fleet, alias, Session
+
+    def test_restart_needs_consent_and_connected_needs_capture(self):
+        fleet, alias, Session = self.preview_fleet()
+        try:
+            self.assertEqual(self.only(fleet)["status"], "developer")
+            with self.assertRaises(live.LiveError) as caught:
+                fleet.preview(alias, {"app": "AbCdEfGhIj.App", "restart": False})
+            self.assertEqual(caught.exception.code, "confirm")
+            self.assertEqual(Session.made, [], "No launch without consent")
+            fleet.preview(alias, {"app": "AbCdEfGhIj.App", "restart": True})
+            tv = self.only(fleet)
+            self.assertEqual((tv["status"], tv["label"]), ("connected", "Connected"))
+            self.assertIn("not the whole TV", tv["headline"])
+            self.assertTrue(tv["preview"]["ready"] and tv["preview"]["frames"])
+            self.assertEqual(tv["preview"]["activation_allowed"], False)
+            self.assertNotIn("45555", json.dumps(tv), "Forward details stay private")
+            # Re-opening the same app re-attaches without another restart.
+            fleet.preview(alias, {"app": "AbCdEfGhIj.App", "restart": False})
+            self.assertEqual((len(Session.made), Session.made[0].launched), (1, 1))
+            fleet.disconnect(alias, {})
+            self.assertEqual(Session.made[0].closed, 1)
+            self.assertIsNone(self.only(fleet)["preview"])
+            self.assertEqual(self.only(fleet)["status"], "not-connected")
+        finally:
+            fleet.close()
+
+    def test_failed_capture_stays_developer_and_cleans_up(self):
+        fleet, alias, Session = self.preview_fleet(capture_frames=False)
+        try:
+            with self.assertRaises(live.LiveError) as caught:
+                fleet.preview(alias, {"app": "AbCdEfGhIj.App", "restart": True})
+            self.assertEqual(caught.exception.code, "preview")
+            tv = self.only(fleet)
+            self.assertEqual((tv["status"], tv["preview"]), ("developer", None))
+            self.assertEqual(Session.made[0].closed, 1)
+        finally:
+            fleet.close()
+
+    def test_preview_requires_connection(self):
+        fleet = self.fleet()
+        alias = fleet.detect()["tvs"][0]["alias"]
+        with self.assertRaises(live.LiveError) as caught:
+            fleet.preview(alias, {"app": "AbCdEfGhIj.App", "restart": True})
+        self.assertEqual(caught.exception.code, "connect")
+
+
+class DiscoveryAndReadinessTests(FleetTests):
+    """Five physical TVs: three with Developer Mode, two seen only through Samsung's read-only API."""
+
+    DEV = ("10.255.255.21", "10.255.255.22", "10.255.255.23")
+    API = ("10.255.255.31", "10.255.255.32")
+    OTHER = "10.255.255.40"  # Something else with port 8001 open: not a Samsung TV.
+
+    def lab(self, **kwargs):
+        def info(host):
+            if host == self.OTHER:
+                raise ValueError("not Samsung")
+            return {"name": "[TV] TV " + host[-2:], "model": "UE43RU7092UXXH", "developer_mode": "0",
+                    "os": "Tizen", "platform_year": "unknown", "uid": "uuid:" + host}
+        return self.fleet(hits=self.DEV, api_hits=self.DEV + self.API + (self.OTHER,), info=info, **kwargs)
+
+    def by_host(self, fleet):
+        return {t["name"].split(" · ")[0][-2:]: t for t in fleet.state()["tvs"]}
+
+    def test_api_only_tvs_are_listed_and_non_samsung_hosts_are_not(self):
+        fleet = self.lab()
+        result = fleet.detect()
+        self.assertPrivate(result)
+        self.assertEqual(len(result["tvs"]), 5)
+        self.assertEqual(result["scan"]["found"], 5)
+        tvs = self.by_host(fleet)
+        self.assertEqual(sorted(tvs), ["21", "22", "23", "31", "32"])
+        for name in ("21", "22", "23"):
+            self.assertEqual(tvs[name]["dev_mode"]["label"], "Dev mode reachable · not checked")
+            self.assertIn("Connect", tvs[name]["dev_mode"]["next"])
+        for name in ("31", "32"):
+            self.assertEqual(tvs[name]["dev_mode"]["label"], "Dev mode not enabled")
+            self.assertIn("reports Developer Mode off", tvs[name]["dev_mode"]["explanation"])
+            self.assertIn("1 2 3 4 5", tvs[name]["dev_mode"]["next"])
+            self.assertEqual(tvs[name]["label"], "Not connected")
+        fleet.close()
+
+    def test_duplicate_observations_of_one_tv_merge(self):
+        fleet = self.fleet(hits=(LAN_A,), api_hits=(LAN_A, LAN_B),
+                           info=lambda host: {"name": "[TV] Lounge", "model": "UE55NU7400", "uid": "uuid:same"})
+        fleet.detect()
+        tv = self.only(fleet)
+        self.assertTrue(tv["reachable"])
+        self.assertEqual(tv["dev_mode"]["state"], "reachable")
+        fleet.close()
+
+    def test_dev_mode_labels_follow_observed_evidence(self):
+        self.sdb.accept = False
+        fleet = self.lab()
+        fleet.detect()
+        alias = self.by_host(fleet)["21"]["alias"]
+        with self.assertRaises(live.LiveError):
+            fleet.connect(alias, {"confirm": ""})
+        refused = self.by_host(fleet)["21"]["dev_mode"]
+        self.assertEqual(refused["label"], "Needs to be configured")
+        self.assertIn("Host PC IP", refused["next"])
+        self.sdb.accept = True
+        fleet.connect(alias, {"confirm": ""})
+        enabled = self.by_host(fleet)["21"]
+        self.assertEqual(enabled["dev_mode"]["label"], "Dev mode enabled")
+        self.assertIsNone(enabled["install"])  # Certificate readiness is separate and unknown until Identify.
+        fleet.close()
+
+    def test_closed_port_without_reported_mode_is_not_called_off(self):
+        fleet = self.fleet(hits=(), api_hits=(LAN_A,),
+                           info=lambda host: {"name": "[TV] Den", "model": "UE55NU7400", "developer_mode": "unknown"})
+        dev = fleet.detect()["tvs"][0]["dev_mode"]
+        self.assertEqual((dev["state"], dev["label"]), ("closed", "Dev mode port closed"))
+
+    def test_api_reporting_developer_mode_on_with_closed_port_needs_configuration(self):
+        fleet = self.fleet(hits=(), api_hits=(LAN_A,),
+                           info=lambda host: {"name": "[TV] Den", "model": "UE55NU7400", "developer_mode": "on"})
+        fleet.detect()
+        dev = self.only(fleet)["dev_mode"]
+        self.assertEqual(dev["label"], "Needs to be configured")
+        self.assertIn("Restart", dev["next"])
+        fleet.close()
+
+    def test_offline_tv_stays_not_reachable_not_dev_mode_off(self):
+        self.sdb.devices = {f"{LAN_B}:26101": "offline"}
+        fleet = self.fleet(hits=(), api_hits=(), info=lambda host: None)
+        fleet.detect()
+        dev = self.only(fleet)["dev_mode"]
+        self.assertEqual((dev["state"], dev["label"]), ("unknown", "Not reachable"))
+        fleet.close()
+
+    def test_scan_metadata_schema_separates_reported_inferred_and_observed(self):
+        fleet = self.lab()
+        fleet.detect()
+        meta = self.by_host(fleet)["31"]["metadata"]
+        self.assertEqual(meta["model"], "UE43RU7092UXXH")
+        self.assertEqual(meta["model_year"], {"value": 2019, "provenance": "inferred from the model code"})
+        self.assertIsNone(meta["manufacture_date"])
+        self.assertEqual(meta["os"]["text"], "Tizen · version unavailable")
+        self.assertIsNone(meta["os"]["version"])
+        self.assertIn("not this TV's observed version", meta["baseline"])
+        self.assertIsNone(meta["firmware"])
+        fleet.close()
+        reported = self.fleet(info=lambda host: {"name": "[TV] A", "model": "XYZ123", "platform_year": "2018",
+                                                 "os": "Tizen", "resolution": "3840x2160"})
+        reported.detect()
+        meta = self.only(reported)["metadata"]
+        self.assertEqual(meta["model_year"], {"value": 2018, "provenance": "reported by the TV"})
+        self.assertEqual(meta["resolution"], "3840x2160")
+        self.sdb.accept = True
+        alias = self.only(reported)["alias"]
+        reported.connect(alias, {"confirm": ""})
+        reported.identify(alias, {})
+        os_info = self.only(reported)["metadata"]["os"]
+        self.assertEqual((os_info["text"], os_info["provenance"]), ("Tizen 4.0", "observed over the developer connection"))
+        reported.close()
+
+
+for _name in [n for n in vars(FleetTests) if n.startswith("test_")]:
+    setattr(DiscoveryAndReadinessTests, _name, None)  # Inherit fixtures only, not the base tests.
 
 
 if __name__ == "__main__":

@@ -24,6 +24,18 @@ class NetworkTests(unittest.TestCase):
         self.assertNotIn("PRIVATE", json.dumps(result))
         self.assertEqual(network_tv.metadata({"device": {"developerMode": "0"}}, "192.168.0.10")["developer_mode"], "off")
 
+    def test_api_duid_is_never_used_as_identity_or_certificate_duid(self):
+        # The 8001 "duid" is a SmartThings UUID, not the certificate DUID (that comes only from getduid).
+        result = network_tv.metadata({"id": "uuid:fixture-id", "device": {"duid": "uuid:SMARTTHINGS-FIXTURE",
+                                      "modelName": "UE43RU7092UXXH"}}, "192.168.0.10")
+        self.assertNotIn("SMARTTHINGS-FIXTURE", repr(result))
+        self.assertNotIn("duid", result)
+        self.assertNotIn("uid", result)
+
+    def test_html_entities_in_reported_names_are_decoded_as_text(self):
+        result = network_tv.metadata({"device": {"name": "55&quot; Neo QLED &lt;b&gt;"}}, "192.168.0.10")
+        self.assertEqual(result["name"], '55" Neo QLED <b>')
+
     def test_discovery_uses_sender_address_not_advertised_location(self):
         class UDP:
             def __init__(self, *args):

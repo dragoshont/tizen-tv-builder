@@ -49,8 +49,9 @@ That describes the published **0.1.0** package. The checkout now also contains a
 **unreleased live-canvas candidate**, held for parent/device acceptance. Do not
 replace your installed plugin or publish it yet. See [live canvas setup](docs/live-canvas.md)
 for the standalone adapter, explicit private profile and SDK opening steps.
-It also adds an unreleased `tools/tv.py` CLI (scan, rename, connect, key, screenshot,
-portal) with the same capabilities as the unauthenticated loopback portal.
+It also adds unreleased TV commands with no setup: `python3 tools/tizen.py tv scan`,
+`tv list`, `tv check TV`, `tv connect TV` and `tv portal` (the same features in a
+loopback web page). See [live canvas setup](docs/live-canvas.md#same-features-from-the-terminal-tizenpy-tv).
 
 For a fixed version, download the release instead:
 

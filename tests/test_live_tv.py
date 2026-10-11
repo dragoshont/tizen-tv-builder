@@ -315,16 +315,44 @@ class LiveTests(unittest.TestCase):
         for text in (html, script):
             for jargon in ("CDP", "Active source", "lane", "Before connecting", "Explicit emulator"):
                 self.assertNotIn(jargon, text)
-        self.assertIn("Screen images may show account info; remote keys will be sent.", script)
+        self.assertIn("may include account info", script)
+        # Opening a preview restarts the app, so it always asks first and says what is (not) shown.
+        self.assertIn("This restarts ${appId} on the TV. Only the app's own drawing is shown, not the whole TV", script)
+        self.assertIn("restart: true", script)
+        self.assertIn('"Preview not connected', script)
         self.assertIn("authorized: true, pixels: true, input: true", script)
         self.assertIn('"/api/detect"', script)
-        for op in ("connect", "identify", "disconnect", "rename", "run"):
+        for op in ("connect", "identify", "disconnect", "rename", "run", "preview"):
             self.assertIn(f'tvCommand("{op}"', script)
         self.assertIn('"Remote"', script)
         self.assertIn('"Emulator"', script)
         self.assertIn(":focus-visible", style)
         for text in (html, script, style):
             self.assertNotRegex(text, r"https?://|@import|fonts\.googleapis")
+
+    def test_selected_tv_has_one_connect_and_shows_shared_metadata_and_dev_label(self):
+        canvas = Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live"
+        script = (canvas / "ui.js").read_text()
+        card = script[script.index("function tvCard("):script.index("function updateTv(")]
+        self.assertEqual(card.count('"Connect")'), 1)
+        self.assertNotIn("screenAction", script)
+        for field in ("tv.dev_mode", "tv.install", "tv.metadata", "meta.model_year", "meta.os?.text",
+                      "meta.baseline", '"Model year"', '"Manufacture date"'):
+            self.assertIn(field, script)
+        self.assertIn('class: "row-meta"', script)
+        self.assertNotIn("Developer Mode reachable", script)
+
+    def test_connected_pane_hides_certificate_machinery_and_never_renders_null(self):
+        script = (Path(__file__).resolve().parents[1] / ".github" / "extensions" / "tizen-live" / "ui.js").read_text()
+        update = script[script.index("function updateTv("):script.index("function sourceCard(")]
+        # replaceChildren(null) renders a literal "null" line; children must be filtered first.
+        self.assertIn("].filter(Boolean));", update)
+        self.assertNotIn("tizen.py live", script)
+        card = script[script.index("function tvCard("):script.index("function updateTv(")]
+        main = card[card.index('class: "device-main"'):card.index("screen, remote")]
+        for hidden in ("install", "identify", "certGuide"):
+            self.assertNotIn(hidden, main.replace("details", ""))
+        self.assertIn('"Advanced"), list, install, certGuide', card)
 
     def test_endpoint_and_profile_do_not_allow_network_redirection(self):
         for bad in ("http://localhost:12345", "http://192.0.2.1:12345", "https://127.0.0.1:12345",

@@ -1,6 +1,7 @@
 """Local Samsung TV discovery. Read-only: SSDP plus port-8001 REST info. No pairing or writes."""
 from concurrent.futures import ThreadPoolExecutor
 import http.client
+import html
 import ipaddress
 import json
 import re
@@ -27,7 +28,7 @@ def local_address(value):
 def text(value):
     if not isinstance(value, (str, int)) or isinstance(value, bool):
         return "unknown"
-    value = str(value)
+    value = html.unescape(str(value))
     return value[:80] if value and not any(ord(c) < 32 for c in value) else "unknown"
 
 
@@ -37,9 +38,20 @@ def metadata(data, address):
     device = data["device"]
     # A model string is not evidence of model year. Many sets omit these fields.
     developer = device.get("developerMode")
+    # "model" is Samsung's platform code such as "19_MUSEL_UHD": its leading digits are the
+    # model year the TV itself reports. Resolution and Frame support are reported capabilities.
+    code = device.get("model")
+    platform_year = (2000 + int(code[:2]) if isinstance(code, str) and re.match(r"(1[5-9]|2[0-9])_[A-Z0-9_]{2,40}$", code)
+                     else None)
+    resolution = device.get("resolution")
+    firmware = text(device.get("firmwareVersion"))
     return {"ip": address, "name": text(device.get("name", data.get("name"))),
             "model": text(device.get("modelName")), "year": text(device.get("modelYear")),
-            "os": text(device.get("OS")), "firmware": text(device.get("firmwareVersion")),
+            "platform_year": str(platform_year) if platform_year else "unknown",
+            "manufacturer": "Samsung" if "samsung" in text(device.get("type", data.get("type"))).lower() else "unknown",
+            "resolution": resolution if isinstance(resolution, str) and re.fullmatch(r"\d{3,4}x\d{3,4}", resolution) else "unknown",
+            "frame_tv": "yes" if device.get("FrameTVSupport") in ("true", True) else "unknown",
+            "os": text(device.get("OS")), "firmware": "unknown" if firmware.lower() == "unknown" else firmware,
             "developer_mode": "on" if developer in ("1", 1, True, "true") else
                               "off" if developer in ("0", 0, False, "false") else "unknown"}
 
@@ -102,36 +114,47 @@ def sweep(address, probe=_open, port=8001, timeout=.4, workers=64):
         return {h for h, ok in zip(hosts, pool.map(lambda h: probe(h, port, timeout), hosts)) if ok}
 
 
-def discover(seconds=3, confirmer=confirm, interfaces=interfaces, sweeper=sweep):
+def ssdp_hosts(seconds=1.5, limit=32):
+    """Private hosts answering an SSDP search for TV services. Multicast may be blocked: then empty."""
+    addresses = set()
+    deadline = time.monotonic() + seconds
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+        sent = 0
+        try:
+            udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+            udp.bind(("", 0))
+            for service in SERVICES:
+                request = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+                           'MAN: "ssdp:discover"\r\nMX: 1\r\nST: ' + service + "\r\n\r\n")
+                try:
+                    udp.sendto(request.encode("ascii"), ("239.255.255.250", 1900))
+                    sent += 1
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        while sent and time.monotonic() < deadline and len(addresses) < limit:
+            udp.settimeout(max(.01, deadline - time.monotonic()))
+            try:
+                packet, sender = udp.recvfrom(8192)
+            except (socket.timeout, OSError):
+                break
+            if local_address(sender[0]) and packet.startswith(b"HTTP/1.1 200"):
+                addresses.add(sender[0])
+    return addresses
+
+
+def discover(seconds=3, confirmer=confirm, interfaces=interfaces, sweeper=sweep, searcher=None):
     """SSDP when multicast works, plus a subnet sweep so blocked multicast never hides a TV."""
+    searcher = searcher or (lambda: ssdp_hosts(seconds, limit=12))
     addresses = set()
     local = interfaces()
     with ThreadPoolExecutor(max(1, len(local))) as pool:
         sweeps = [pool.submit(sweeper, address) for address in local]
-        deadline = time.monotonic() + seconds
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
-            sent = 0
-            try:
-                udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-                udp.bind(("", 0))
-                for service in SERVICES:
-                    request = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
-                               'MAN: "ssdp:discover"\r\nMX: 1\r\nST: ' + service + "\r\n\r\n")
-                    try:
-                        udp.sendto(request.encode("ascii"), ("239.255.255.250", 1900))
-                        sent += 1
-                    except OSError:
-                        continue
-            except OSError:
-                pass
-            while sent and time.monotonic() < deadline and len(addresses) < 12:
-                udp.settimeout(max(.01, deadline - time.monotonic()))
-                try:
-                    packet, sender = udp.recvfrom(8192)
-                except (socket.timeout, OSError):
-                    break
-                if local_address(sender[0]) and packet.startswith(b"HTTP/1.1 200"):
-                    addresses.add(sender[0])
+        try:
+            addresses.update(searcher())
+        except OSError:
+            pass
         for job in sweeps:
             try:
                 addresses.update(job.result())

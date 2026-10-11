@@ -20,7 +20,7 @@ def install(destination):
     source = ROOT / ".github/extensions/tizen-live"
     payload = {name: source / name for name in ("extension.mjs", "index.html", "ui.js", "ui.css", "controls.mjs")}
     payload.update({f"backend/{name}": ROOT / "tools" / name for name in (
-        "live_tv.py", "tizen.py", "tv_fleet.py", "flows.py", "network_tv.py", "workbench.py", "recording.py", "appkit.py")})
+        "live_tv.py", "tizen.py", "tv.py", "tv_fleet.py", "flows.py", "network_tv.py", "samsung_models.py", "workbench.py", "recording.py", "appkit.py")})
     # flows.BUDGETS resolves to <destination>/docs/budgets.json from the backend folder.
     payload["docs/budgets.json"] = ROOT / "docs/budgets.json"
     for path in payload.values():

@@ -392,11 +392,12 @@ def png(data):
 
 class Source:
     keymap = KEYS
-    def __init__(self, config, factory=CDP):
+    def __init__(self, config, factory=CDP, lease=None):
         self.config = config
         self.factory = factory
         self.lock = threading.Lock()
-        self.lease = Lease(config["lease_path"])
+        # A fleet preview shares the per-TV lease the fleet already holds.
+        self.lease = lease or Lease(config["lease_path"])
         self.client = None
         self.expires = 0
         self.frames = []
@@ -713,6 +714,11 @@ class App:
         self.persist_lock = threading.Lock()
         self.fleet = fleet
 
+    def source(self, ident):
+        if ident in self.sources:
+            return self.sources[ident]
+        return self.fleet.preview_source(ident) if self.fleet is not None else None
+
     def state(self):
         result = {"sources": [source.summary() for source in self.sources.values()]}
         if self.fleet is not None:
@@ -859,9 +865,9 @@ def handler(app):
                     self.reply(200, app.record_status())
                     return
                 match = re.fullmatch(r"/api/frame/([a-z][a-z0-9-]{0,31})/([0-7])/([a-f0-9]{24})", self.path)
-                if not match or match[1] not in app.sources:
+                source = app.source(match[1]) if match else None
+                if source is None:
                     fail("route", "Unknown route")
-                source = app.sources[match[1]]
                 with source.lock:
                     if source.revision != match[3] or int(match[2]) >= len(source.frames):
                         fail("stale", "Capture no longer exists; refresh")
@@ -899,17 +905,22 @@ def handler(app):
                 if self.path == "/api/detect" and app.fleet is not None:
                     self.reply(200, app.fleet.submit("detect", None, data))
                     return
-                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|run|rename)/(tv-[0-9a-f]{6})", self.path)
+                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|run|rename|preview)/(tv-[0-9a-f]{6})", self.path)
                 if match and app.fleet is not None:
                     self.reply(200, app.fleet.submit(match[1], match[2], data))
                     return
                 match = re.fullmatch(r"/api/(connect|disconnect|capture|key|click|metadata|stream)/([a-z][a-z0-9-]{0,31})", self.path)
-                if not match or match[2] not in app.sources:
+                source = app.source(match[2]) if match else None
+                if source is None:
                     fail("route", "Unknown route")
                 if match[1] == "metadata":
+                    if match[2] not in app.sources:
+                        fail("route", "Unknown route")
                     result = app.save_metadata(match[2], data)
+                elif match[2] not in app.sources and match[1] == "connect":
+                    fail("route", "Use the TV's Open preview action")
                 else:
-                    result = app.sources[match[2]].operate(match[1], data)
+                    result = source.operate(match[1], data)
                 self.reply(200, result)
             except (LiveError, OSError, ValueError, TypeError) as error:
                 self.report(error)
@@ -929,18 +940,31 @@ def handler(app):
     return Handler
 
 
-def serve(profile, owner_stdin=False):
+def bind(handler_class, port=0):
+    if port:
+        try:
+            return BoundedServer(("127.0.0.1", port), handler_class)
+        except OSError:
+            pass  # Preferred port taken (often an earlier portal); use any free loopback port.
+    return BoundedServer(("127.0.0.1", 0), handler_class)
+
+
+def serve(profile, owner_stdin=False, port=0, announce=None):
     path, config = read_profile(profile)
     import tv_fleet
     app = App(path, config)
     app.fleet = tv_fleet.Fleet(certificate_duids=config.get("certificate_duids"),
                                names=config.get("tv_names", {}), save_names=app.save_names)
-    server = BoundedServer(("127.0.0.1", 0), handler(app))
+    server = bind(handler(app), port)
     server.daemon_threads = True
     server.timeout = 0.2
     server.request_queue_size = 8
     # Loopback-only and unauthenticated by design; see docs/live-canvas.md for the local-user risk.
-    print(json.dumps({"url": f"http://127.0.0.1:{server.server_port}/"}), flush=True)
+    url = f"http://127.0.0.1:{server.server_port}/"
+    if announce:
+        announce(url)
+    else:
+        print(json.dumps({"url": url}), flush=True)
     if owner_stdin:
         def monitor_owner():
             sys.stdin.buffer.read()  # EOF when the SDK provider exits, even if it is killed.
