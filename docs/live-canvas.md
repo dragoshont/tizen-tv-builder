@@ -304,12 +304,18 @@ node tests/live-controls.test.mjs
 node --check .github/extensions/tizen-live/extension.mjs
 # Optional: existing isolated Chromium browser, no installation or TV needed:
 node tests/live-browser.test.mjs /absolute/private/browser-profile OFFLINE_CANVAS_URL
+node tests/portal-browser.test.mjs http://127.0.0.1:BROWSER_CDP_PORT http://127.0.0.1:47811/
 ```
 
 The last gate uses an already-running isolated browser with DevToolsActivePort.
 It checks the real offline renderer and injected, explicitly labelled **UI-only**
 fixtures for shortcuts/backpressure. Fixtures never connect a TV or synthesize
 runtime fallback captures. Three timed host feed cycles use a mock CDP provider.
+The portal gate answers every `/api/` request with in-page synthetic TVs and
+checks that Connected and the keys stay off for empty frames, undecodable images
+and a frame that arrives after the connection is lost. Set
+`PORTAL_BASELINE=<revision>` to replay an older `ui.js` and show the checks fail
+there.
 
 Host pass is not device acceptance. Parent/capturer must release the existing
 viewer, select the authorized page, then observe at least three genuine 10-second
