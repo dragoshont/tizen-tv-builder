@@ -995,12 +995,18 @@ def handler(app):
                 if self.path == "/api/detect" and app.fleet is not None:
                     self.reply(200, app.fleet.submit("detect", None, data))
                     return
+                if self.path == "/api/wizard" and app.fleet is not None:
+                    self.reply(200, app.fleet.wizard(data))
+                    return
+                if self.path == "/api/install-sdk" and app.fleet is not None:
+                    self.reply(200, app.fleet.install_sdk(data))
+                    return
                 if self.path == "/api/choose-package" and app.fleet is not None:
                     if data != {}:
                         fail("invalid", "No options are accepted")
                     self.reply(200, app.fleet.choose())
                     return
-                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|rename|preview|apps|install|remove|launch|screenshot|cert|profile)/(tv-[0-9a-f]{6})", self.path)
+                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|rename|preview|apps|install|remove|launch|screenshot|cert|profile|sample)/(tv-[0-9a-f]{6})", self.path)
                 if match and app.fleet is not None:
                     self.reply(200, app.fleet.submit(match[1], match[2], data))
                     return

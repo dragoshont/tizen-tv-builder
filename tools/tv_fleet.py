@@ -29,6 +29,7 @@ from live_tv import LiveError, exact, fail
 import network_tv
 import appkit
 import samsung_models
+import tv_setup
 from tizen import application_id
 from workbench import sdk_tool
 
@@ -323,7 +324,8 @@ class Fleet:
                  certificate_duids=None, retail=flows.retail, names=None, save_names=None, known=None, save_known=None,
                  session=None, cdp=live_tv.CDP, discover=None, tizen_path="auto", data_root=None,
                  which=shutil.which, clipboard=None, pictures=None, clock=time.time,
-                 chooser=None, browser=None, signin=None, opener=None, cert_home=None, openssl="auto", cert_system=None):
+                 chooser=None, browser=None, signin=None, opener=None, cert_home=None, openssl="auto", cert_system=None,
+                 sdk_installer=None):
         if sdb_path == "auto":
             sdb_path = _find_tool("sdb")
         if tizen_path == "auto":
@@ -369,6 +371,11 @@ class Fleet:
         self.scan_lock = threading.Lock()
         self.threads = []
         self.secret = None
+        # Guided setup: the Tizen Studio install job and the app each TV's setup installed.
+        self.sdk_installer = sdk_installer or tv_setup.install_sdk
+        self.find_tool = _find_tool
+        self.sdk_job = None
+        self.setup_apps = {}
         # A memory with nothing to show (no name, model or Device ID) would only be a nameless card.
         self.known = {a: f for a, f in self.known.items() if any(f.get(k) for k in ("name", "model", "duid"))}
         for alias, fact in self.known.items():
@@ -587,7 +594,8 @@ class Fleet:
                "preview": "Opening app screen (restarts the app)…", "apps": "Listing apps…",
                "install": "Installing…", "remove": "Uninstalling…", "launch": "Starting app…",
                "screenshot": "Saving screenshot…", "cert": "Preparing certificate…",
-               "profile": "Changing signing profile…"}
+               "profile": "Changing signing profile…",
+               "sample": "Installing the sample app…"}
 
     def headline(self, record, status, reason):
         """One status per TV, identical in the pill, the list row and the CLI: (label, tone, detail)."""
@@ -1161,6 +1169,7 @@ class Fleet:
         with self.lock:
             record.setdefault("installed_here", set()).add(app)
             (record.get("store_apps") or set()).discard(app)
+            self.setup_apps[alias] = app
         return self._finish(record, {"op": "install", "ok": True, "code": "installed",
                                      "message": "Installed " + app + " (confirmed by the TV's app list)",
                                      "next": f"tv open {alias} {app}", "app": app})
@@ -1408,8 +1417,85 @@ class Fleet:
             "message": f"Installs now use {name}" + (", which allows this TV" if covers["state"] == "covered" else ""),
             "next": None})
 
+    # ---- guided setup (the same steps as `tv setup`) ------------------------------
+    def sample(self, alias, data):
+        """Install the sample app: packed from examples/hello-tv, then signed and installed like any .wgt."""
+        exact(data, {})
+        with tempfile.TemporaryDirectory(prefix="tizen-sample-") as folder:
+            try:
+                package = tv_setup.build_sample(folder)
+            except (ValueError, OSError) as error:
+                with self.lock:
+                    record = self.record(alias)
+                return self._finish(record, {"op": "sample", "ok": False, "code": "sample-failed",
+                                             "message": f"The sample app could not be built: {error}", "next": None})
+            return self.install(alias, {"package": str(package)})
+
+    def setup_report(self):
+        now = time.monotonic()
+        cached = getattr(self, "_setup_report", None)
+        if cached is None or now - cached[0] > 5:
+            cached = (now, setup_report(sdb=self.sdb, tizen=self.tizen, data_root=self.data_root,
+                                        which=self.which, system=self.cert_system))
+            self._setup_report = cached
+        return cached[1]
+
+    def wizard(self, data):
+        """Where the guided setup stands, in the words `tv setup` prints. Reads only."""
+        if not isinstance(data, dict) or not set(data) <= {"tv"}:
+            fail("invalid", "Request fields do not match this operation")
+        alias = data.get("tv")
+        if alias is not None and (not isinstance(alias, str) or not re.fullmatch(r"tv-[0-9a-f]{6}", alias)):
+            fail("invalid", "Unknown TV")
+        with self.lock:
+            job = dict(self.sdk_job) if self.sdk_job else None
+            apps = dict(self.setup_apps)
+        return tv_setup.evaluate(self.setup_report(), self.state(), alias, tv_setup.lan_ip(self.interfaces),
+                                 job, apps, self.cert_system)
+
+    def install_sdk(self, data):
+        """Install Tizen Studio's command-line tools in the background; progress appears in wizard()."""
+        exact(data, {})
+        with self.lock:
+            if self.sdk_job and self.sdk_job.get("code") == "working":
+                return dict(self.sdk_job)
+            job = {"op": "install-sdk", "code": "working", "message": "Starting\u2026", "percent": None, "steps": []}
+            self.sdk_job = job
+
+        def progress(text, percent):
+            with self.lock:
+                job["message"], job["percent"] = text, percent
+                if not job["steps"] or job["steps"][-1]["text"] != text:
+                    if job["steps"]:
+                        job["steps"][-1]["done"] = True
+                    job["steps"].append({"text": text, "done": False})
+
+        def work():
+            try:
+                self.sdk_installer(progress)
+                result = {"code": "done", "message": "Tizen Studio's tools are installed"}
+            except tv_setup.SetupError as error:
+                result = {"code": "failed", "message": str(error), "output": error.output, "command": error.command}
+            except Exception as error:  # The real cause, never a generic "failed".
+                result = {"code": "failed", "message": f"{type(error).__name__}: {error}",
+                          "command": tv_setup.install_command(self.cert_system)}
+            with self.lock:
+                if result["code"] == "done":
+                    for step in job["steps"]:
+                        step["done"] = True
+                    self.sdb = self.sdb or self.find_tool("sdb")
+                    self.tizen = self.tizen or self.find_tool("tizen")
+                job.update(result)
+                self._setup_report = None
+
+        started = dict(job)
+        thread = threading.Thread(target=work, daemon=True)
+        self.threads.append(thread)
+        thread.start()
+        return started
+
     OPERATIONS = {"connect", "identify", "disconnect", "preview", "apps", "install", "remove",
-                  "launch", "screenshot", "cert", "profile"}
+                  "launch", "screenshot", "cert", "profile", "sample"}
 
     # Failures of these mean the developer link is broken; any other failure is that action's result only.
     LINK_OPS = {"connect", "identify", "disconnect"}

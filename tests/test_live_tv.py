@@ -444,6 +444,12 @@ class LiveTests(unittest.TestCase):
                 if operation == "rename":
                     app.save_names({alias: data["name"]})
                 return self.state()
+            def wizard(self, data):
+                self.calls.append(("wizard", None, data))
+                return {"steps": [], "current": "computer"}
+            def install_sdk(self, data):
+                self.calls.append(("install-sdk", None, data))
+                return {"code": "working"}
             def close(self):
                 self.closed = True
         with tempfile.TemporaryDirectory() as temporary:
@@ -484,7 +490,13 @@ class LiveTests(unittest.TestCase):
                 self.assertEqual(request("POST", "/api/tv/rename/tv-0a1b2c", {"name": "Den"}, **auth)[0], 200)
                 self.assertEqual(json.loads(path.read_text()), {"sources": [], "tv_names": {"tv-0a1b2c": "Den"}})
                 self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
-                self.assertEqual([c[0] for c in fleet.calls], ["detect", "connect", "connect", "rename"])
+                self.assertEqual(request("POST", "/api/wizard", {})[0], 403)
+                self.assertEqual(request("POST", "/api/install-sdk", {})[0], 403)
+                self.assertEqual(request("POST", "/api/wizard", {"tv": "tv-0a1b2c"}, **auth), (200, {"steps": [], "current": "computer"}))
+                self.assertEqual(request("POST", "/api/install-sdk", {}, **auth), (200, {"code": "working"}))
+                self.assertEqual(request("POST", "/api/tv/sample/tv-0a1b2c", {}, **auth)[0], 200)
+                self.assertEqual([c[0] for c in fleet.calls], ["detect", "connect", "connect", "rename", "wizard",
+                                                               "install-sdk", "sample"])
             finally:
                 app.close(); server.shutdown(); server.server_close(); thread.join()
             self.assertTrue(fleet.closed)

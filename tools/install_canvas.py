@@ -20,7 +20,9 @@ def install(destination):
     source = ROOT / ".github/extensions/tizen-live"
     payload = {name: source / name for name in ("extension.mjs", "index.html", "ui.js", "ui.css", "controls.mjs")}
     payload.update({f"backend/{name}": ROOT / "tools" / name for name in (
-        "live_tv.py", "tizen.py", "tv.py", "tv_fleet.py", "flows.py", "network_tv.py", "samsung_models.py", "samsung_cert.py", "workbench.py", "recording.py", "appkit.py")})
+        "live_tv.py", "tizen.py", "tv.py", "tv_fleet.py", "flows.py", "network_tv.py", "samsung_models.py", "samsung_cert.py", "workbench.py", "recording.py", "appkit.py", "tv_setup.py")})
+    # tv_setup.SAMPLE resolves to <destination>/examples/hello-tv for "Install a sample app".
+    payload.update({f"examples/hello-tv/{name}": ROOT / "examples/hello-tv" / name for name in ("config.xml", "index.html")})
     # flows.BUDGETS resolves to <destination>/docs/budgets.json from the backend folder.
     payload["docs/budgets.json"] = ROOT / "docs/budgets.json"
     for path in payload.values():
@@ -40,7 +42,7 @@ def install(destination):
             target = destination / name
             if target.is_file():
                 target.unlink()
-        for folder in ("backend", "docs"):
+        for folder in ("backend", "docs", "examples/hello-tv", "examples"):
             if (destination / folder).exists():
                 (destination / folder).rmdir()
         destination.rmdir()
