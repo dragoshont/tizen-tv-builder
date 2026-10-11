@@ -176,7 +176,12 @@ apps on <TV> yet: your certificate only allows <TVs>."). It falls back to the ra
 ID only for an ID that no remembered TV has. One button, "Allow installing my apps on
 this TV", adds the TV to your Samsung certificate with tizen-cert (installed if needed);
 Samsung sign-in opens in your browser. While it runs, the card shows a short checklist
-(backed up, tizen-cert opened, waiting for Samsung sign-in).
+(backed up, tizen-cert started, waiting for Samsung sign-in). The installer often puts
+tizen-cert in `~/.local/bin` (or `%LOCALAPPDATA%\Programs\tizen-cert` on Windows), which may
+not be on PATH, so it is run by absolute path; a failed install shows the installer's own
+output and changes nothing. When tizen-cert exits, the card reads its exit code and the
+certificate again: "Done" only if `device-profile.xml` now lists the TV, otherwise
+"Certificate unchanged" (or the non-zero exit code). `tv cert add TV` waits and reports the same.
 The raw device IDs are listed under TV details, together with a small "Disconnect" link
 (each action connects on its own, so you rarely need it).
 

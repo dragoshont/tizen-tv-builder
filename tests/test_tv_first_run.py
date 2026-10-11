@@ -307,13 +307,13 @@ class FleetFirstRunTests(FirstRunBase):
     def test_setup_detects_tools_and_profiles_without_installing_anything(self):
         self.profiles(("MyTV", "Other"), active="MyTV")
         report = tv_fleet.setup_report(sdb=str(self.sdb), tizen=str(self.tizen), data_root=self.data,
-                                       which=lambda name: None)
+                                       which=lambda name: None, cert_locations=())
         self.assertTrue(report["ready"])
         self.assertEqual(report["profiles"], {"names": ["MyTV", "Other"], "active": "MyTV"})
         self.assertEqual({c["id"]: c["status"] for c in report["checks"]},
                          {"sdb": "found", "tizen": "found", "profiles": "found", "tizen-cert": "missing"})
         self.assertEqual(self.state()["calls"], [])  # Detection never runs an SDK tool.
-        missing = tv_fleet.setup_report(sdb=None, tizen=None, data_root=self.root / "none", which=lambda name: None)
+        missing = tv_fleet.setup_report(sdb=None, tizen=None, data_root=self.root / "none", which=lambda name: None, cert_locations=())
         self.assertFalse(missing["ready"])
         text = json.dumps(missing)
         self.assertIn("Install Tizen Studio", text)
@@ -575,7 +575,7 @@ class CliFirstRunTests(FirstRunBase):
         out, err = io.StringIO(), io.StringIO()
         code = tv.main(list(argv), fleet_factory=self.fleet, stdout=out, stderr=err, state_dir=self.state_dir,
                        setup=lambda: tv_fleet.setup_report(sdb=str(self.sdb), tizen=str(self.tizen),
-                                                           data_root=self.data, which=lambda name: None))
+                                                           data_root=self.data, which=lambda name: None, cert_locations=()))
         self.assertEqual(self.state()["connected"], [], "every command disconnects what it connected")
         return code, out.getvalue(), err.getvalue()
 

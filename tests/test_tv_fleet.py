@@ -92,7 +92,9 @@ class FleetTests(unittest.TestCase):
                                        "year": "2018", "developer_mode": "1", "uid": "uuid:" + host},
                     ssdp=lambda: set(), key_path=self.root / "alias.key", lease_root=self.root, canonical=self.canonical,
                     data_root=self.data_root, tizen_path=None, which=lambda name: None,
-                    launcher=self.launches.append, clipboard=lambda text: True, pictures=self.root / "shots")
+                    launcher=lambda command, status: self.launches.append((command, status)),
+                    clipboard=lambda text: True, pictures=self.root / "shots", cert_locations=(),
+                    installer=lambda: self.fail("The tizen-cert installer must not run in this test"))
         write_profiles(self.data_root, self.certs if certificate else None)
         args.update(kwargs)
         return tv_fleet.Fleet(**args)
@@ -319,33 +321,89 @@ class FleetTests(unittest.TestCase):
         fleet.connect(alias, {})
         fleet.identify(alias, {})
         job = fleet.cert(alias, {})
-        self.assertEqual((job["code"], job["duid"], job["covers"]), ("opened", DUID, ["OTHERDEVICE0002"]))
-        self.assertEqual((copied, self.launches), ([DUID], ["tizen-cert"]))
+        self.assertEqual((job["code"], job["duid"], job["covers"]), ("waiting", DUID, ["OTHERDEVICE0002"]))
+        self.assertEqual((copied, [command for command, _ in self.launches]),
+                         ([DUID], [tv_fleet.terminal_command("/bin/tizen-cert")]))
         self.assertEqual([(step["text"].split(":")[0], step["done"]) for step in job["steps"]],
                          [("Backed up your certificate files", True), ("Device ID copied to the clipboard", True),
-                          ("tizen-cert opened in Terminal", True), ("In tizen-cert", False),
-                          ("Waiting for Samsung sign-in in your browser…", False)])
+                          ("tizen-cert started in Terminal", True), ("In tizen-cert", False),
+                          ("Waiting for Samsung sign-in and for tizen-cert to finish…", False)])
+        self.assertEqual(self.only(fleet)["job"]["code"], "waiting", "Running is not success")
         backup = Path(job["backup"])
         self.assertEqual(sorted(p.name for p in backup.iterdir()),
                          ["device-profile.xml", "distributor.crt", "distributor.p12"])
         if os.name == "posix":
             self.assertEqual(backup.stat().st_mode & 0o777, 0o700)
+        Path(self.launches[0][1]).write_text("0\n")  # tizen-cert ended normally, but changed nothing.
+        job = self.only(fleet)["job"]
+        self.assertEqual((job["ok"], job["code"]), (False, "unchanged"))
+        self.assertIn("Certificate unchanged: device-profile.xml still doesn't list", job["message"])
+        self.assertNotIn("steps", job)
         self.certificate.write_text(device_profile("OTHERDEVICE0002", DUID))
         self.assertEqual(fleet.cert(alias, {})["code"], "covered")
         self.assertEqual(len(self.launches), 1)
         fleet.close()
 
     def test_cert_add_without_tizen_cert_runs_the_documented_installer(self):
-        fleet = self.fleet(certificate=False)
+        # The installer puts tizen-cert in ~/.local/bin, often not on PATH: run it by absolute path.
+        installed = self.root / "home" / ".local" / "bin" / "tizen-cert"
+        def installer():
+            installed.parent.mkdir(parents=True)
+            installed.write_text("#!/bin/sh\n")
+            installed.chmod(0o755)
+            return 0, f"Downloading...\nInstalled: {installed} (v1.0.0)\nnote: {installed.parent} is not on your PATH."
+        fleet = self.fleet(certificate=False, installer=installer, cert_locations=(installed,))
         alias = fleet.detect()["tvs"][0]["alias"]
         fleet.connect(alias, {})
         fleet.identify(alias, {})
         job = fleet.cert(alias, {})
         self.assertIsNone(job["backup"])
-        self.assertIn("install", self.launches[0])
-        self.assertTrue(self.launches[0].endswith("tizen-cert"))
-        self.assertEqual(job["command"], self.launches[0], "The command is shown before it runs")
+        self.assertEqual(job["code"], "waiting")
+        self.assertEqual(self.launches[0][0], tv_fleet.terminal_command(installed))
+        self.assertTrue(str(installed) in self.launches[0][0])
+        self.assertEqual(job["command"], self.launches[0][0], "The command is shown before it runs")
+        self.assertEqual(job["steps"][0], {"text": f"Installed tizen-cert at {installed}", "done": True})
+        Path(self.launches[0][1]).write_text("127\n")
+        job = self.only(fleet)["job"]
+        self.assertEqual((job["ok"], job["code"]), (False, "tizen-cert-failed"))
+        self.assertIn("tizen-cert exited with code 127. Certificate unchanged", job["message"])
         fleet.close()
+
+    def test_cert_add_reports_a_failed_installer_and_changes_nothing(self):
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+        fleet = self.fleet(installer=lambda: (1, "curl: (6) Could not resolve host: github.com"))
+        alias = fleet.detect()["tvs"][0]["alias"]
+        fleet.connect(alias, {})
+        fleet.identify(alias, {})
+        job = fleet.cert(alias, {})
+        self.assertEqual((job["ok"], job["code"], self.launches), (False, "install-failed", []))
+        self.assertIn("exited with code 1", job["message"])
+        self.assertIn("Could not resolve host", job["output"])
+        self.assertEqual([p.name for p in self.certs.iterdir() if p.name.startswith("backup-")], [])
+        fleet.close()
+
+    def test_tizen_cert_is_found_where_its_installer_puts_it(self):
+        home = self.root / "home"
+        local = home / ".local" / "bin" / "tizen-cert"
+        local.parent.mkdir(parents=True)
+        local.write_text("#!/bin/sh\n")
+        local.chmod(0o755)
+        places = tv_fleet.tizen_cert_locations(home=home, env={})
+        self.assertEqual(tv_fleet.find_tizen_cert(lambda name: None, places), str(local))
+        self.assertEqual(tv_fleet.find_tizen_cert(lambda name: "/usr/bin/tizen-cert", places), "/usr/bin/tizen-cert")
+        windows = tv_fleet.tizen_cert_locations(home=home, env={"LOCALAPPDATA": "C:/Users/x/AppData/Local"})
+        self.assertEqual(windows[0].parts[-3:], ("Programs", "tizen-cert", "tizen-cert.exe"))
+
+    def test_terminal_records_the_exit_code(self):
+        launched = []
+        status = self.root / "exit-code"
+        tv_fleet.open_terminal("/opt/x/tizen-cert", status, system="Darwin", popen=launched.append)
+        script = Path(launched[0][-1]).read_text()
+        self.assertIn("/opt/x/tizen-cert\ncode=$?", script)
+        self.assertIn(str(status), script)
+        tv_fleet.open_terminal("& 'C:/x/tizen-cert.exe'", status, system="Windows", popen=launched.append)
+        self.assertIn("$LASTEXITCODE", launched[1][-1])
+        self.assertIn(str(status), launched[1][-1])
 
     def test_changes_need_only_a_connection_and_the_tizen_cli(self):
         fleet = self.fleet()

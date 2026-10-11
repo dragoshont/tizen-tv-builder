@@ -73,8 +73,22 @@ class TvCliTests(unittest.TestCase):
             key_path=self.root / "alias.key", lease_root=self.root, canonical=self.root / "canonical.lock",
             certificate_duids=certificate_duids, names=names or {}, save_names=save_names,
             data_root=self.root / "tizen-data", tizen_path=None, which=lambda name: None,
-            launcher=lambda command: self.launches.append(command), clipboard=lambda text: True,
+            launcher=self.launch_tizen_cert, clipboard=lambda text: True,
+            installer=self.install_tizen_cert, cert_locations=(self.root / "bin" / "tizen-cert",),
             pictures=self.root / "Pictures", session=Session, cdp=FakeCDP, discover=lambda port: ["page-1"])
+
+    def install_tizen_cert(self):
+        binary = self.root / "bin" / "tizen-cert"
+        binary.parent.mkdir(exist_ok=True)
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        return 0, f"Installed: {binary} (v1.0.0)"
+
+    def launch_tizen_cert(self, command, status):
+        self.launches.append(command)
+        Path(status).write_text(self.tizen_cert_exit)  # The person closed tizen-cert without renewing.
+
+    tizen_cert_exit = "0\n"
 
     def run_cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()
@@ -225,10 +239,12 @@ class TvCliTests(unittest.TestCase):
         self.assertIn("This TV is " + DUID, out)
         self.assertIn("tv cert add " + alias, out)
         code, out, _ = self.run_cli("cert", "add", alias)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1, "tizen-cert ended without adding the TV: not a success")
         self.assertEqual(len(self.launches), 1)
-        self.assertIn("tizen-cert", self.launches[0])
-        self.assertIn("[next] Waiting for Samsung sign-in in your browser...", out)
+        self.assertIn(str(self.root / "bin" / "tizen-cert"), self.launches[0])
+        self.assertIn("[done] Installed tizen-cert at", out)
+        self.assertIn("[next] Waiting for Samsung sign-in and for tizen-cert to finish...", out)
+        self.assertIn("Certificate unchanged:", out)
         steps = [line for line in out.splitlines() if "[done]" in line or "[next]" in line]
         self.assertTrue(steps and all("→" not in line and "…" not in line for line in steps))
         self.assertEqual(self.run_cli("cert", "add")[0], 2)

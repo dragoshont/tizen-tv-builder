@@ -202,12 +202,12 @@ INSTALL_HELP = {
 }
 
 
-def setup_report(sdb="auto", tizen="auto", data_root=None, which=shutil.which):
+def setup_report(sdb="auto", tizen="auto", data_root=None, which=shutil.which, cert_locations=None):
     """What this computer has for the first-run journey. Detects only; never installs or runs anything."""
     sdb = _find_tool("sdb") if sdb == "auto" else sdb
     tizen = _find_tool("tizen") if tizen == "auto" else tizen
     profiles = signing_profiles(data_root or default_data_root())
-    cert = which("tizen-cert")
+    cert = find_tizen_cert(which, cert_locations)
     checks = [
         {"id": "sdb", "label": "sdb (connects to the TV)", "status": "found" if sdb else "missing",
          "next": None if sdb else INSTALL_HELP["tizen-studio"]},
@@ -258,16 +258,60 @@ INSTALL_COMMAND = {"posix": "curl -fsSL https://tizen-cert-cli.vercel.app/instal
                    "windows": "irm https://tizen-cert-cli.vercel.app/install.ps1 | iex"}
 
 
-def open_terminal(command, system=None, popen=subprocess.Popen):
-    """Run a command in a terminal window the user can see and type into. The command is shown first."""
+def tizen_cert_locations(home=None, env=None):
+    """Where tizen-cert's installers put it; ~/.local/bin is often not on PATH."""
+    home, env = Path(home) if home else Path.home(), os.environ if env is None else env
+    places = [Path("/usr/local/bin/tizen-cert"), home / ".local" / "bin" / "tizen-cert"]
+    if env.get("LOCALAPPDATA"):
+        places.insert(0, Path(env["LOCALAPPDATA"]) / "Programs" / "tizen-cert" / "tizen-cert.exe")
+    return places
+
+
+def find_tizen_cert(which=shutil.which, locations=None):
+    """Absolute path of tizen-cert: on PATH, else where its installers put it. None when absent."""
+    found = which("tizen-cert")
+    if found:
+        return found
+    places = tizen_cert_locations() if locations is None else locations
+    return next((str(c) for c in map(Path, places) if c.is_file() and os.access(c, os.X_OK)), None)
+
+
+def run_installer(system=None, run=subprocess.run):
+    """Run tizen-cert's documented installer and return (exit code, its output)."""
+    system = system or platform.system()
+    argv = (["powershell", "-NoProfile", "-Command", INSTALL_COMMAND["windows"]] if system == "Windows"
+            else ["sh", "-c", INSTALL_COMMAND["posix"]])
+    try:
+        done = run(argv, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as error:
+        return 1, f"{type(error).__name__}: {error}"
+    return done.returncode, (done.stdout or "") + (done.stderr or "")
+
+
+def terminal_command(path, system=None):
+    """How a terminal runs the program at this absolute path."""
+    if (system or platform.system()) == "Windows":
+        return "& '" + str(path).replace("'", "''") + "'"
+    return shlex.quote(str(path))
+
+
+def open_terminal(command, status=None, system=None, popen=subprocess.Popen):
+    """Run a command in a terminal window the user can see and type into. The command is shown first.
+
+    With `status`, the command's exit code is written to that file when it ends, so the caller can
+    report what really happened instead of assuming success."""
     system = system or platform.system()
     if system == "Windows":
+        record = (f"; $code = $LASTEXITCODE; Set-Content -Encoding ascii -Path '{str(status).replace(chr(39), chr(39) * 2)}'"
+                  " -Value $code; if ($code -ne 0) { Write-Host \"Exited with code $code\" }") if status else ""
         popen(["cmd", "/c", "start", "", "powershell", "-NoExit", "-Command",
-               f"Write-Host '> {command}'; {command}"])
+               f"Write-Host '> {command.replace(chr(39), chr(39) * 2)}'; {command}{record}"])
         return
     folder = Path(tempfile.mkdtemp(prefix="tizen-cert-"))
     script = folder / "tizen-cert.command"
-    script.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote("> " + command) + "\n" + command + "\n")
+    record = ("code=$?\nprintf '%s\\n' \"$code\" > " + shlex.quote(str(status)) +
+              "\n[ \"$code\" -eq 0 ] || echo \"Exited with code $code\"\n") if status else ""
+    script.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote("> " + command) + "\n" + command + "\n" + record)
     script.chmod(0o700)
     if system == "Darwin":
         popen(["open", "-a", "Terminal", str(script)])
@@ -329,7 +373,7 @@ class Fleet:
                  certificate_duids=None, retail=flows.retail, names=None, save_names=None, known=None, save_known=None,
                  session=None, cdp=live_tv.CDP, discover=None, tizen_path="auto", data_root=None,
                  which=shutil.which, launcher=None, clipboard=None, pictures=None, clock=time.time,
-                 chooser=None):
+                 chooser=None, installer=None, cert_locations=None):
         if sdb_path == "auto":
             sdb_path = _find_tool("sdb")
         if tizen_path == "auto":
@@ -341,6 +385,8 @@ class Fleet:
         self.launcher = launcher or open_terminal
         self.chooser = chooser or choose_package
         self.clipboard = clipboard or copy_text
+        self.installer = installer or run_installer
+        self.cert_locations = cert_locations
         self.pictures = Path(pictures) if pictures else Path.home() / "Pictures" / "TV Screenshots"
         self.clock = clock
         self.runner = runner
@@ -737,9 +783,9 @@ class Fleet:
                 "preview": self.preview_summary(record),
                 "apps": self.apps_summary(record),
                 "identity": record["identity"], "certificate": self.coverage(duid, record["alias"]),
-                "cert_tool": "installed" if self.which("tizen-cert") else "missing",
+                "cert_tool": "installed" if find_tizen_cert(self.which, self.cert_locations) else "missing",
                 "guidance": guidance, "pending": record["pending"], "error": record["error"],
-                "job": record["job"],
+                "job": self.cert_outcome(record),
                 # Shown in full on this loopback page and CLI only; never logged or cached.
                 "details": {"address": record.get("host"), "duid": duid,
                             "model": meta["model"], "os": meta["os"]["text"], "firmware": meta["firmware"],
@@ -1299,6 +1345,23 @@ class Fleet:
             return self._finish(record, {"op": "cert", "ok": True, "code": "covered",
                                          "message": f"Certificate {coverage['profile']} already includes this TV",
                                          "next": None})
+        installed_now = None
+        binary = find_tizen_cert(self.which, self.cert_locations)
+        if not binary:
+            command = INSTALL_COMMAND["windows" if os.name == "nt" else "posix"]
+            code, output = self.installer()
+            output = (output or "").strip()[-2000:]
+            reported = re.search(r"^Installed: (.+?) \(", output, re.M)
+            binary = (reported.group(1) if reported and Path(reported.group(1)).is_file() else None) \
+                or find_tizen_cert(self.which, self.cert_locations)
+            if code != 0 or not binary:
+                why = f"the installer exited with code {code}" if code != 0 else \
+                    "the installer finished, but tizen-cert was not found where it says it put it"
+                return self._finish(record, {
+                    "op": "cert", "ok": False, "code": "install-failed", "command": command, "output": output,
+                    "message": f"Couldn't install tizen-cert: {why}. Your certificate is unchanged.",
+                    "next": "Run the command yourself in a terminal, then try again"})
+            installed_now = binary
         backup = None
         if coverage.get("folder"):
             folder = Path(coverage["folder"])
@@ -1307,28 +1370,64 @@ class Fleet:
             for name in ("distributor.p12", "distributor.crt", "author.p12", "author.crt", "device-profile.xml"):
                 if (folder / name).is_file() and not (folder / name).is_symlink():
                     shutil.copy2(folder / name, backup / name)
-        installed = bool(self.which("tizen-cert"))
-        command = "tizen-cert" if installed else INSTALL_COMMAND["windows" if os.name == "nt" else "posix"] + \
-            (" ; tizen-cert" if os.name == "nt" else " && tizen-cert")
         copied = self.clipboard(duid)
-        self.launcher(command)
+        status = Path(tempfile.mkdtemp(prefix="tizen-cert-status-")) / "exit-code"
+        command = terminal_command(binary)
+        self.launcher(command, status)
         profile = coverage["profile"] or "your profile"
         with self.lock:
             name = self.short_name(alias) or "this TV"
+            record["cert_watch"] = {"status": str(status), "duid": duid, "name": name, "backup": backup,
+                                    "command": command}
         # A checklist, not a paragraph: what is done, and what is waiting on the person.
         checklist = [
+            {"text": f"Installed tizen-cert at {installed_now}", "done": True} if installed_now else None,
             {"text": "Backed up your certificate files", "done": True} if backup else None,
             {"text": "Device ID copied to the clipboard", "done": True} if copied else None,
-            {"text": "tizen-cert opened in Terminal" if installed
-             else "Terminal opened: installing tizen-cert, then running it", "done": True},
+            {"text": "tizen-cert started in Terminal", "done": True},
             {"text": f"In tizen-cert: Renew → {profile}, add {duid}", "done": False},
-            {"text": "Waiting for Samsung sign-in in your browser…", "done": False}]
+            {"text": "Waiting for Samsung sign-in and for tizen-cert to finish…", "done": False}]
         return self._finish(record, {
-            "op": "cert", "ok": True, "code": "opened", "command": command,
+            "op": "cert", "ok": True, "code": "waiting", "command": command,
             "backup": str(backup) if backup else None, "covers": coverage["covers"], "duid": duid,
             "message": f"Allowing your apps on {name}",
             "steps": [step for step in checklist if step],
-            "next": "When tizen-cert finishes, this page re-checks the certificate by itself"})
+            "next": "When tizen-cert finishes, this card shows whether your certificate now includes this TV"})
+
+    def cert_result(self, alias):
+        """The current certificate job for one TV (None while there is none)."""
+        with self.lock:
+            return self.cert_outcome(self.record(alias))
+
+    def cert_outcome(self, record):
+        """The certificate job, finished from tizen-cert's real exit code and a fresh read of the certificate."""
+        watch = record.get("cert_watch")
+        if not watch:
+            return record["job"]
+        try:
+            text = Path(watch["status"]).read_text(encoding="ascii", errors="replace").strip()
+        except OSError:
+            return record["job"]  # Still running.
+        record["cert_watch"] = None
+        self._coverage = None
+        code = int(text) if text.lstrip("-").isdigit() else None
+        coverage = certificate_coverage(self.data_root, watch["duid"])
+        base = {"op": "cert", "command": watch["command"], "duid": watch["duid"], "covers": coverage["covers"],
+                "backup": str(watch["backup"]) if watch["backup"] else None}
+        if coverage["state"] == "covered":
+            record["job"] = dict(base, ok=True, code="covered", next=None,
+                                 message=f"Done: your certificate ({coverage['profile']}) now allows {watch['name']}")
+        elif code != 0:
+            record["job"] = dict(base, ok=False, code="tizen-cert-failed",
+                                 message=f"tizen-cert exited with code {text or 'unknown'}. Certificate unchanged: "
+                                         f"it still doesn't list {watch['name']}.",
+                                 next="See the error in the Terminal window, then try again")
+        else:
+            record["job"] = dict(base, ok=False, code="unchanged",
+                                 message=f"Certificate unchanged: {'device-profile.xml' if coverage.get('folder') else 'your certificate'}"
+                                         f" still doesn't list {watch['name']}.",
+                                 next="In tizen-cert, choose Renew for this profile and add the Device ID, then try again")
+        return record["job"]
 
     OPERATIONS = {"connect", "identify", "disconnect", "preview", "apps", "install", "remove",
                   "launch", "screenshot", "cert"}

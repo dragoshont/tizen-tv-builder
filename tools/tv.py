@@ -24,6 +24,7 @@ from live_tv import LiveError, read_profile  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 KEYS = sorted(live_tv.KEYS)
 PORTAL_PORT = 47811
+CERT_POLL = 1.0  # Seconds between checks while tizen-cert runs.
 STATE_DIR = Path.home() / ".tizen-tv-builder"
 # The scan cache is a file on disk: names and status only, never addresses or Device IDs.
 CACHE_FIELDS = ("alias", "name", "label", "headline", "status", "reachable", "year", "dev_mode", "metadata")
@@ -396,7 +397,18 @@ def act(args, fleet, tv, say):
             if not args.add:
                 say("Certificate: " + certificate_text(connected))
                 return 0
-            return result(say, fleet.cert(alias, {}))
+            job = fleet.cert(alias, {})
+            code = result(say, job)
+            if job.get("code") != "waiting":
+                return code
+            # Report what tizen-cert really did: its exit code and a fresh read of the certificate.
+            try:
+                while (job := fleet.cert_result(alias)).get("code") == "waiting":
+                    time.sleep(CERT_POLL)
+            except KeyboardInterrupt:
+                say(f"Stopped waiting. Check later with: tv cert {alias}")
+                return 1
+            return result(say, dict(job, steps=None, command=None, backup=None))
         if command == "open":
             try:
                 fleet.preview(alias, {"app": args.app})
