@@ -17,7 +17,7 @@ FORM: Brief-pinned utility composition; no concept roll or invented demo pixels.
     <p>Samsung web-app development</p>
     <span id="connection" role="status">Not connected</span>
   </header>
-  <div id="error" role="alert" hidden></div>
+  <div id="error" role="alert" hidden><span id="error-text"></span> <a id="error-help" target="_blank" rel="noopener" hidden>How to fix</a><button id="error-close" class="link" aria-label="Dismiss">×</button></div>
   <main>
     <aside class="setup" aria-label="Device setup">
       <h2>Connect</h2>
@@ -35,9 +35,9 @@ FORM: Brief-pinned utility composition; no concept roll or invented demo pixels.
       </fieldset>
       <div class="actions"><button class="primary" id="connect" disabled>Connect preview</button><button id="disconnect" disabled>Disconnect</button></div>
       <p id="setup-message" role="status"></p>
-      <details id="onboarding"><summary>Advanced setup</summary>
-        <label for="manual-ip">New TV IP</label>
-        <input id="manual-ip" placeholder="TV_IPV4" autocomplete="off" spellcheck="false">
+      <details id="onboarding"><summary>Add a TV</summary>
+        <label for="manual-ip">TV IP (TV: Settings › General › Network › Network Status › IP Settings)</label>
+        <input id="manual-ip" placeholder="192.168.x.x" autocomplete="off" spellcheck="false">
         <button id="confirm-tv">Check TV</button>
         <label for="serial">TV IPv4 address and SDB port</label>
         <input id="serial" placeholder="TV_IPV4:26101" autocomplete="off" spellcheck="false">
@@ -59,7 +59,12 @@ FORM: Brief-pinned utility composition; no concept roll or invented demo pixels.
         <input id="duration" type="number" min="10" max="120" value="120">
         <button id="release" disabled>Release forward</button>
       </details>
-      <details><summary>First time?</summary><p class="hint">Install Tizen Studio and Samsung TV Extension. On a new TV, enable Developer Mode with this computer's IPv4 address and restart as instructed. Connect with Device Manager, obtain that TV's DUID, include it in a Samsung distributor certificate and permit installation. Then install your signed development app.</p><p class="hint">Setup may stop and relaunch the selected app. Private pixels stay in memory. Sessions release the device lane after at most 120 seconds. Ctrl-C attempts owned-forward cleanup. No other worker's lock is broken.</p></details>
+      <details id="first-time"><summary>First time?</summary><ol class="steps">
+        <li><a href="https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html" target="_blank" rel="noopener">Install Tizen Studio + TV extension</a></li>
+        <li>TV: Apps › type <kbd>12345</kbd> › Developer Mode On › Host PC IP = <span id="host-ip">this computer</span> › restart TV</li>
+        <li>Find nearby TVs, pick yours</li>
+        <li><a href="https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html" target="_blank" rel="noopener">Create a certificate</a> for that TV and install your app</li>
+      </ol></details>
     </aside>
     <section class="preview" aria-label="Native renderer preview">
       <div class="preview-toolbar"><h2>App preview</h2><div class="actions"><button id="capture" disabled>Refresh</button><button id="stream" disabled>Start feed</button><button id="record" disabled title="Record one app paint layer">Record</button></div></div>

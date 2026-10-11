@@ -10,13 +10,18 @@ let revision = null;
 let recording = null, encoders = {};
 let recordingSaved = false;
 const urls = [];
-function error(message = "") { $("error").textContent = message; $("error").hidden = !message; }
+const HELP = { network: "https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html",
+  sdk: "https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html" };
+function error(message = "", help = "") {
+  $("error-text").textContent = message; $("error").hidden = !message;
+  $("error-help").hidden = !help; if (help) $("error-help").href = help;
+}
 async function request(path, data) {
   const response = await fetch(path, { method: data === undefined ? "GET" : "POST", headers,
     body: data === undefined ? undefined : JSON.stringify(data),
     signal: AbortSignal.timeout(path === "/api/record" ? 90000 : 30000) });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.message || "Local operation failed.");
+  if (!response.ok) throw Object.assign(new Error(result.message || "Something went wrong. Try again."), { code: result.error });
   return result;
 }
 function ready() { return source?.status === "connected" && source.expires_in > 0; }
@@ -75,7 +80,7 @@ function setupView(data) {
 async function setup(operation, values) {
   if (busy) return;
   busy = true; error(); controls();
-  $("status").textContent = "Setup in progress. Do not repeat this operation.";
+  $("status").textContent = operation === "find-network" ? "Looking for TVs on your network…" : "Working…";
   try {
     setupView(await request("/api/setup", operation === "select"
       ? { operation, ...values } : { operation, ...values, authorized: true }));
@@ -86,13 +91,19 @@ async function setup(operation, values) {
     source = null;
     revision = null;
     discardImages();
-    $("views").textContent = "No current native capture. Select and connect a page, then Refresh.";
+    $("views").textContent = "Connect preview to see your app here.";
     await refresh();
     $("status").textContent = ["select", "debug"].includes(operation) && setupState.configured ? "App ready. Connect preview." : "Ready for the next step.";
-  } catch (problem) { error(`${problem.message} No automatic retry. Check setup or Device Manager privately.`); }
+    if (operation === "find-network" && !setupState.network_devices?.length) addTV();
+  } catch (problem) {
+    const network = ["find-network", "confirm-tv"].includes(operation);
+    error(problem.message, network ? HELP.network : problem.code?.startsWith("sdk") ? HELP.sdk : "");
+    if (network) addTV();
+    $("status").textContent = "Choose a TV and app to begin.";
+  }
   finally {
     try { setupView(await request("/api/setup")); }
-    catch (problem) { error(`Setup status unavailable: ${problem.message}. Reconcile device state privately.`); }
+    catch (problem) { error(`Workbench lost contact: ${problem.message}. Reload the page.`); }
     busy = false; controls();
   }
 }
@@ -104,7 +115,7 @@ async function command(operation, data) {
   error(); controls();
   $("status").textContent = `${operation === "key" ? "Input" : "Preview operation"} in flight...`;
   try { await request(`/api/${operation}/${source.id}`, data); }
-  catch (problem) { error(`${problem.message} No automatic retry was sent.`); }
+  catch (problem) { error(problem.message); }
   finally { if (!pause) busy = false; await refresh(); controls(); }
 }
 async function recordCommand(operation, extra = {}) {
@@ -196,6 +207,9 @@ async function refresh() {
 for (const id of ["attach-grant", "authorized"]) $(id).addEventListener("change", controls);
 $("connect-tv").addEventListener("click", () => setup("connect-tv", { serial: $("serial").value.trim() }));
 $("discover").addEventListener("click", () => setup("discover", { serial: $("tv").value || $("serial").value.trim() }));
+function addTV() { $("onboarding").open = true; $("manual-ip").focus(); }
+$("error-close").addEventListener("click", () => error());
+$("manual-ip").addEventListener("keydown", (event) => { if (event.key === "Enter") $("confirm-tv").click(); });
 $("find-network").addEventListener("click", () => setup("find-network", {}));
 $("confirm-tv").addEventListener("click", () => setup("confirm-tv", { ip: $("manual-ip").value.trim() }));
 $("tv").addEventListener("change", () => {

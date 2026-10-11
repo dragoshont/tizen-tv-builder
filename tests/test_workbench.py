@@ -154,7 +154,7 @@ class SetupTests(unittest.TestCase):
     def test_changed_mapping_is_not_removed(self):
         self.app.forward = ("127.0.0.1:26101", 12345, 42000)
         self.mapping = "127.0.0.1:26101 tcp:12345 tcp:43000"
-        with self.assertRaisesRegex(live_tv.LiveError, "mapping changed"):
+        with self.assertRaisesRegex(live_tv.LiveError, "closed elsewhere"):
             self.app.setup({"operation": "release", "authorized": True})
         self.assertFalse(any("--remove" in args for args in self.calls))
         self.assertIsNotNone(self.app.forward)
@@ -200,7 +200,7 @@ class SetupTests(unittest.TestCase):
 
     def test_sdb_process_output_is_bounded_and_errors_are_sanitized(self):
         self.assertEqual(workbench.run_sdb(sys.executable, ["-c", "print('ready')"]).strip(), "ready")
-        with self.assertRaisesRegex(live_tv.LiveError, "exceeded"):
+        with self.assertRaisesRegex(live_tv.LiveError, "unexpected amount"):
             workbench.run_sdb(sys.executable, ["-c", "print('x' * 300000)"])
         with self.assertRaises(live_tv.LiveError) as caught:
             workbench.run_sdb(sys.executable, ["-c", "import sys; print('PRIVATE-RESPONSE'); sys.exit(1)"])
@@ -219,17 +219,32 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(result["apps"], ["PACKAGEID0.Application"])
         self.assertFalse((self.root / "device.lock").exists())
 
-    def test_local_network_discovery_requires_grant_and_free_lane(self):
+    def test_local_network_discovery_needs_no_extra_grant(self):
         result = {"devices": [{"ip": "192.168.0.10", "name": "Fixture TV", "model": "unknown",
                                "year": "unknown", "developer_mode": "unknown"}], "unconfirmed": 1}
-        with patch.object(workbench, "discover_tvs", return_value=result) as scanner:
-            with self.assertRaises(live_tv.LiveError):
-                self.app.setup({"operation": "find-network", "authorized": False})
-            scanner.assert_not_called()
+        with patch.object(workbench, "discover_tvs", return_value=result):
             status = self.app.setup({"operation": "find-network", "authorized": True})
             self.assertEqual(status["network_devices"], result["devices"])
-            self.assertIn("unconfirmed", status["message"])
+            self.assertIn("Found 1 TV", status["message"])
             self.assertFalse((self.root / "device.lock").exists())
+
+    def test_find_tvs_works_while_device_lane_is_busy_and_never_blames_inspector(self):
+        (self.root / "device.lock").mkdir()
+        try:
+            with patch.object(workbench, "discover_tvs", return_value={"devices": [], "unconfirmed": 0}):
+                status = self.app.setup({"operation": "find-network", "authorized": True})
+            self.assertIn("No TVs found", status["message"])
+            with patch.object(workbench, "discover_tvs", side_effect=OSError(65, "No route to host")):
+                with self.assertRaises(live_tv.LiveError) as caught:
+                    self.app.setup({"operation": "find-network", "authorized": True})
+            self.assertNotIn("nspector", str(caught.exception))
+            self.assertIn("Wi", str(caught.exception))
+            with patch.object(workbench, "confirm_tv", side_effect=OSError(61, "refused")):
+                with self.assertRaises(live_tv.LiveError) as caught:
+                    self.app.setup({"operation": "confirm-tv", "authorized": True, "ip": "192.168.0.10"})
+            self.assertNotIn("nspector", str(caught.exception))
+        finally:
+            (self.root / "device.lock").rmdir()
 
 
 class RemoteTests(unittest.TestCase):

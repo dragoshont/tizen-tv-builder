@@ -52,7 +52,43 @@ class NetworkTests(unittest.TestCase):
             def confirmer(address):
                 called.append(address)
                 return {"ip": address}
-            result = network_tv.discover(confirmer=confirmer)
+            result = network_tv.discover(confirmer=confirmer, interfaces=lambda: [], sweeper=lambda ip: set())
         self.assertEqual(called, ["192.168.0.10"])
         self.assertEqual(len(udp.sent), 3)
         self.assertEqual(result["devices"], [{"ip": "192.168.0.10"}])
+
+    def test_blocked_multicast_still_finds_tvs_by_subnet_sweep(self):
+        class Blocked:
+            def __init__(self, *args):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def setsockopt(self, *args):
+                pass
+            def bind(self, address):
+                pass
+            def settimeout(self, timeout):
+                pass
+            def sendto(self, body, address):
+                raise OSError(65, "No route to host")
+            def recvfrom(self, size):
+                raise network_tv.socket.timeout()
+        swept = []
+        with patch.object(network_tv.socket, "socket", Blocked):
+            result = network_tv.discover(confirmer=lambda ip: {"ip": ip}, interfaces=lambda: ["192.168.0.5"],
+                                         sweeper=lambda ip: swept.append(ip) or {"192.168.0.10"})
+        self.assertEqual(swept, ["192.168.0.5"])
+        self.assertEqual(result["devices"], [{"ip": "192.168.0.10"}])
+
+    def test_sweep_stays_inside_the_private_slash_24(self):
+        probed = []
+        def probe(host, port, timeout):
+            probed.append(host)
+            return host == "192.168.0.10"
+        found = network_tv.sweep("192.168.0.5", probe=probe)
+        self.assertEqual(found, {"192.168.0.10"})
+        self.assertEqual(len(probed), 253)
+        self.assertTrue(all(h.startswith("192.168.0.") for h in probed))
+        self.assertEqual(network_tv.sweep("8.8.8.8", probe=probe), set())

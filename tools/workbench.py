@@ -147,11 +147,11 @@ def run_sdb(tool, args):
         child.wait(timeout=20)
         reader.join(timeout=1)
         if reader.is_alive():
-            fail("sdk", "SDB output did not close; reconcile the owned SDK operation privately")
+            fail("sdk", "The TV tools stopped responding. Try again; if it repeats, restart the TV")
     except subprocess.TimeoutExpired:
         child.kill()
         child.wait(timeout=3)
-        fail("sdk_timeout", "SDB timed out. Device state is uncertain; inspect it in Device Manager before retrying")
+        fail("sdk_timeout", "The TV took too long to answer. Check it is on, then try again")
     finally:
         if child.poll() is None:
             child.kill()
@@ -159,9 +159,9 @@ def run_sdb(tool, args):
         child.stdout.close()
         reader.join(timeout=1)
     if oversized.is_set():
-        fail("limit", "SDB response exceeded its limit; owned process stopped. Device state is uncertain; reconcile before retrying")
+        fail("limit", "The TV sent an unexpected amount of output. Try again")
     if child.returncode:
-        fail("sdk", "SDB refused the operation. Inspect private SDK diagnostics in Device Manager")
+        fail("sdk", "The TV refused that. Check Developer Mode is on and this computer's IP is set as Host PC IP")
     return output.decode("utf-8", errors="replace")
 
 
@@ -230,20 +230,24 @@ class Workbench(App):
                 fail("busy", "Disconnect the preview before changing its setup")
             if operation in {"find-network", "confirm-tv"}:
                 exact(data, {"operation", "authorized"} if operation == "find-network" else {"operation", "authorized", "ip"})
-                if data["authorized"] is not True:
-                    fail("grant", "Authorize local TV discovery first")
-                if self.forward:
-                    fail("busy", "Release the previous forward in Advanced before changing TV setup")
-                lease.acquire()
-                acquired = True
-                if operation == "find-network":
-                    result = discover_tvs()
-                    self.network_devices = result["devices"]
-                    self.setup_message = (f"{len(self.network_devices)} TV(s) found" +
-                                          (f"; {result['unconfirmed']} responders unconfirmed" if result["unconfirmed"] else ""))
-                else:
-                    self.network_devices = [confirm_tv(data["ip"])]
-                    self.setup_message = "TV confirmed"
+                try:
+                    if operation == "find-network":
+                        result = discover_tvs()
+                        self.network_devices = result["devices"]
+                        count = len(self.network_devices)
+                        self.setup_message = (f"Found {count} TV{'s' if count != 1 else ''}. Pick one above." if count else
+                                              "No TVs found. Turn the TV on, use the same Wi-Fi, or enter its IP in Add a TV.")
+                    else:
+                        self.network_devices = [confirm_tv(data["ip"])]
+                        self.setup_message = "TV found. Pick it above."
+                except ValueError as error:
+                    fail("network", str(error) if operation == "confirm-tv" and "private" in str(error)
+                         else "That address did not answer like a Samsung TV. Check the IP in the TV's network settings")
+                except (OSError, http.client.HTTPException):
+                    fail("network", "Can't reach the local network. Check Wi-Fi, and on macOS allow Local Network "
+                                    "for your terminal in System Settings > Privacy & Security"
+                         if operation == "find-network" else
+                         "No answer from that IP. Make sure the TV is on and on the same Wi-Fi")
                 return self.setup_status()
             if operation == "discover":
                 exact(data, {"operation", "serial", "authorized"})
@@ -271,7 +275,7 @@ class Workbench(App):
                 self.apps = []
                 self.detected_serial = ""
                 if not self.devices:
-                    fail("sdk", "No connected TV found. Connect it in Device Manager or enter its address")
+                    fail("sdk", "No TV connected. Click Find TVs, or enter the TV's IP in Add a TV")
                 selected = explicit or (self.devices[0] if len(self.devices) == 1 else "")
                 if not selected:
                     self.setup_message = "Choose a TV, then find its apps"
@@ -356,7 +360,7 @@ class Workbench(App):
             output = self.sdk(serial, ["shell", "0", "debug", app_id] + (["0"] if data["legacy"] else []))
             matches = re.findall(r"(?:port\s*[:=]?\s*)([0-9]{4,5})\b", output, re.IGNORECASE)
             if len(set(matches)) != 1 or not 1024 <= int(matches[0]) <= 65535:
-                fail("debug", "SDK did not return an unambiguous debug port. App may have changed state; inspect in Device Manager")
+                fail("debug", "The app didn't start in debug mode. Close it on the TV and click Connect again")
             remote_port = int(matches[0])
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
@@ -368,14 +372,14 @@ class Workbench(App):
             self.forward = (serial, local_port, remote_port)
             mappings = self.sdk(serial, ["forward", "--list"])
             if not any(line.split() == [serial, f"tcp:{local_port}", f"tcp:{remote_port}"] for line in mappings.splitlines()):
-                fail("cleanup", "Created forward could not be confirmed. Reconcile in Device Manager; no automatic retry")
+                fail("cleanup", "Couldn't open the preview connection. Click Connect again")
             self.inspector_port = local_port
             self.target_pages = self.discover(local_port)
             return self.setup_status()
         except (ValueError, TypeError):
             raise LiveError("invalid", "Setup fields or inspector discovery were invalid") from None
         except (OSError, http.client.HTTPException):
-            raise LiveError("discovery", "Inspector discovery transport failed; check the debug launch and forward privately") from None
+            raise LiveError("discovery", "Couldn't reach the app on the TV. Make sure it's open, then click Connect again") from None
         finally:
             try:
                 if acquired:
@@ -389,7 +393,7 @@ class Workbench(App):
             mappings = self.sdk(serial, ["forward", "--list"])
             expected = [line.split() for line in mappings.splitlines()]
             if not any(parts == [serial, f"tcp:{local}", f"tcp:{remote}"] for parts in expected):
-                fail("cleanup", "Forward ownership mapping changed or disappeared; delete nothing and reconcile privately")
+                fail("cleanup", "The preview connection was closed elsewhere. Click Connect again")
             self.sdk(serial, ["forward", "--remove", f"tcp:{local}"])
             self.forward = None
 

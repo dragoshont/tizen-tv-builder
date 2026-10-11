@@ -1,4 +1,5 @@
-"""Bounded local Samsung discovery. No pairing, device writes or LOCATION fetch."""
+"""Local Samsung TV discovery. Read-only: SSDP plus port-8001 REST info. No pairing or writes."""
+from concurrent.futures import ThreadPoolExecutor
 import http.client
 import ipaddress
 import json
@@ -59,26 +60,76 @@ def confirm(address, budget=1):
         connection.close()
 
 
-def discover(seconds=3, confirmer=confirm):
+def interfaces():
+    """Private IPv4 addresses of this computer, without sending any packet."""
+    found = set()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            found.add(probe.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        found.update(info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
+    except OSError:
+        pass
+    return sorted(a for a in found if local_address(a) and not a.startswith("169.254."))
+
+
+def _open(host, port, timeout):
+    try:
+        with socket.create_connection((host, port), timeout):
+            return True
+    except OSError:
+        return False
+
+
+def sweep(address, probe=_open, port=8001, timeout=.4, workers=64):
+    """Find hosts answering on the Samsung TV port inside this computer's private /24."""
+    if not local_address(address):
+        return set()
+    hosts = [str(h) for h in ipaddress.ip_network(address + "/24", strict=False).hosts() if str(h) != address]
+    with ThreadPoolExecutor(workers) as pool:
+        return {h for h, ok in zip(hosts, pool.map(lambda h: probe(h, port, timeout), hosts)) if ok}
+
+
+def discover(seconds=3, confirmer=confirm, interfaces=interfaces, sweeper=sweep):
+    """SSDP when multicast works, plus a subnet sweep so blocked multicast never hides a TV."""
     addresses = set()
-    deadline = time.monotonic() + seconds
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
-        udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-        udp.bind(("", 0))
-        for service in SERVICES:
-            request = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
-                       'MAN: "ssdp:discover"\r\nMX: 1\r\nST: ' + service + "\r\n\r\n")
-            udp.sendto(request.encode("ascii"), ("239.255.255.250", 1900))
-        while time.monotonic() < deadline and len(addresses) < 12:
-            udp.settimeout(max(.01, deadline - time.monotonic()))
+    local = interfaces()
+    with ThreadPoolExecutor(max(1, len(local))) as pool:
+        sweeps = [pool.submit(sweeper, address) for address in local]
+        deadline = time.monotonic() + seconds
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+            sent = 0
             try:
-                packet, sender = udp.recvfrom(8192)
-            except socket.timeout:
-                break
-            if local_address(sender[0]) and packet.startswith(b"HTTP/1.1 200"):
-                addresses.add(sender[0])
+                udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+                udp.bind(("", 0))
+                for service in SERVICES:
+                    request = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+                               'MAN: "ssdp:discover"\r\nMX: 1\r\nST: ' + service + "\r\n\r\n")
+                    try:
+                        udp.sendto(request.encode("ascii"), ("239.255.255.250", 1900))
+                        sent += 1
+                    except OSError:
+                        continue
+            except OSError:
+                pass
+            while sent and time.monotonic() < deadline and len(addresses) < 12:
+                udp.settimeout(max(.01, deadline - time.monotonic()))
+                try:
+                    packet, sender = udp.recvfrom(8192)
+                except (socket.timeout, OSError):
+                    break
+                if local_address(sender[0]) and packet.startswith(b"HTTP/1.1 200"):
+                    addresses.add(sender[0])
+        for job in sweeps:
+            try:
+                addresses.update(job.result())
+            except OSError:
+                pass
     devices, unavailable = [], 0
-    for address in sorted(addresses):
+    for address in sorted(addresses, key=ipaddress.IPv4Address)[:32]:
         try:
             devices.append(confirmer(address))
         except (OSError, ValueError, http.client.HTTPException):
