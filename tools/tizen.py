@@ -234,7 +234,7 @@ def inspect(port):
             "capture": "not tested by HTTP discovery"}
 
 
-TV_COMMANDS = {"scan", "apps", "info", "open", "screenshot", "portal"}
+TV_COMMANDS = {"scan", "apps", "info", "open", "screenshot", "remove", "uninstall", "cert", "portal"}
 TV_HELP = """Start here:
   setup [--check]                       Prepare this computer (sdb, tizen CLI); installs them if missing
 
@@ -245,6 +245,9 @@ TV commands (TV = IP address, name or tv-xxxxxx alias):
   apps TV                               Every app ID on the TV
   open TV APP                           Open an app's screen (restarts the app)
   screenshot TV --app APP [--out DIR]   Save the app's picture as PNG
+  remove TV APP                         Uninstall exactly APP (alias: uninstall); not installed = nothing to do
+  cert add TV [TV ...]                  Allow these TVs in your signing certificate, one Samsung sign-in
+  cert reset PROFILE [PROFILE ...] --yes   Remove exactly these signing profiles (backed up first)
   portal                                Open the Samsung TV Developer Companion in your browser
   tv COMMAND ...                        Every TV command, e.g. tv setup (guided, to your app on a TV), tv cert add TV, tv key, tv uninstall
 

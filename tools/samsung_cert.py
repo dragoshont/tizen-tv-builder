@@ -510,6 +510,153 @@ def commit(folder, work, names, prepare_profiles, profiles_path):
             shutil.rmtree(old, ignore_errors=True)
 
 
+# ---- Removing signing profiles -----------------------------------------------------------------
+
+PROFILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def _inside(path, root):
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def keychain_delete(account, system=None, run=subprocess.run):
+    """(state, detail) for deleting one Tizen Studio password from the macOS Keychain."""
+    if (system or platform.system()) != "Darwin":
+        return "not-applicable", "no Keychain on this system"
+    try:
+        done = run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account],
+                   capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        return "error", "security could not run: " + type(error).__name__
+    if done.returncode == 0:
+        return "deleted", ""
+    if done.returncode == 44:  # errSecItemNotFound: already gone.
+        return "absent", ""
+    detail = (done.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+    return "error", "security exited " + str(done.returncode) + (": " + detail[-1][:200] if detail else "")
+
+
+def reset_plan(names, *, profiles_path, cert_home):
+    """What `cert reset` would remove, for exactly the named profiles. Raises CertError, changes nothing.
+
+    A profile's certificate folder is <cert_home>/<name>; key files outside it are kept and listed.
+    Refused: unsafe names, symbolic links, folders outside cert_home, and a folder another
+    (kept) profile still uses, because deleting it would break that profile."""
+    names = list(dict.fromkeys(names))
+    if not names or not all(isinstance(n, str) and PROFILE_NAME.fullmatch(n) for n in names):
+        raise CertError("invalid", "Name the signing profiles to remove exactly, e.g. plx-tv tv-companion",
+                        "Use letters, digits, '.', '_' or '-'")
+    cert_home = Path(cert_home)
+    if cert_home.is_symlink():
+        raise CertError("symlink", f"{cert_home} is a symbolic link; refusing to change it", "Replace it with a folder")
+    root = _load(profiles_path)
+    plan = []
+    for name in names:
+        entries = [p for p in root.findall("profile") if p.get("name") == name]
+        folder = cert_home / name
+        if folder.is_symlink():
+            raise CertError("symlink", f"{folder} is a symbolic link; refusing to remove it", "Check the folder")
+        if folder.exists() and (not folder.is_dir() or not _inside(folder, cert_home)):
+            raise CertError("outside", f"{folder} is not a certificate folder; refusing to remove it", "Check the folder")
+        keys, passwords = [], []
+        for entry in entries:
+            for item in entry.iter("profileitem"):
+                if item.get("key"):
+                    keys.append(item.get("key"))
+                password = item.get("password") or ""
+                if password.endswith(".pwd"):
+                    passwords.append(password)
+        if folder.is_dir():
+            for path in folder.rglob("*"):
+                if path.is_symlink():
+                    raise CertError("symlink", f"{path} is a symbolic link; refusing to remove {folder}",
+                                    "Check the folder")
+                if path.suffix == ".pwd" and path.is_file():
+                    passwords.append(str(path))
+        plan.append({"profile": name, "entry": bool(entries), "active": root.get("active") == name,
+                     "folder": str(folder) if folder.is_dir() else None,
+                     "kept_files": sorted({k for k in keys if not _inside(Path(k).expanduser(), folder)}),
+                     "keychain": sorted({p for p in passwords if _inside(Path(p).expanduser(), folder) or
+                                         Path(p).expanduser().parent == folder})})
+    removing = {Path(p["folder"]).resolve() for p in plan if p["folder"]}
+    for other in root.findall("profile"):
+        if other.get("name") in names:
+            continue
+        for item in other.iter("profileitem"):
+            for value in (item.get("key") or "", item.get("password") or ""):
+                if value and any(_inside(Path(value).expanduser(), f) for f in removing):
+                    raise CertError("in-use", f"Profile {other.get('name')!r} still uses files in a folder to remove",
+                                    "Reset that profile too, or keep this one")
+    return plan
+
+
+def reset_profiles(names, *, profiles_path, cert_home, backup_root, clock=time.time, system=None,
+                   run=subprocess.run):
+    """Remove exactly the named signing profiles: profiles.xml entries, certificate folders, Keychain passwords.
+
+    Everything removed is first copied to a private, timestamped folder under backup_root (outside
+    the active certificate folders). A profile that is not there is a no-op. Returns a receipt."""
+    plan = reset_plan(names, profiles_path=profiles_path, cert_home=cert_home)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(clock()))
+    receipt = {"time": stamp, "profiles": plan, "backup": None, "keychain_errors": []}
+    todo = [p for p in plan if p["entry"] or p["folder"]]
+    if not todo:
+        for item in plan:
+            item["state"] = "not-present"
+        return receipt
+    profiles_path = Path(profiles_path)
+    if _inside(backup_root, cert_home):
+        raise CertError("backup", "The backup folder must be outside the certificate folder", "Choose another folder")
+    Path(backup_root).mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = Path(tempfile.mkdtemp(prefix="cert-reset-" + stamp + "-", dir=backup_root))
+    if profiles_path.is_file():
+        shutil.copy2(profiles_path, target / "profiles.xml")
+    for item in todo:
+        if item["folder"]:
+            shutil.copytree(item["folder"], target / item["profile"], symlinks=True)
+    receipt["backup"] = str(target)
+
+    root = _load(profiles_path)
+    gone = {p["profile"] for p in todo}
+    for old in [p for p in root.findall("profile") if p.get("name") in gone]:
+        root.remove(old)
+    if root.get("active") in gone:
+        root.set("active", "")
+    aside = []
+    try:
+        for item in todo:
+            if item["folder"]:
+                moved = Path(tempfile.mkdtemp(prefix=".reset-", dir=Path(item["folder"]).parent))
+                os.replace(item["folder"], moved / "folder")
+                aside.append((moved, item["folder"]))
+        if profiles_path.is_file():
+            temporary = profiles_path.with_name(profiles_path.name + ".tmp")
+            temporary.write_text('<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' +
+                                 ET.tostring(root, encoding="unicode") + "\n", encoding="utf-8")
+            os.replace(temporary, profiles_path)
+    except BaseException:
+        for moved, folder in aside:
+            os.replace(moved / "folder", folder)
+            shutil.rmtree(moved, ignore_errors=True)
+        raise
+    for moved, _ in aside:
+        shutil.rmtree(moved, ignore_errors=True)
+    for item in plan:
+        item["state"] = "removed" if item in todo else "not-present"
+        item["keychain_result"] = {}
+        for account in item["keychain"] if item in todo else []:
+            state, detail = keychain_delete(account, system=system, run=run)
+            item["keychain_result"][account] = state
+            if state == "error":
+                receipt["keychain_errors"].append(account + ": " + detail)
+    (target / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    return receipt
+
+
 # ---- The whole job ----------------------------------------------------------------------------
 
 def add_tvs(duids, *, profiles_path, cert_home, openssl, ca, progress, browser, signin=SignIn,

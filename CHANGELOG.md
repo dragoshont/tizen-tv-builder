@@ -31,7 +31,15 @@ intentionally breaking them. No version number is a claim of TV model support.
   drained into a bounded buffer that keeps the newest bytes under one deadline; the
   TV's app list then decides installed, not installed (absence proven) or unknown.
   An install refuses a `tizen -t` name shared by two connected TVs of one model.
-- Not production-ready: live certificate sign-in, HTTPS-URL install, the Tizen Studio
+- Batch certificate: `cert add TV1 TV2 ...` reads every TV's DUID first, then one
+  Samsung sign-in covers all of them plus the TVs already covered, with the same author;
+  already covered = no sign-in; non-zero exit if any TV is not allowed.
+- `remove TV APP` (alias `uninstall`): reads the app list first (not installed = no-op,
+  unreadable = stop), uninstalls exactly that app, confirms by the app list, prints a receipt.
+- `cert reset PROFILE... [--yes]`: plan without `--yes`; with it, removes exactly those
+  signing profiles (profiles.xml entry, certificate folder, macOS Keychain passwords)
+  after a backup and receipt; refuses symlinks, unsafe names and shared folders.
+- Not production-ready: live batch sign-in, remove/reset on a TV, live certificate sign-in, HTTPS-URL install, the Tizen Studio
   installer and Developer Mode detection on a fresh TV still need device acceptance.
 
 ## 0.1.0 - 2026-10-11

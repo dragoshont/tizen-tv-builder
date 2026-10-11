@@ -474,3 +474,66 @@ class TvCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CertResetCliTests(unittest.TestCase):
+    """`tizen.py cert reset PROFILE... [--yes]`: a plan without --yes, a receipt with it. Never a TV."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "SamsungCertificate"
+        self.profiles = self.root / "tizen-data" / "profile" / "profiles.xml"
+        self.profiles.parent.mkdir(parents=True)
+        body = ""
+        for name in ("plx-tv", "tv-companion", "store-dev"):
+            (self.home / name).mkdir(parents=True)
+            (self.home / name / "author.p12").write_bytes(b"k")
+            body += f'<profile name="{name}"><profileitem distributor="0" key="{self.home / name / "author.p12"}" password="inline"/></profile>'
+        self.profiles.write_text(f'<profiles active="plx-tv">{body}</profiles>')
+        patch = mock.patch.object(tv, "cert_places", lambda: (self.profiles, self.home))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_cli(self, *argv):
+        out = io.StringIO()
+        fleet = lambda **kw: self.fail("cert reset never builds a fleet or contacts a TV")  # noqa: E731
+        code = tv.main(list(argv), fleet_factory=fleet, stdout=out, stderr=io.StringIO(), state_dir=self.root / "state")
+        return code, out.getvalue()
+
+    def test_without_yes_only_shows_the_plan(self):
+        before = self.profiles.read_bytes()
+        code, out = self.run_cli("cert", "reset", "plx-tv", "tv-companion")
+        self.assertEqual(code, 1)
+        self.assertIn("nothing was changed; add --yes", out)
+        self.assertIn("plx-tv: would remove profiles.xml entry (active)", out)
+        self.assertEqual(self.profiles.read_bytes(), before)
+        self.assertTrue((self.home / "plx-tv").is_dir())
+
+    def test_yes_removes_exactly_those_and_prints_a_receipt(self):
+        code, out = self.run_cli("cert", "reset", "plx-tv", "tv-companion", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Certificate reset receipt", out)
+        self.assertIn("plx-tv: removed profiles.xml entry (active)", out)
+        self.assertIn("Backup: " + str(self.root / "state" / "cert-backups"), out)
+        self.assertTrue((self.home / "store-dev" / "author.p12").is_file())
+        self.assertFalse((self.home / "plx-tv").exists())
+        self.assertIn('name="store-dev"', self.profiles.read_text())
+        code, out = self.run_cli("cert", "reset", "plx-tv", "--yes")
+        self.assertEqual(code, 0)
+        self.assertIn("plx-tv: not present (nothing to remove)", out)
+
+    def test_refusal_changes_nothing(self):
+        (self.home / "plx-tv" / "loop").symlink_to(self.root)
+        before = self.profiles.read_bytes()
+        code, out = self.run_cli("cert", "reset", "plx-tv", "--yes")
+        self.assertEqual(code, 1)
+        self.assertIn("Refused:", out)
+        self.assertIn("Nothing was changed", out)
+        self.assertEqual(self.profiles.read_bytes(), before)
+        self.assertFalse((self.root / "state" / "cert-backups").exists())
+        code, out = self.run_cli("cert", "reset")
+        self.assertNotEqual(code, 0)

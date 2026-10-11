@@ -1265,23 +1265,33 @@ class Fleet:
                                      "message": "Started " + app, "next": None, "app": app})
 
     def remove(self, alias, data):
-        """Uninstall, then re-list: on Tizen 5.0 `tizen uninstall` can exit 0 and change nothing."""
+        """Uninstall one exact app ID, proven by the TV's app list before and after.
+
+        Not listed: nothing to do (no uninstall is sent). List unreadable first: nothing is sent.
+        On Tizen 5.0 `tizen uninstall` can exit 0 and change nothing, so only the re-list proves removal."""
         record = self._change(alias, data, {"app"})
         app = self._app(data["app"])
+        result = {"op": "remove", "app": app, "next": None}
+        before = self._installed_apps(record["serial"])
+        self._remember_apps(record, before)
+        if before is None:
+            result.update(ok=False, code="apps-unreadable", next="Try again; if it repeats, reconnect the TV",
+                          message="The TV's app list could not be read, so nothing was removed")
+            return self._finish(record, result)
+        if app not in before:
+            result.update(ok=True, code="not-installed", message=app + " is not installed on this TV: nothing to remove")
+            return self._finish(record, result)
         failed, text = self._tizen(["uninstall", "-p", app, "-t", self._device_name(record["serial"])])
         listed = self._installed_apps(record["serial"])
         self._remember_apps(record, listed)
-        result = {"op": "remove", "app": app, "next": None}
         if listed is None:
             result.update(ok=False, code="remove-unconfirmed",
                           message="Sent the uninstall, but the TV's app list could not be read to confirm it",
                           next=DELETE_ON_TV)
         elif app in listed:
-            result.update(ok=False, code="still-installed",
-                          message=app + " is still installed: the TV ignored the uninstall command "
-                                        "(observed on Tizen 5.0)", next=DELETE_ON_TV)
-        elif failed or re.search(r"not exist", text, re.I):
-            result.update(ok=False, code="not-installed", message=app + " is not installed on this TV")
+            result.update(ok=False, code="still-installed", output=scrub(text)[-400:] if failed else None,
+                          message=app + " is still installed: the TV did not remove it"
+                                        + ("" if failed else " (observed on Tizen 5.0)"), next=DELETE_ON_TV)
         else:
             result.update(ok=True, code="removed", message="Removed " + app + " (confirmed by the TV's app list)")
             with self.lock:

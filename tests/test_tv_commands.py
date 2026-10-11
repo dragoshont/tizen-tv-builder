@@ -31,7 +31,8 @@ class Dispatch(unittest.TestCase):
     def test_tv_commands_go_to_the_tv_cli_with_the_same_arguments(self):
         for argv in (["scan"], ["scan", "--json"], ["apps", "Sebi"], ["info", "Sebi", "--app", APP],
                      ["open", "Sebi", APP], ["screenshot", "Sebi", "--app", APP, "--out", "/tmp/x"],
-                     ["portal", "--port", "47900"]):
+                     ["remove", "Sebi", APP], ["uninstall", "Sebi", APP], ["cert", "add", "Sebi", "Bedroom"],
+                     ["cert", "reset", "plx-tv", "tv-companion", "--yes"], ["portal", "--port", "47900"]):
             self.assertEqual(self.tv_argv(*argv), argv)
 
     def test_legacy_tv_namespace_still_works(self):

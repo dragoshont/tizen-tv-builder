@@ -15,6 +15,7 @@ import tempfile
 import textwrap
 import threading
 import unittest
+from unittest import mock
 import urllib.request
 import zipfile
 
@@ -594,22 +595,51 @@ class RemoveVerificationTests(FirstRunBase):
         finally:
             fleet.close()
 
-    def test_unlistable_tv_leaves_removal_unconfirmed_not_successful(self):
+    def uninstalls(self):
+        return [c for c in self.calls("tizen") if c[0] == "uninstall"]
+
+    def test_unreadable_app_list_first_sends_no_uninstall(self):
         fleet, alias = self.installed_fleet()
         try:
-            self.set_scenario(install="ok", applist="closed")
-            result = fleet.remove(alias, {"confirm": alias, "app": APP})
-            self.assertEqual((result["ok"], result["code"]), (False, "remove-unconfirmed"))
-            self.assertIn("Delete", result["next"])
+            for applist in ("closed", "truncated"):
+                self.set_scenario(install="ok", applist=applist)
+                result = fleet.remove(alias, {"confirm": alias, "app": APP})
+                self.assertEqual((result["ok"], result["code"]), (False, "apps-unreadable"))
+                self.assertIn("nothing was removed", result["message"])
+            self.assertEqual(self.uninstalls(), [])
+            self.assertEqual(self.state()["installed"], [APP])
         finally:
             fleet.close()
 
-    def test_truncated_list_is_unconfirmed_not_a_removal(self):
+    def test_an_app_that_is_not_listed_is_a_no_op_without_an_uninstall(self):
         fleet, alias = self.installed_fleet()
         try:
-            self.set_scenario(install="ok", applist="truncated")
-            result = fleet.remove(alias, {"confirm": alias, "app": APP})
+            other = "ZzZzZzZzZz.Other"
+            result = fleet.remove(alias, {"confirm": alias, "app": other})
+            self.assertEqual((result["ok"], result["code"]), (True, "not-installed"))
+            self.assertIn("nothing to remove", result["message"])
+            self.assertEqual(self.uninstalls(), [])
+            self.assertTrue(fleet.remove(alias, {"confirm": alias, "app": APP})["ok"])
+            again = fleet.remove(alias, {"confirm": alias, "app": APP})
+            self.assertEqual((again["ok"], again["code"]), (True, "not-installed"), "Repeating is a no-op")
+            self.assertEqual(len(self.uninstalls()), 1)
+        finally:
+            fleet.close()
+
+    def test_unreadable_list_after_the_uninstall_is_unconfirmed_not_successful(self):
+        fleet, alias = self.installed_fleet()
+        tizen = fleet._tizen
+
+        def then_unreadable(args, timeout=120):
+            answer = tizen(args, timeout)
+            if args[0] == "uninstall":
+                self.set_scenario(install="ok", applist="closed")
+            return answer
+        try:
+            with mock.patch.object(fleet, "_tizen", then_unreadable):
+                result = fleet.remove(alias, {"confirm": alias, "app": APP})
             self.assertEqual((result["ok"], result["code"]), (False, "remove-unconfirmed"))
+            self.assertIn("Delete", result["next"])
         finally:
             fleet.close()
 

@@ -27,6 +27,8 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import appkit  # noqa: E402
 import live_tv  # noqa: E402
+import samsung_cert  # noqa: E402
+import tv_fleet  # noqa: E402
 from live_tv import LiveError, read_profile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,9 +56,10 @@ def parser():
         "  screenshot TV --app APP [--out DIR]   Save the app's picture as PNG\n"
         "  key TV KEY... --app APP               Send remote keys to the app: " + ", ".join(KEYS) + "\n"
         "  install TV WGT_OR_HTTPS_URL [--sign PROFILE]   Sign with the active profile and install\n"
-        "  uninstall TV APP       Uninstall an app\n"
+        "  uninstall TV APP       Uninstall exactly APP; not installed = nothing to do, checked on the TV\n"
         "  cert TV | cert add TV [TV ...]  Certificate coverage / allow TVs (one sign-in for all)\n"
         "  cert use TV PROFILE    Make PROFILE the active signing profile (one that allows this TV)\n"
+        "  cert reset PROFILE [PROFILE ...] [--yes]   Remove exactly these signing profiles (backed up first)\n"
         "  duid TV                Print the TV's Device ID (DUID)\n"
         "  rename TV NAME         Name a TV\n"
         "  setup [TV]             Guided setup, step by step, to your app on the TV screen\n"
@@ -87,8 +90,12 @@ def parser():
     item.add_argument("tv", nargs="?", help="The TV to set up (default: the one that answers)")
     item.add_argument("--check", action="store_true",
                       help="Only report what this computer has for signing and installing; changes nothing")
-    item = sub.add_parser("cert", help="Certificate coverage for a TV, or `cert add TV [TV ...]` (one sign-in)")
-    item.add_argument("words", nargs="+", metavar="TV | add TV [TV ...] | use TV PROFILE")
+    item = sub.add_parser("cert", help="Certificate coverage for a TV, `cert add TV [TV ...]` (one sign-in), "
+                                       "or `cert reset PROFILE [PROFILE ...] --yes`")
+    item.add_argument("words", nargs="+", metavar="ARGS",
+                      help="TV | add TV [TV ...] | use TV PROFILE | reset PROFILE [PROFILE ...]")
+    item.add_argument("--yes", action="store_true",
+                      help="cert reset only: really remove the named profiles (without it, only shows what would go)")
     item = sub.add_parser("install", help="Sign a .wgt with the active profile and install it")
     item.add_argument("tv")
     item.add_argument("package", help="A .wgt file, or an https:// link to one")
@@ -632,6 +639,57 @@ def cert_wait(fleet, alias, job, say, sleep=time.sleep):
     return result(say, dict(job, steps=None))
 
 
+def cert_places():
+    """(profiles.xml, certificate home) the Tizen CLI signs with."""
+    return tv_fleet.default_data_root() / "profile" / "profiles.xml", Path.home() / "SamsungCertificate"
+
+
+def cert_reset(names, yes, state_dir, say):
+    """`cert reset PROFILE...`: remove exactly the named signing profiles. Never contacts a TV."""
+    if not names:
+        raise Usage("Use: tv cert reset PROFILE [PROFILE ...] --yes   (e.g. cert reset plx-tv tv-companion --yes)")
+    profiles_path, cert_home = cert_places()
+    try:
+        plan = samsung_cert.reset_plan(names, profiles_path=profiles_path, cert_home=cert_home)
+        if not yes:
+            say("Would remove (nothing was changed; add --yes to remove):")
+            for item in plan:
+                say("  " + reset_line(item, pending=True))
+            return 1
+        receipt = samsung_cert.reset_profiles(names, profiles_path=profiles_path, cert_home=cert_home,
+                                              backup_root=Path(state_dir) / "cert-backups")
+    except samsung_cert.CertError as error:
+        say("Refused: " + error.message + ". Nothing was changed.")
+        say("Next: " + error.next)
+        return 1
+    except OSError as error:
+        say("Certificate reset failed: " + type(error).__name__ + ". Check the backup folder before retrying.")
+        return 1
+    say("Certificate reset receipt (" + receipt["time"] + "):")
+    for item in receipt["profiles"]:
+        say("  " + reset_line(item))
+    if receipt["backup"]:
+        say("Backup: " + receipt["backup"])
+    for error in receipt["keychain_errors"]:
+        say("Keychain error: " + error)
+    if receipt["keychain_errors"]:
+        say("Next: open Keychain Access and delete the listed certificate-manager entries")
+        return 1
+    return 0
+
+
+def reset_line(item, pending=False):
+    if not item["entry"] and not item["folder"]:
+        return item["profile"] + ": not present (nothing to remove)"
+    parts = (["profiles.xml entry" + (" (active)" if item["active"] else "")] if item["entry"] else []) + \
+        ([item["folder"]] if item["folder"] else []) + \
+        ([str(len(item["keychain"])) + " Keychain password(s)"] if item["keychain"] else [])
+    line = item["profile"] + (": would remove " if pending else ": removed ") + ", ".join(parts)
+    if item["kept_files"]:
+        line += "; kept (used from outside its folder): " + ", ".join(item["kept_files"])
+    return line
+
+
 def cert_batch(fleet, state, names, say):
     """`tv cert add TV1 TV2 ...`: read every TV's Device ID first, then one Samsung sign-in for all."""
     tvs = list({tv["alias"]: tv for tv in (find(state, name) for name in names)}.values())
@@ -879,8 +937,13 @@ def act(args, fleet, tv, say):
             if args.sign:
                 data["sign"] = args.sign
             return result(say, fleet.install(alias, data))
-        verb = "remove" if command == "uninstall" else command
-        return result(say, getattr(fleet, verb)(alias, {"app": args.app}))
+        if command == "uninstall":
+            job = fleet.remove(alias, {"app": args.app})
+            code = result(say, job)
+            say("Receipt: " + time.strftime("%Y-%m-%d %H:%M:%S") + f" {title(connected)} ({alias}) app {args.app}: "
+                + job.get("code", "failed") + (" (verified by the TV's app list)" if job.get("ok") else ""))
+            return code
+        return result(say, getattr(fleet, command)(alias, {"app": args.app}))
     finally:
         release(fleet, alias, say)
 
@@ -958,6 +1021,8 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
         for line in setup_lines(report):
             say(line)
         return 0 if report["ready"] else 1
+    if args.command == "cert" and args.words[0] == "reset":
+        return cert_reset(args.words[1:], args.yes, state_dir, say)
     if args.command == "cert":
         words = args.words
         args.add = words[0] == "add" and len(words) >= 2

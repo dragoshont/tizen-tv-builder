@@ -27,9 +27,8 @@ In short:
 ## 2. Get the companion and set up this computer
 
 ```sh
-gh repo clone dragoshont/tizen-tv-builder
+git clone https://github.com/dragoshont/tizen-tv-builder.git
 cd tizen-tv-builder
-git checkout dragoshont-samsung-tv-remote-toolkit
 python3 tools/tizen.py setup
 ```
 
@@ -65,20 +64,54 @@ status. A prepared TV shows "Developer Mode ready". "Not ready" means Developer 
 on but the Host PC IP points to another computer. A TV that is switched off stays listed
 as "Not reachable"; turn it on and scan again.
 
-## 5. Allow installing your apps on this TV
+## 5. Allow installing your apps on your TVs
 
 ```sh
 python3 tools/tizen.py tv cert NAME
-python3 tools/tizen.py tv cert add NAME
+python3 tools/tizen.py cert add NAME
+python3 tools/tizen.py cert add NAME1 NAME2 NAME3 NAME4
 ```
 
 `tv cert NAME` says whether your certificate already allows this TV. If it doesn't,
-`tv cert add NAME` creates or renews it: Samsung sign-in opens in your browser, and that
-is the only thing you do. There is no profile name to choose and no password to type; the
+`cert add` creates or renews it: Samsung sign-in opens in your browser, and that is the
+only thing you do. There is no profile name to choose and no password to type; the
 companion makes the profile `tv-companion`, keeps a backup of your previous files and makes
 it the one used for installs. On macOS the password goes to the login Keychain, as Tizen
 Studio does it. If your apps were signed with a different author certificate, the result
 says they need to be reinstalled. Details: [live canvas](live-canvas.md).
+
+With several TVs, name them all: the companion first reads every TV's device ID (DUID)
+and stops before any sign-in if one can't be read. Then **one** Samsung sign-in makes one
+certificate for all of them, keeping the TVs your certificate already allowed and the same
+author certificate. The result lists every TV as "can install your apps" or "not allowed
+yet", and the command fails if any TV is not allowed. If every named TV is already
+allowed, nothing opens and nothing changes. Ctrl+C cancels the sign-in; nothing is changed
+and running the same command starts a new one.
+
+### Starting over (optional)
+
+To remove an app you installed before, and the old signing profiles, from a clean slate:
+
+```sh
+python3 tools/tizen.py remove NAME APP
+python3 tools/tizen.py cert reset PROFILE [PROFILE...]
+python3 tools/tizen.py cert reset PROFILE [PROFILE...] --yes
+```
+
+- `remove NAME APP` (also `uninstall`) removes exactly that app ID. It reads the TV's app
+  list first: not installed means nothing to do (success, nothing sent); an unreadable list
+  means it stops before uninstalling. After uninstalling it reads the list again and says
+  "removed" only when the app is gone; still listed or unreadable is a failure. It prints a
+  one-line receipt. It never removes other apps.
+- `cert reset PROFILE...` without `--yes` only shows what would be removed and changes
+  nothing. With `--yes` it removes exactly those signing profiles: their `profiles.xml`
+  entries, their folder under `~/SamsungCertificate`, and (on macOS) their Keychain
+  passwords. A backup and a `receipt.json` are written to the companion's state folder
+  first. A missing profile is nothing to do. It refuses, changing nothing, for symbolic
+  links, unsafe names, folders outside `~/SamsungCertificate`, or a folder that another
+  profile still uses. Files a profile uses from elsewhere are kept and listed. After a
+  reset, `cert add` makes a new author certificate, so apps signed before must be
+  reinstalled.
 
 ## 6. Install, open and check your app
 
@@ -90,7 +123,7 @@ python3 tools/tizen.py info NAME --app APP
 python3 tools/tizen.py open NAME APP
 python3 tools/tizen.py screenshot NAME --app APP --out ~/Pictures/TV-Screenshots
 python3 tools/tizen.py info NAME --connect
-python3 tools/tizen.py tv uninstall NAME APP
+python3 tools/tizen.py remove NAME APP
 ```
 
 NAME is the TV's IP address, its name as `scan` shows it, or its `tv-xxxxxx` alias.
@@ -109,10 +142,13 @@ NAME is the TV's IP address, its name as `scan` shows it, or its `tv-xxxxxx` ali
 - `screenshot` saves the app's picture as a PNG (default folder `~/Pictures/TV Screenshots`).
 - `info --connect` shows every detail the portal shows, including the Tizen version,
   certificate coverage and apps.
-- `tv uninstall` removes the app and checks the app list again. Some TVs (Tizen 5.0) report
-  success without removing it; then the command tells you to delete it on the TV.
+- `install` again with the same package is safe. "Installed" means the app is listed; a
+  version is shown only when the TV lists one, so an app that was already there is not proof
+  that the new version replaced it.
+- `remove` removes the app and checks the app list again (see above). Some TVs (Tizen 5.0)
+  report success without removing it; then the command says it is still installed.
 
-Every other TV command (`setup`, `cert`, `uninstall`, `key`, ...) stays under
+Every other TV command (`setup`, `key`, ...) stays under
 `python3 tools/tizen.py tv COMMAND`, and `python3 tools/tizen.py tv install NAME APP.wgt`
 (TV first) still works. The older sdb form `python3 tools/tizen.py install --serial SERIAL APP.wgt`
 is unchanged.

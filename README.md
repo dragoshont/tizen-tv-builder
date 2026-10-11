@@ -141,7 +141,7 @@ The plugin includes the Python tools, docs and a small hello app. Run the comman
 below from an extracted release or a repository checkout. To get a checkout:
 
 ```sh
-gh repo clone dragoshont/tizen-tv-builder
+git clone https://github.com/dragoshont/tizen-tv-builder.git
 cd tizen-tv-builder
 python3 tools/tizen.py --version
 python3 tools/tizen.py doctor
