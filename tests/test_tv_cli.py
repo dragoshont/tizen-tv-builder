@@ -100,6 +100,36 @@ class TvCliTests(unittest.TestCase):
         self.assertIn("12345", out.replace(" ", ""))  # The Developer Mode step, not the TV address.
         self.assertNotIn(LAN_A, out + err)
 
+    def test_info_prints_portal_detail_rows_without_contacting_the_tv(self):
+        alias = self.alias()
+        code, out, err = self.run_cli("info", alias)
+        self.assertEqual((code, err), (0, ""))
+        for row in (r"Model +UE55NU7400", r"Model year +2018", r"Developer port +open", r"Device ID \(DUID\) +not read",
+                    r"This computer's IP to enter on the TV +10\.255\.255\.10"):
+            self.assertRegex(out, row)
+        self.assert_private(out)
+        self.assertEqual(self.sdb.mutations(), [])
+
+    def test_info_connect_reads_identity_and_certificate_then_disconnects(self):
+        alias = self.alias()
+        code, out, err = self.run_cli("--profile", str(self.profile), "info", alias, "--connect")
+        self.assertEqual((code, err), (0, ""))
+        self.assertRegex(out, r"Device ID \(DUID\) +present \(hidden\)")
+        self.assertRegex(out, r"Certificate +includes this TV")
+        self.assertRegex(out, r"OS +Tizen 4\.0 \(observed")
+        self.assertRegex(out, r"Link +none")
+        self.assert_private(out)
+        self.assertEqual([c[0] for c in self.sdb.mutations()], ["connect", "disconnect"])
+        self.assertEqual(list(self.root.glob("tizen-tv-*.lock")), [])
+
+    def test_info_show_duid_prints_it_only_when_asked(self):
+        alias = self.alias()
+        code, out, _ = self.run_cli("--profile", str(self.profile), "info", alias, "--show-duid")
+        self.assertEqual(code, 0)
+        self.assertIn(DUID, out)
+        self.assertNotIn(LAN_A, out)
+        self.assertEqual([c[0] for c in self.sdb.mutations()], ["connect", "disconnect"])
+
     def test_unknown_alias_and_raw_address_are_refused(self):
         for target in ("tv-ffffff", LAN_A):
             code, _, err = self.run_cli("connect", target, "--yes")

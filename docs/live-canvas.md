@@ -222,6 +222,9 @@ python3 tools/tizen.py tv scan                # find Samsung TVs; shows model, m
 python3 tools/tizen.py tv list                # last scan again, without contacting any TV
 python3 tools/tizen.py tv check tv-abc123     # is Developer Mode really working?
 python3 tools/tizen.py tv connect tv-abc123   # connect, identify, then disconnect
+python3 tools/tizen.py tv info tv-abc123      # every detail the portal shows, incl. this computer's IP for the TV
+python3 tools/tizen.py tv info tv-abc123 --connect     # adds Tizen version, DUID (hidden) and certificate match
+python3 tools/tizen.py tv info tv-abc123 --show-duid   # same, and prints the DUID
 python3 tools/tizen.py tv rename tv-abc123 "Den TV"
 python3 tools/tizen.py tv portal              # prints http://127.0.0.1:47811/ (or a free port)
 ```

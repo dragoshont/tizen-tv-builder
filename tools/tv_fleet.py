@@ -548,6 +548,7 @@ class Fleet:
                 "details": {"network": redacted_address(record.get("host")),
                             "developer_port": "open" if record["reachable"] else "closed or unknown",
                             "sdk_link": record["sdb_state"] or "none",
+                            "host_ip": self.host_ip(record),
                             "duid": "present (hidden)" if (record["identity"] or {}).get("duid_present") else "not read"}}
 
     def state(self):

@@ -37,6 +37,7 @@ def parser():
         "  list                   Show the TVs from the last scan (no network contact)\n"
         "  check ALIAS            Test Developer Mode: port open, connection accepted, identity\n"
         "  connect ALIAS          Connect, identify (install readiness), then disconnect\n"
+        "  info ALIAS [--connect] Every detail the portal shows for this TV (--show-duid to print the DUID)\n"
         "  setup                  What this computer has for signing and installing (detects only)\n"
         "  duid ALIAS             Read the TV's certificate DUID (hidden unless --show or --out)\n"
         "  cert ALIAS             Which certificate this TV needs, with the DUID saved privately\n"
@@ -60,6 +61,11 @@ def parser():
     item = sub.add_parser("connect", help="Connect to a scanned TV, identify it, then disconnect")
     item.add_argument("alias")
     item.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)  # Accepted for older scripts.
+    item = sub.add_parser("info", help="Show every detail the portal shows for a scanned TV")
+    item.add_argument("alias")
+    item.add_argument("--connect", action="store_true",
+                      help="Also connect to read the Tizen version, DUID and certificate match, then disconnect")
+    item.add_argument("--show-duid", action="store_true", help="Print the DUID (implies --connect)")
     sub.add_parser("setup", help="Check sdb, the tizen CLI and signing profiles; installs nothing")
     item = sub.add_parser("duid", help="Read the TV's certificate DUID over the developer link")
     item.add_argument("alias")
@@ -388,6 +394,8 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
             return 0
         if args.command == "check":
             return check(fleet, tv, say)
+        if args.command == "info":
+            return info(args, fleet, tv, say)
         if args.command in {"duid", "cert", "install", "launch", "remove"}:
             return first_run(args, fleet, tv, say, state_dir)
         say(f"Connecting to {tv['name']}…")
@@ -412,6 +420,66 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
         return 0
     finally:
         fleet.close()
+
+
+CERTIFICATE_TEXT = {"match": "includes this TV", "mismatch": "does not include this TV",
+                    "unconfigured": "not configured (install needs a certificate with this TV)"}
+
+
+def detail_rows(tv):
+    """The portal's TV detail panel (ui.js), row for row, from the same Fleet state."""
+    meta, d = tv.get("metadata") or {}, tv.get("details") or {}
+    year = meta.get("model_year") or {}
+    os_info = meta.get("os")
+    dev = tv.get("dev_mode") or {}
+    return [("Name", tv.get("name")), ("Alias", tv.get("alias")), ("Status", tv.get("label")),
+            ("Name source", "Your name" if tv.get("renamed") else
+             "From the TV" if tv.get("default_name") == tv.get("name") else "Default"),
+            ("Network address", d.get("network")), ("Developer port", d.get("developer_port")),
+            ("Link", d.get("sdk_link")), ("Device ID (DUID)", d.get("duid")),
+            ("Certificate", CERTIFICATE_TEXT.get(tv.get("certificate"), tv.get("certificate"))),
+            ("Manufacturer", meta.get("manufacturer")), ("Model", meta.get("model")), ("Family", meta.get("family")),
+            ("Model year", f"{year['value']} ({year.get('provenance')})" if year.get("value") else "Unknown"),
+            ("OS", f"{os_info['text']} ({os_info.get('provenance')})" if os_info else None),
+            ("Platform baseline", meta.get("baseline")), ("Resolution", meta.get("resolution")),
+            ("The Frame", "Yes" if meta.get("frame_tv") else None), ("Firmware", meta.get("firmware")),
+            ("Developer Mode", dev.get("explanation") or dev.get("label")),
+            ("This computer's IP to enter on the TV", d.get("host_ip")),
+            ("Next", dev.get("next") if dev.get("next") not in (None, "", "None") else None),
+            ("Install", tv.get("install"))]
+
+
+def info(args, fleet, tv, say):
+    """Read-only by default; --connect adds the identity rows and always disconnects what it connected."""
+    alias, duid, code = tv["alias"], None, 0
+    if args.connect or args.show_duid:
+        try:
+            fleet.connect(alias, {"confirm": alias})
+        except LiveError:
+            code = 1
+        else:
+            try:
+                fleet.identify(alias, {})
+                if args.show_duid:
+                    duid = fleet.read_duid(alias)
+            except LiveError:
+                code = 1
+            finally:
+                tv = find(fleet.state(), alias)
+                fleet.disconnect(alias, {})
+        after = find(fleet.state(), alias)
+        tv = dict(after, identity=tv["identity"], certificate=tv["certificate"], metadata=tv["metadata"],
+                  details=dict(after["details"], duid=tv["details"]["duid"]))
+    rows = detail_rows(tv)
+    if duid:
+        rows = [(k, duid if k == "Device ID (DUID)" else v) for k, v in rows]
+    width = max(len(k) for k, v in rows if v not in (None, ""))
+    for key, value in rows:
+        if value not in (None, ""):
+            say(f"{key:<{width}}  {value}")
+    if code:
+        say("Could not read the identity: " + (tv.get("error") or tv.get("headline") or "unknown error"))
+    return code
 
 
 def check(fleet, tv, say):
