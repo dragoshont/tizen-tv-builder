@@ -419,13 +419,14 @@ class FleetTests(unittest.TestCase):
         fleet.connect(tvs[True], {"confirm": ""})
         # A developer link alone is never "Connected"; that label needs a working app preview.
         dev = card(tvs[True])
-        self.assertEqual((dev["label"], dev["tone"], dev["status"]), ("Developer Mode ready", "idle", "developer"))
-        self.assertEqual(dev["headline"], "Preview not connected · Open an app for preview")
+        self.assertEqual((dev["label"], dev["tone"], dev["status"]), ("Ready", "idle", "developer"))
+        self.assertEqual(dev["headline"], "Choose Show apps to pick an app on this TV, or install a package")
+        self.assertNotIn("Developer Mode ready", repr(fleet.state()))
         fleet.identify(tvs[True], {})
         self.certificate.write_text("<profile><duid>OTHERDEVICE0002</duid></profile>")
         fleet.identify(tvs[True], {})
         # The certificate problem is the install line, not the status.
-        self.assertEqual(card(tvs[True])["label"], "Developer Mode ready")
+        self.assertEqual(card(tvs[True])["label"], "Ready")
         self.assertEqual(card(tvs[True])["install"], "Install: blocked until the certificate includes this TV")
         self.assertEqual(card(tvs[True])["dev_mode"]["label"], "Dev mode enabled")
         fleet.close()

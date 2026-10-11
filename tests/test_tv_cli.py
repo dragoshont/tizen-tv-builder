@@ -75,7 +75,7 @@ class TvCliTests(unittest.TestCase):
         code, out, _ = self.run_cli("status", "--json")
         state = json.loads(out)
         self.assertEqual(code, 0)
-        self.assertEqual(set(state), {"scan", "sdk", "tvs"})
+        self.assertEqual(set(state), {"scan", "sdk", "tizen", "signing_profiles", "tvs"})
         self.assertEqual(state["tvs"][0]["label"], "Ready to connect")
         self.assert_private(out)
 
@@ -83,7 +83,7 @@ class TvCliTests(unittest.TestCase):
         alias = self.alias()
         code, out, err = self.run_cli("--profile", str(self.profile), "connect", alias)
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("Preview not connected · Open an app for preview", out)
+        self.assertIn("Choose Show apps to pick an app on this TV, or install a package", out)
         self.assertNotIn("Connected ·", out)
         self.assertIn("Disconnected", out)
         self.assertEqual([c[0] for c in self.sdb.mutations()], ["connect", "disconnect"])

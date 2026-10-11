@@ -395,7 +395,8 @@ class Fleet:
         return f"Samsung TV ({year}) #{number}" if re.fullmatch(r"20[0-9]{2}", year) else f"Samsung TV #{number}"
 
     PENDING = {"connect": "Connecting…", "identify": "Checking…", "disconnect": "Disconnecting…",
-               "run": "Starting app…", "preview": "Opening app…"}
+               "run": "Starting app…", "preview": "Opening app screen…", "apps": "Listing apps…",
+               "install": "Installing…", "remove": "Uninstalling…"}
 
     def headline(self, record, status, reason):
         """One plain-language status line per card: (pill label, tone, sentence)."""
@@ -407,7 +408,11 @@ class Fleet:
         if status == "connected":
             return "Connected", "ok", "Connected · showing " + (record.get("preview") or {}).get("app", "the app") + " (the app's own drawing, not the whole TV)"
         if status == "developer":
-            return "Developer Mode ready", "idle", "Preview not connected · Open an app for preview"
+            # Developer Mode is a prerequisite, not the product's ready state.
+            apps = record.get("apps")
+            if apps is None:
+                return "Ready", "idle", "Choose Show apps to pick an app on this TV, or install a package"
+            return "Ready", "idle", f"{len(apps)} apps listed on this TV · choose one to open its screen"
         if record["guidance"]:
             return "Needs setup", "warn", record["guidance"]["title"]
         if record["reachable"]:
@@ -421,7 +426,7 @@ class Fleet:
         diagnosis = None
         if record["lease"] is not None or record["sdb_state"] == "device" or record.get("dev_proven"):
             state, why = "enabled", "This computer has a working developer connection to the TV"
-            nxt = ("Open an app for preview" if status == "developer"
+            nxt = ("Choose an app on this TV" if status == "developer"
                    else "Connect to use it" if status == "not-connected" else "None")
         elif record["reachable"] and record.get("dev_refused"):
             # Only an observed refusal means setup is needed; an untried port is not a failure.
@@ -527,6 +532,7 @@ class Fleet:
                 "year": info.get("year", "unknown"), "metadata": self.metadata(record),
                 "owned": bool(record["owned"]), "held": record["lease"] is not None,
                 "preview": self.preview_summary(record),
+                "apps": self.apps_summary(record),
                 "identity": record["identity"], "certificate": record["certificate"],
                 "guidance": guidance, "pending": record["pending"], "error": record["error"],
                 "job": record["job"],
@@ -539,7 +545,28 @@ class Fleet:
         with self.lock:
             ordered = sorted(self.records.values(), key=lambda r: (r.get("host") is None, r["alias"]))
             return {"scan": dict(self.scan), "sdk": "available" if self.sdb else "missing",
+                    "tizen": "available" if self.tizen else "missing",
+                    "signing_profiles": self.profile_names(),
                     "tvs": [self.summary(r, n) for n, r in enumerate(ordered, 1)]}
+
+    def profile_names(self):
+        # Names only, cached briefly: state() is polled every second.
+        now = time.monotonic()
+        cached = getattr(self, "_profiles", None)
+        if cached is None or now - cached[0] > 10:
+            cached = (now, list((signing_profiles(self.data_root) or {"names": []})["names"])[:32])
+            self._profiles = cached
+        return cached[1]
+
+    @staticmethod
+    def apps_summary(record):
+        """Installed apps exactly as the TV listed them; never guessed from exit codes."""
+        apps = record.get("apps")
+        if record["lease"] is None:
+            return {"state": "unknown", "items": []}
+        if apps is None:
+            return {"state": "unreadable" if record.get("apps_unreadable") else "unknown", "items": []}
+        return {"state": "listed", "items": sorted(apps)[:500]}
 
     # ---- user operations --------------------------------------------------
     def _require_sdk(self):
@@ -714,7 +741,8 @@ class Fleet:
             if record["lease"] is not None:
                 record["lease"].release()
             record.update(lease=None, owned=False, sdb_state=None if not failed else record["sdb_state"],
-                          identity=None, certificate="unknown", guidance=None, fingerprint=None)
+                          identity=None, certificate="unknown", guidance=None, fingerprint=None,
+                          apps=None, apps_unreadable=False)
         if failed:
             fail("cleanup", "Disconnect failed: " + scrub(failed))
 
@@ -912,9 +940,41 @@ class Fleet:
                                          "next": nxt.replace("TV APP_ID", f"{alias} {app}").replace("tv cert TV",
                                                                                                     "tv cert " + alias),
                                          "app": app})
+        # "Installed" only when the TV's own app list shows this exact ID afterwards.
+        listed = self._installed_apps(record["serial"])
+        self._remember_apps(record, listed)
+        if listed is None:
+            return self._finish(record, {"op": "install", "ok": False, "code": "install-unconfirmed",
+                                         "message": "The TV reported an install, but its app list could not be read "
+                                                    "to confirm " + app,
+                                         "next": f"tv apps {alias}", "app": app})
+        if app not in listed:
+            return self._finish(record, {"op": "install", "ok": False, "code": "not-listed",
+                                         "message": "The TV reported an install, but " + app + " is not in its app list",
+                                         "next": f"tv apps {alias}", "app": app})
         return self._finish(record, {"op": "install", "ok": True, "code": "installed",
-                                     "message": "Installed " + app, "next": f"tv launch {alias} {app} --yes",
-                                     "app": app})
+                                     "message": "Installed " + app + " (confirmed by the TV's app list)",
+                                     "next": f"tv open {alias} {app} --out DIR --yes", "app": app})
+
+    def apps(self, alias, data):
+        """Read-only: list the apps installed on a connected TV."""
+        exact(data, {})
+        with self.lock:
+            record = self.record(alias)
+            if record["lease"] is None:
+                fail("connect", "Connect to this TV first")
+            serial = record["serial"]
+        listed = self._installed_apps(serial)
+        self._remember_apps(record, listed)
+        if listed is None:
+            fail("apps", "The TV's app list could not be read; try Show apps again")
+        return self.state()
+
+    def _remember_apps(self, record, listed):
+        with self.lock:
+            if record["lease"] is not None:
+                record["apps"] = None if listed is None else set(listed)
+                record["apps_unreadable"] = listed is None
 
     def launch(self, alias, data):
         record = self._change(alias, data, {"confirm", "app"}, "launch an app")
@@ -933,6 +993,7 @@ class Fleet:
         app = self._app(data["app"])
         failed, text = self._tizen(["uninstall", "-p", app, "-t", self._device_name(record["serial"])])
         listed = self._installed_apps(record["serial"])
+        self._remember_apps(record, listed)
         result = {"op": "remove", "app": app, "next": None}
         if listed is None:
             result.update(ok=False, code="remove-unconfirmed",
@@ -999,6 +1060,10 @@ class Fleet:
                         self.identify(alias, {})
                     except LiveError:
                         pass  # Recorded on the card; the connection itself stays.
+                    try:
+                        self.apps(alias, {})  # Read-only list; changes nothing on the TV.
+                    except LiveError:
+                        pass  # Shown as "app list unreadable"; Show apps retries.
                 else:
                     target(*args)
             except LiveError as error:

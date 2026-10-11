@@ -103,9 +103,12 @@ FAKE_TOOL = textwrap.dedent('''
                 done("Error: file not found", 1)
             outcome = scenario["install"]
             if outcome == "ok":
-                state["installed"].append(app_of(os.path.join(folder, name)))
+                if app_of(os.path.join(folder, name)) not in state["installed"]:
+                    state["installed"].append(app_of(os.path.join(folder, name)))
                 done("Installed the package: Id(" + app_of(os.path.join(folder, name)) + ")\\n"
                      "Tizen application is successfully installed.")
+            if outcome == "ghost":  # Claims success; the TV's list never shows the app.
+                done("Tizen application is successfully installed.")
             if outcome == "author":
                 done("install failed[118, -11], reason: Author certificate not match :", 0)  # Zero exit: real CLI habit.
             if outcome == "chain":
@@ -341,6 +344,50 @@ class FleetFirstRunTests(FirstRunBase):
         finally:
             fleet.close()
         self.assertEqual(self.state()["connected"], [])
+
+    def test_apps_lists_installed_apps_read_only_after_connect(self):
+        self.profiles()
+        fleet = self.fleet()
+        try:
+            alias = self.detected(fleet)["alias"]
+            self.assertEqual(fleet.state()["tvs"][0]["apps"], {"state": "unknown", "items": []})
+            with self.assertRaises(tv_fleet.LiveError):
+                fleet.apps(alias, {})  # Not connected: nothing is read.
+            fleet.connect(alias, {"confirm": alias})
+            before = [c for c in self.calls("tizen")]
+            fleet.apps(alias, {})
+            self.assertEqual(fleet.state()["tvs"][0]["apps"], {"state": "listed", "items": ["SyStEmApp1.Home"]})
+            self.assertEqual(self.calls("tizen"), before)  # Listing never installs, launches or removes.
+            self.set_scenario(applist="closed")
+            with self.assertRaises(tv_fleet.LiveError):
+                fleet.apps(alias, {})
+            self.assertEqual(fleet.state()["tvs"][0]["apps"], {"state": "unreadable", "items": []})
+        finally:
+            fleet.close()
+        self.assertEqual(self.state()["connected"], [])
+
+    def test_install_is_installed_only_when_the_tv_lists_the_exact_app(self):
+        self.profiles()
+        fleet = self.fleet()
+        try:
+            alias = self.detected(fleet)["alias"]
+            fleet.connect(alias, {"confirm": alias})
+            self.set_scenario(install="ghost")
+            result = fleet.install(alias, {"confirm": alias, "package": str(package(self.root)), "sign": "MyTV"})
+            self.assertEqual((result["ok"], result["code"]), (False, "not-listed"))
+            self.set_scenario(install="ok", applist="closed")
+            result = fleet.install(alias, {"confirm": alias, "package": str(package(self.root)), "sign": "MyTV"})
+            self.assertEqual((result["ok"], result["code"]), (False, "install-unconfirmed"))
+            self.assertEqual(fleet.state()["tvs"][0]["apps"]["state"], "unreadable")
+            self.set_scenario(install="ok")
+            result = fleet.install(alias, {"confirm": alias, "package": str(package(self.root)), "sign": "MyTV"})
+            self.assertEqual((result["ok"], result["code"]), (True, "installed"))
+            self.assertIn("confirmed by the TV's app list", result["message"])
+            self.assertIn(APP, fleet.state()["tvs"][0]["apps"]["items"])
+            fleet.remove(alias, {"confirm": alias, "app": APP})
+            self.assertNotIn(APP, fleet.state()["tvs"][0]["apps"]["items"])
+        finally:
+            fleet.close()
 
     def install_failure(self, outcome, **scenario):
         self.profiles()
