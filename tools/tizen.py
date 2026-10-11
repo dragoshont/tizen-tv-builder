@@ -242,7 +242,7 @@ def parser():
     cli.add_argument("--sdb")
     sub = cli.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor")
-    sub.add_parser("tv", help="Find and test TVs: tv scan | list | check TV | connect TV | portal", add_help=False)
+    sub.add_parser("tv", help="Samsung TV Developer Companion: tv scan | connect | apps | open | screenshot | key | install | uninstall | cert add | portal", add_help=False)
     for name in ("validate", "build", "package"):
         command = sub.add_parser(name)
         command.add_argument("source", type=Path)

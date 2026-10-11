@@ -16,6 +16,22 @@ DUID = "PLACEHOLDERDUID0001"
 APP = "AbCdEfGhIj.Example"
 
 
+def device_profile(*duids):
+    return "<DeviceProfile>" + "".join(f"<TestDevice>{d}</TestDevice>" for d in duids) + "</DeviceProfile>"
+
+
+def write_profiles(data_root, certs):
+    """A Tizen Studio profiles.xml; with certs, the active profile uses a Samsung distributor there."""
+    folder = Path(data_root) / "profile"
+    folder.mkdir(parents=True, exist_ok=True)
+    if certs is None:
+        (folder / "profiles.xml").write_text("<profiles/>")
+        return
+    (folder / "profiles.xml").write_text(
+        '<profiles active="test-profile"><profile name="test-profile">'
+        f'<profileitem distributor="1" key="{certs / "distributor.p12"}"/></profile></profiles>')
+
+
 class FakeSdb:
     """Records every argv. Never runs an SDK or touches the network."""
     def __init__(self, devices=None, accept=True, duid=DUID):
@@ -40,6 +56,8 @@ class FakeSdb:
             return "platform_version:4.0\nprofile_name:tv\n"
         if args[2:] == ["shell", "0", "getduid"]:
             return self.duid + "\n"
+        if args[2:] == ["shell", "0", "vd_applist"]:
+            return "get app list...\napps count: 0\n"
         raise AssertionError("Unexpected SDB call " + " ".join(args))
 
     def mutations(self):
@@ -52,8 +70,12 @@ class FleetTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.canonical = self.root / "canonical.lock"
-        self.certificate = self.root / "device-profile.xml"
-        self.certificate.write_text(f"<profile><duid>{DUID}</duid></profile>")
+        self.data_root = self.root / "tizen-data"
+        self.certs = self.root / "certs"
+        self.certs.mkdir()
+        self.certificate = self.certs / "device-profile.xml"
+        self.certificate.write_text(device_profile(DUID))
+        self.launches = []
         self.sdb = FakeSdb()
         self.tool = self.root / ("sdb.exe" if os.name == "nt" else "sdb")
         self.tool.write_text("")  # Placeholder path only; the fake runner never executes it.
@@ -69,7 +91,9 @@ class FleetTests(unittest.TestCase):
                     info=lambda host: {"name": "[TV] Samsung 7 Series (55)", "model": "UE55NU7400",
                                        "year": "2018", "developer_mode": "1", "uid": "uuid:" + host},
                     ssdp=lambda: set(), key_path=self.root / "alias.key", lease_root=self.root, canonical=self.canonical,
-                    certificate_duids=str(self.certificate) if certificate else None)
+                    data_root=self.data_root, tizen_path=None, which=lambda name: None,
+                    launcher=self.launches.append, clipboard=lambda text: True, pictures=self.root / "shots")
+        write_profiles(self.data_root, self.certs if certificate else None)
         args.update(kwargs)
         return tv_fleet.Fleet(**args)
 
@@ -79,6 +103,11 @@ class FleetTests(unittest.TestCase):
         return tvs[0]
 
     def assertPrivate(self, value):
+        """Addresses and the DUID appear only in the local page's details and certificate fields."""
+        value = json.loads(json.dumps(value))
+        for tv in (value.get("tvs") or []) if isinstance(value, dict) else []:
+            tv.pop("details", None)
+            tv.pop("certificate", None)  # Coverage lists DUIDs on purpose: the user's own certificate.
         text = json.dumps(value)
         for secret in (LAN_A, LAN_B, "127.0.0.1", DUID, "26101", "26111", str(self.certificate)):
             self.assertNotIn(secret, text)
@@ -133,7 +162,7 @@ class FleetTests(unittest.TestCase):
                 self.assertNotIn("In use", tv["label"] + tv["headline"])
             for alias in aliases:
                 fleet.connect(alias, {"confirm": ""})
-            self.assertEqual({tv["status"] for tv in fleet.state()["tvs"]}, {"developer"})
+            self.assertEqual({tv["status"] for tv in fleet.state()["tvs"]}, {"connected"})
             fleet.close()
             for path, names in before.items():
                 self.assertEqual(sorted(p.name for p in Path(path).iterdir()), names, "Other sessions' files are never touched")
@@ -146,7 +175,7 @@ class FleetTests(unittest.TestCase):
         alias = fleet.detect()["tvs"][0]["alias"]
         fleet.connect(alias, {"confirm": ""})
         tv = self.only(fleet)
-        self.assertEqual((tv["status"], tv["owned"]), ("developer", True))
+        self.assertEqual((tv["status"], tv["owned"]), ("connected", True))
         self.assertEqual(list(self.root.glob("*.lock")), [])
         self.assertNotIn("lease", tv["details"])
         fleet.disconnect(alias, {})
@@ -156,7 +185,7 @@ class FleetTests(unittest.TestCase):
         again = self.fleet()
         again.detect()
         again.connect(alias, {"confirm": ""})
-        self.assertEqual(self.only(again)["status"], "developer")
+        self.assertEqual(self.only(again)["status"], "connected")
         again.close()
 
     def test_connect_again_is_a_no_op_not_busy(self):
@@ -166,7 +195,7 @@ class FleetTests(unittest.TestCase):
         calls = len(self.sdb.calls)
         state = fleet.connect(alias, {"confirm": ""})
         self.assertEqual(len(self.sdb.calls), calls, "No second sdb connect")
-        self.assertEqual(state["tvs"][0]["status"], "developer")
+        self.assertEqual(state["tvs"][0]["status"], "connected")
         fleet.close()
 
     def test_configured_source_takes_no_lock_file_and_ignores_foreign_locks(self):
@@ -223,7 +252,8 @@ class FleetTests(unittest.TestCase):
         tv = self.only(fleet)
         self.assertPrivate(fleet.state())
         self.assertEqual(tv["identity"], {"duid_present": True, "tizen": "4.0", "profile": "tv", "tier": "mid"})
-        self.assertEqual(tv["certificate"], "match")
+        self.assertEqual((tv["certificate"]["state"], tv["certificate"]["covers"]), ("covered", [DUID]))
+        self.assertEqual((tv["details"]["address"], tv["details"]["duid"]), (LAN_A, DUID), "Full data on the local page")
         self.assertNotIn("fingerprint", json.dumps(fleet.state()))
         fleet.close()
 
@@ -243,44 +273,73 @@ class FleetTests(unittest.TestCase):
         self.assertPrivate(fleet.state())
         fleet.close()
 
-    def test_certificate_missing_or_unconfigured_blocks_run(self):
-        for certificate, expected in ((False, "unconfigured"), (True, "missing")):
-            with self.subTest(certificate=certificate):
-                if certificate:
-                    self.certificate.write_text("<profile><duid>OTHERDEVICE0002</duid></profile>")
+    def test_certificate_coverage_comes_from_the_active_profile(self):
+        cases = ((False, None, "no-profile", []),
+                 (True, device_profile("OTHERDEVICE0002"), "not-covered", ["OTHERDEVICE0002"]),
+                 (True, device_profile("OTHERDEVICE0002", DUID), "covered", ["OTHERDEVICE0002", DUID]),
+                 (True, '<!DOCTYPE x [<!ENTITY a "b">]>' + device_profile(DUID), "unreadable", []))
+        for certificate, xml, expected, covers in cases:
+            with self.subTest(expected=expected):
+                if xml:
+                    self.certificate.write_text(xml)
                 fleet = self.fleet(certificate=certificate)
                 alias = fleet.detect()["tvs"][0]["alias"]
-                fleet.connect(alias, {"confirm": ""})
+                fleet.connect(alias, {})
                 fleet.identify(alias, {})
-                self.assertEqual(self.only(fleet)["certificate"], expected)
-                for operation, data in (("run", {"confirm": alias, "app": APP, "package": ""}),):
-                    with self.assertRaises(live.LiveError) as caught:
-                        getattr(fleet, operation)(alias, data)
-                    self.assertEqual(caught.exception.code, "certificate")
-                    self.assertIn("certificate lacks this DUID", str(caught.exception))
+                coverage = self.only(fleet)["certificate"]
+                self.assertEqual((coverage["state"], coverage["covers"], coverage["duid"]), (expected, covers, DUID))
+                self.assertIsNone(self.only(fleet)["guidance"], "Coverage is information, never a block")
                 fleet.close()
 
-    def test_run_requires_identify_and_typed_confirmation(self):
-        calls = []
-        fleet = self.fleet(retail=lambda *a, **k: calls.append((a, k)) or {"passed": True, "steps": []})
+    def test_cert_add_backs_up_privately_copies_the_duid_and_opens_tizen_cert(self):
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+        (self.certs / "distributor.p12").write_bytes(b"key")
+        (self.certs / "distributor.crt").write_bytes(b"crt")
+        copied = []
+        fleet = self.fleet(clipboard=lambda text: copied.append(text) or True, which=lambda name: "/bin/" + name)
         alias = fleet.detect()["tvs"][0]["alias"]
-        fleet.connect(alias, {"confirm": ""})
-        with self.assertRaises(live.LiveError) as caught:
-            fleet.run(alias, {"confirm": alias, "app": APP, "package": ""})
-        self.assertEqual(caught.exception.code, "certificate")  # Identify first.
+        with self.assertRaises(live.LiveError):
+            fleet.cert(alias, {})  # The DUID is read over the developer link first.
+        fleet.connect(alias, {})
         fleet.identify(alias, {})
-        with self.assertRaises(live.LiveError) as caught:
-            fleet.run(alias, {"confirm": "wrong", "app": APP, "package": ""})
-        self.assertEqual(caught.exception.code, "confirm")
-        fleet.run(alias, {"confirm": alias, "app": APP, "package": ""})
-        fleet.wait()
-        self.assertEqual(len(calls), 1)
-        args, kwargs = calls[0]
-        self.assertEqual(args[2], APP)
-        self.assertIs(kwargs["lease"], fleet.records[alias]["lease"])
-        job = self.only(fleet)["job"]
-        self.assertEqual(job["status"], "passed")
-        self.assertPrivate(fleet.state())
+        job = fleet.cert(alias, {})
+        self.assertEqual((job["code"], job["duid"], job["covers"]), ("opened", DUID, ["OTHERDEVICE0002"]))
+        self.assertEqual((copied, self.launches), ([DUID], ["tizen-cert"]))
+        backup = Path(job["backup"])
+        self.assertEqual(sorted(p.name for p in backup.iterdir()),
+                         ["device-profile.xml", "distributor.crt", "distributor.p12"])
+        if os.name == "posix":
+            self.assertEqual(backup.stat().st_mode & 0o777, 0o700)
+        self.certificate.write_text(device_profile("OTHERDEVICE0002", DUID))
+        self.assertEqual(fleet.cert(alias, {})["code"], "covered")
+        self.assertEqual(len(self.launches), 1)
+        fleet.close()
+
+    def test_cert_add_without_tizen_cert_runs_the_documented_installer(self):
+        fleet = self.fleet(certificate=False)
+        alias = fleet.detect()["tvs"][0]["alias"]
+        fleet.connect(alias, {})
+        fleet.identify(alias, {})
+        job = fleet.cert(alias, {})
+        self.assertIsNone(job["backup"])
+        self.assertIn("install", self.launches[0])
+        self.assertTrue(self.launches[0].endswith("tizen-cert"))
+        self.assertEqual(job["command"], self.launches[0], "The command is shown before it runs")
+        fleet.close()
+
+    def test_changes_need_only_a_connection_and_the_tizen_cli(self):
+        fleet = self.fleet()
+        alias = fleet.detect()["tvs"][0]["alias"]
+        for operation, data in (("install", {"package": str(self.root / "a.wgt")}),
+                                ("remove", {"app": APP}), ("launch", {"app": APP})):
+            with self.assertRaises(live.LiveError) as caught:
+                getattr(fleet, operation)(alias, data)
+            self.assertEqual(caught.exception.code, "connect")
+        fleet.connect(alias, {})
+        for operation, data in (("remove", {"app": APP}), ("launch", {"app": APP})):
+            with self.assertRaises(live.LiveError) as caught:
+                getattr(fleet, operation)(alias, data)
+            self.assertEqual(caught.exception.code, "sdk", "No typed confirmation; only the missing CLI stops it")
         fleet.close()
 
     def test_known_tv_missed_by_one_scan_stays_as_not_found(self):
@@ -307,7 +366,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(tvs[bedroom]["name"], before[bedroom])
         self.assertEqual(tvs[bedroom]["dev_mode"]["state"], "unknown", "Cached API info is not a diagnosis")
         self.assertEqual(fleet.records[held]["serial"], identity, "The held TV is never retargeted")
-        self.assertEqual(tvs[held]["status"], "developer")
+        self.assertEqual(tvs[held]["status"], "connected")
         # It returns while its REST info times out: same card, not a second serial-keyed one.
         hits[:] = [LAN_A, LAN_B]
         answering.clear()
@@ -326,7 +385,7 @@ class FleetTests(unittest.TestCase):
         fleet.connect(second, {"confirm": ""})
         fleet.disconnect(first, {})
         states = {tv["alias"]: tv["status"] for tv in fleet.state()["tvs"]}
-        self.assertEqual((states[first], states[second]), ("not-connected", "developer"))
+        self.assertEqual((states[first], states[second]), ("not-connected", "connected"))
         fleet.close()
         self.assertEqual(list(self.root.glob("*.lock")), [])
 
@@ -393,11 +452,12 @@ class FleetTests(unittest.TestCase):
         host = next(t for t in fleet.state()["tvs"] if t["alias"] == tvs[True])
         self.assertEqual(host["guidance"]["host_ip"], "10.255.255.10")
         self.sdb.accept = True
-        self.certificate.write_text("<profile><duid>OTHERDEVICE0002</duid></profile>")
-        fleet.connect(tvs[True], {"confirm": ""})
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+        fleet.connect(tvs[True], {})
         fleet.identify(tvs[True], {})
         tv = next(t for t in fleet.state()["tvs"] if t["alias"] == tvs[True])
-        self.assertEqual(tv["guidance"]["title"], "Connected, install blocked: needs certificate update")
+        self.assertIsNone(tv["guidance"], "An uncovered certificate never blocks or nags before an install fails")
+        self.assertEqual(tv["label"], "Connected")
         fleet.close()
 
     def test_plain_status_headline_for_every_card_state(self):
@@ -414,22 +474,22 @@ class FleetTests(unittest.TestCase):
         with self.assertRaises(live.LiveError):
             fleet.connect(tvs[True], {"confirm": ""})
         tv = card(tvs[True])
-        self.assertEqual((tv["status"], tv["label"], tv["tone"]), ("not-connected", "Needs setup", "warn"))
+        self.assertEqual((tv["status"], tv["label"], tv["tone"]), ("not-connected", "Connection problem", "lost"))
         self.assertIn("Host PC IP", tv["headline"])
         self.sdb.accept = True
-        fleet.connect(tvs[True], {"confirm": ""})
-        # A developer link alone is never "Connected"; that label needs a working app preview.
+        fleet.connect(tvs[True], {})
+        fleet.identify(tvs[True], {})
         dev = card(tvs[True])
-        self.assertEqual((dev["label"], dev["tone"], dev["status"]), ("Ready", "idle", "developer"))
-        self.assertEqual(dev["headline"], "Choose Show apps to pick an app on this TV, or install a package")
-        self.assertNotIn("Developer Mode ready", repr(fleet.state()))
+        self.assertEqual((dev["label"], dev["tone"], dev["status"]), ("Connected", "ok", "connected"))
+        self.assertTrue(dev["headline"].startswith("Connected"), dev["headline"])
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
         fleet.identify(tvs[True], {})
-        self.certificate.write_text("<profile><duid>OTHERDEVICE0002</duid></profile>")
-        fleet.identify(tvs[True], {})
-        # The certificate problem is the install line, not the status.
-        self.assertEqual(card(tvs[True])["label"], "Ready")
-        self.assertEqual(card(tvs[True])["install"], "Install: blocked until the certificate includes this TV")
-        self.assertEqual(card(tvs[True])["dev_mode"]["label"], "Dev mode enabled")
+        self.assertEqual(card(tvs[True])["label"], "Connected", "The certificate is never the status")
+        text = repr(fleet.state())
+        for banned in tv_fleet.BANNED if hasattr(tv_fleet, "BANNED") else (
+                "No app open", "Developer Mode ready", "Dev mode enabled", "Preview not connected",
+                "Needs to be configured", "Busy"):
+            self.assertNotIn(banned, text)
         fleet.close()
         self.canonical.write_text("{}")
         other = self.fleet(hits=())
@@ -450,7 +510,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(state["tvs"][0]["pending"], "connect")
         fleet.wait()
         tv = self.only(fleet)
-        self.assertEqual((tv["status"], tv["pending"], tv["certificate"]), ("developer", None, "match"))
+        self.assertEqual((tv["status"], tv["pending"], tv["certificate"]["state"]), ("connected", None, "covered"))
         with self.assertRaises(live.LiveError):
             fleet.submit("connect", "tv-000000", {"confirm": ""})
         fleet.close()
@@ -500,20 +560,16 @@ class PreviewTests(FleetTests):
         fleet.connect(alias, {"confirm": ""})
         return fleet, alias, Session
 
-    def test_restart_needs_consent_and_connected_needs_capture(self):
+    def test_open_screen_needs_no_consent_and_keeps_connected(self):
         fleet, alias, Session = self.preview_fleet()
         try:
-            self.assertEqual(self.only(fleet)["status"], "developer")
-            with self.assertRaises(live.LiveError) as caught:
-                fleet.preview(alias, {"app": "AbCdEfGhIj.App", "restart": False})
-            self.assertEqual(caught.exception.code, "confirm")
-            self.assertEqual(Session.made, [], "No launch without consent")
-            fleet.preview(alias, {"app": "AbCdEfGhIj.App", "restart": True})
+            self.assertEqual(self.only(fleet)["status"], "connected")
+            fleet.preview(alias, {"app": "AbCdEfGhIj.App"})
             tv = self.only(fleet)
             self.assertEqual((tv["status"], tv["label"]), ("connected", "Connected"))
-            self.assertIn("not the whole TV", tv["headline"])
+            self.assertIn("Showing AbCdEfGhIj.App", tv["headline"])
             self.assertTrue(tv["preview"]["ready"] and tv["preview"]["frames"])
-            self.assertEqual(tv["preview"]["activation_allowed"], False)
+            self.assertTrue(tv["preview"]["activation_allowed"], "OK goes to the opened app")
             self.assertNotIn("45555", json.dumps(tv), "Forward details stay private")
             # Re-opening the same app re-attaches without another restart.
             fleet.preview(alias, {"app": "AbCdEfGhIj.App", "restart": False})
@@ -525,6 +581,34 @@ class PreviewTests(FleetTests):
         finally:
             fleet.close()
 
+    def test_store_app_refusal_is_shown_and_remembered(self):
+        refused = []
+        class Refusing:
+            def __init__(self, serial, app, legacy):
+                self.app, self.forward, self.client = app, None, None
+            def launch(self):
+                refused.append(self.app)
+                raise live.LiveError("sdk", "SDK command failed: closed")
+            def close(self):
+                pass
+        fleet = self.fleet(session=Refusing)
+        alias = fleet.detect()["tvs"][0]["alias"]
+        fleet.connect(alias, {})
+        try:
+            with self.assertRaises(live.LiveError) as caught:
+                fleet.preview(alias, {"app": "AbCdEfGhIj.Store"})
+            self.assertIn(tv_fleet.STORE_APP, str(caught.exception))
+            self.assertEqual(self.only(fleet)["apps"]["store"], ["AbCdEfGhIj.Store"])
+            self.assertEqual(self.only(fleet)["label"], "Connected", "A refused app is not a broken link")
+            fleet.records[alias]["installed_here"] = {"AbCdEfGhIj.Mine"}
+            with self.assertRaises(live.LiveError) as caught:
+                fleet.preview(alias, {"app": "AbCdEfGhIj.Mine"})
+            self.assertNotIn(tv_fleet.STORE_APP, str(caught.exception), "Own apps show the TV's real error")
+            self.assertEqual(self.only(fleet)["apps"]["store"], ["AbCdEfGhIj.Store"])
+            self.assertEqual(refused, ["AbCdEfGhIj.Store", "AbCdEfGhIj.Mine"], "Open stays clickable on any app")
+        finally:
+            fleet.close()
+
     def test_failed_capture_stays_developer_and_cleans_up(self):
         fleet, alias, Session = self.preview_fleet(capture_frames=False)
         try:
@@ -532,7 +616,7 @@ class PreviewTests(FleetTests):
                 fleet.preview(alias, {"app": "AbCdEfGhIj.App", "restart": True})
             self.assertEqual(caught.exception.code, "preview")
             tv = self.only(fleet)
-            self.assertEqual((tv["status"], tv["preview"]), ("developer", None))
+            self.assertEqual((tv["status"], tv["preview"]), ("connected", None))
             self.assertEqual(Session.made[0].closed, 1)
         finally:
             fleet.close()
@@ -572,13 +656,13 @@ class DiscoveryAndReadinessTests(FleetTests):
         tvs = self.by_host(fleet)
         self.assertEqual(sorted(tvs), ["21", "22", "23", "31", "32"])
         for name in ("21", "22", "23"):
-            self.assertEqual(tvs[name]["dev_mode"]["label"], "Dev mode reachable · not checked")
+            self.assertEqual(tvs[name]["dev_mode"]["label"], "Developer port open")
             self.assertIn("Connect", tvs[name]["dev_mode"]["next"])
         for name in ("31", "32"):
-            self.assertEqual(tvs[name]["dev_mode"]["label"], "Dev mode not enabled")
+            self.assertEqual(tvs[name]["dev_mode"]["label"], "Developer Mode off")
             self.assertIn("reports Developer Mode off", tvs[name]["dev_mode"]["explanation"])
             self.assertIn("1 2 3 4 5", tvs[name]["dev_mode"]["next"])
-            self.assertEqual(tvs[name]["label"], "Not connected")
+            self.assertEqual(tvs[name]["label"], "Developer Mode off")
         fleet.close()
 
     def test_duplicate_observations_of_one_tv_merge(self):
@@ -598,27 +682,28 @@ class DiscoveryAndReadinessTests(FleetTests):
         with self.assertRaises(live.LiveError):
             fleet.connect(alias, {"confirm": ""})
         refused = self.by_host(fleet)["21"]["dev_mode"]
-        self.assertEqual(refused["label"], "Needs to be configured")
+        self.assertEqual(refused["label"], "Host PC IP points elsewhere")
         self.assertIn("Host PC IP", refused["next"])
         self.sdb.accept = True
         fleet.connect(alias, {"confirm": ""})
         enabled = self.by_host(fleet)["21"]
-        self.assertEqual(enabled["dev_mode"]["label"], "Dev mode enabled")
-        self.assertIsNone(enabled["install"])  # Certificate readiness is separate and unknown until Identify.
+        self.assertEqual(enabled["dev_mode"]["label"], "Developer Mode on")
+        self.assertEqual(enabled["label"], "Connected")
+        self.assertNotIn("install", enabled)
         fleet.close()
 
     def test_closed_port_without_reported_mode_is_not_called_off(self):
         fleet = self.fleet(hits=(), api_hits=(LAN_A,),
                            info=lambda host: {"name": "[TV] Den", "model": "UE55NU7400", "developer_mode": "unknown"})
         dev = fleet.detect()["tvs"][0]["dev_mode"]
-        self.assertEqual((dev["state"], dev["label"]), ("closed", "Dev mode port closed"))
+        self.assertEqual((dev["state"], dev["label"]), ("closed", "Developer port closed"))
 
     def test_api_reporting_developer_mode_on_with_closed_port_needs_configuration(self):
         fleet = self.fleet(hits=(), api_hits=(LAN_A,),
                            info=lambda host: {"name": "[TV] Den", "model": "UE55NU7400", "developer_mode": "on"})
         fleet.detect()
         dev = self.only(fleet)["dev_mode"]
-        self.assertEqual(dev["label"], "Needs to be configured")
+        self.assertEqual(dev["label"], "Developer Mode on, port closed")
         self.assertIn("Restart", dev["next"])
         fleet.close()
 

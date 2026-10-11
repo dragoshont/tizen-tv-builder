@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const headers = { "Content-Type": "application/json" };
 const fields = ["model", "year", "os_version", "firmware"];
 const fieldLabels = { model: "Model", year: "Year", os_version: "Tizen version", firmware: "Firmware" };
-const urls = new Map(), cards = new Map(), confirmed = new Set();
+const urls = new Map(), cards = new Map();
 let state = { sources: [], tvs: [], scan: { status: "never" }, sdk: "available" };
 let busy = false, stopped = false, offline = false, selected = null;
 const rows = new Map();
@@ -43,23 +43,6 @@ function sourceName(source) {
 }
 
 // ---- dialogs ----------------------------------------------------------------
-function ask(name, mustType, text, title = `Connect to ${name}?`, action = "Connect") {
-  const dialog = $("confirm");
-  $("confirm-title").textContent = title;
-  $("confirm-ok").textContent = action;
-  $("confirm-text").textContent = text;
-  $("confirm-type").hidden = !mustType;
-  $("confirm-type-text").textContent = mustType ? `Type ${mustType} to continue.` : "";
-  $("confirm-alias").value = "";
-  return new Promise((resolve) => {
-    dialog.addEventListener("close", () => {
-      if (dialog.returnValue !== "ok") return resolve(null);
-      const typed = $("confirm-alias").value.trim();
-      resolve(mustType && typed !== mustType ? null : (mustType ? typed : ""));
-    }, { once: true });
-    dialog.returnValue = ""; dialog.showModal();
-  });
-}
 function renamePrompt(current) {
   const dialog = $("rename"); $("rename-name").value = current || "";
   return new Promise((resolve) => {
@@ -115,35 +98,13 @@ async function command(id, operation, data) {
 function sourceById(id) {
   return state.sources.find((s) => s.id === id) || (state.tvs || []).find((t) => t.alias === id)?.preview || null;
 }
-// The one status a TV card, its list row and its explanation show. Nothing else may restate it.
-// "Connected" needs a decoded, current app picture; a developer link alone is "No app open".
-function tvStatus(tv, live, previewError) {
-  const dev = tv.dev_mode || {};
-  const problem = previewError || tv.error || "";
-  const pending = { connect: "Connecting…", identify: "Checking…", disconnect: "Disconnecting…",
-    run: "Starting app…", preview: "Opening app…" };
-  if (tv.pending) return { label: pending[tv.pending] || "Working…", tone: "working", detail: "", next: "", problem: false };
-  if (tv.missing && !tv.held) return { label: "Not found", tone: "", problem: false, next: "",
-    detail: "Not found in the last scan. Turn the TV on, then scan again." };
-  if (live) return { label: "Connected", tone: "connected", next: "", problem: Boolean(problem),
-    detail: problem || `Showing ${tv.preview?.app || "the app"}: its own drawing, not the whole TV.` };
-  // A held link that just failed is not a working connection: never "No app open" over an error.
-  if (tv.held && tv.error) return { label: "Connection problem", tone: "lost", problem: true, detail: tv.error,
-    next: tv.guidance?.title || (dev.next && dev.next !== "None" ? dev.next : "") };
-  if (tv.held) return { label: "No app open", tone: "ready", next: "", problem: Boolean(problem),
-    detail: problem || "Connected to the TV. Open an app to see its screen." };
-  const blocked = {
-    "not-enabled": ["Developer Mode off", "lost"],
-    "needs-config": ["Needs setup", "lost"],
-    closed: ["Can't connect", "lost"],
-    unknown: ["Not reachable", ""],
-  }[dev.state];
-  if (blocked) return { label: blocked[0], tone: blocked[1], problem: Boolean(problem), canConnect: dev.state !== "not-enabled",
-    detail: problem || (dev.state === "not-enabled" ? "" : dev.explanation || ""), next: dev.next && dev.next !== "None" ? dev.next : "" };
-  return { label: problem ? "Couldn't connect" : "Ready to connect", tone: problem ? "lost" : "", problem: Boolean(problem), canConnect: true,
-    detail: problem || "Developer Mode is on. Connect to use this TV.", next: "" };
+const tones = { ok: "connected", progress: "working", lost: "lost", warn: "warn", idle: "ready" };
+// The server owns the one status per TV (same words as the CLI); the page only adds "Connection lost"
+// when it cannot reach its own helper.
+function tvStatus(tv) {
+  if (offline) return { label: "Connection lost", tone: "lost", detail: "This page lost its local helper. Reopen the portal." };
+  return { label: tv.label, tone: tones[tv.tone] || "", detail: tv.headline || "" };
 }
-
 function usablePreview(card, preview) {
   return card.previewReady && !offline && preview?.ready && !preview.stale &&
     preview.revision === card.revision && preview.frames?.length > 0;
@@ -153,7 +114,7 @@ function usablePreview(card, preview) {
 function remotePanel() {
   const button = (key, label, text) => el("button", { type: "button", data: { key }, "aria-label": label }, text);
   const why = el("p", { class: "why" });
-  const hint = el("p", { class: "hint" }, "Keyboard: arrows, Backspace = Back");
+  const hint = el("p", { class: "hint" }, "Keyboard: arrows, Enter = OK, Backspace = Back");
   const remote = el("div", { class: "remote", tabIndex: 0, role: "group", "aria-label": "Remote" },
     el("h3", {}, "Remote"),
     el("div", { class: "dpad" }, button("up", "Up", "▲"), button("left", "Left", "◀"), button("ok", "OK", "OK"),
@@ -164,83 +125,132 @@ function remotePanel() {
 }
 
 // ---- scanned TV cards -------------------------------------------------------------
+const certText = (c) => c?.profile ? `Your certificate ${c.profile} covers: ${(c.covers || []).join(", ") || "no TVs"}.` : "";
 function tvCard(alias) {
+  const current = () => (state.tvs || []).find((t) => t.alias === alias);
   const name = el("h2"), pill = el("span", { class: "pill" }), reason = el("p", { class: "reason" });
   const rename = el("button", { type: "button", class: "link", "aria-label": "Rename", title: "Rename" }, "✎ Rename");
   const connect = el("button", { type: "button", class: "primary" }, "Connect");
-  const identify = el("button", { type: "button", class: "secondary" }, "Identify");
   const disconnect = el("button", { type: "button", class: "secondary" }, "Disconnect");
-  const info = el("p", { class: "subtle" }), devLabel = el("strong"), devNext = el("span", { class: "subtle" });
-  const dev = el("p", { class: "dev" }, devLabel, " ", devNext), install = el("p", { class: "subtle" }), guide = el("div", { class: "guide", hidden: true }), certGuide = el("div", { class: "guide", hidden: true });
-  const list = el("dl"), job = el("p", { class: "subtle" });
-  const app = el("input", { maxLength: 40, placeholder: "Package.AppName", "aria-label": "App ID", autocomplete: "off" });
-  const pkg = el("input", { maxLength: 1024, placeholder: "/path/to/app.wgt (optional)", "aria-label": "Package file", autocomplete: "off" });
-  const run = el("button", { type: "button", class: "secondary" }, "Install and run…");
-  const details = el("details", {}, el("summary", {}, "Advanced"), list, install, certGuide,
-    el("div", { class: "row" }, identify),
-    el("div", { class: "fields" }, el("label", {}, "App ID", app), el("label", {}, "Package", pkg), el("div", { class: "row" }, run, job)));
-  const { remote, why, hint, keys } = remotePanel();
-  const screenText = el("p"), frames = el("div", { class: "frames" }), age = el("p", { class: "note" });
-  const previewApp = el("input", { maxLength: 40, placeholder: "Package.AppName", "aria-label": "App to preview",
-    autocomplete: "off", spellcheck: "false", value: rememberedApp(alias) });
-  const open = el("button", { type: "button", class: "primary" }, "Open app for preview");
-  const refreshPicture = el("button", { type: "button", class: "secondary", hidden: true }, "Refresh picture");
-  const opener = el("div", { class: "row" }, previewApp, open);
+  const guide = el("div", { class: "guide", hidden: true });
+  // Screen
+  const screenText = el("p", { class: "placeholder" }), frames = el("div", { class: "frames" }), age = el("p", { class: "note" });
+  const refreshPicture = el("button", { type: "button", class: "secondary" }, "Refresh picture");
+  const save = el("button", { type: "button", class: "secondary" }, "Save screenshot");
   const screen = el("section", { class: "picture", "aria-label": "Screen" },
-    el("div", { class: "row" }, el("h3", {}, "Screen"), refreshPicture),
-    el("div", { class: "placeholder" }, screenText, opener), age, frames);
+    el("div", { class: "row" }, el("h3", {}, "Screen"), refreshPicture, save), screenText, age, frames);
+  // Apps
+  const appsNote = el("p", { class: "subtle" }), appList = el("ul", { class: "apps", "aria-label": "Apps on this TV" });
+  const reloadApps = el("button", { type: "button", class: "link" }, "Reload list");
+  const apps = el("section", { class: "apps-section", "aria-label": "Apps on this TV" },
+    el("div", { class: "row" }, el("h3", {}, "Apps on this TV"), reloadApps), appsNote, appList);
+  // Install
+  const pkg = el("input", { maxLength: 1024, placeholder: "/path/to/app.wgt", "aria-label": "Package file (.wgt)",
+    autocomplete: "off", spellcheck: "false" });
+  const choose = el("button", { type: "button", class: "secondary" }, "Choose .wgt…");
+  const install = el("button", { type: "button", class: "primary" }, "Install");
+  const installSection = el("section", { class: "install", "aria-label": "Install app" },
+    el("h3", {}, "Install app"), el("div", { class: "row" }, pkg, choose, install));
+  // Certificate: appears only when this TV is not in the active certificate.
+  const certLine = el("p"), certButton = el("button", { type: "button", class: "primary" }, "Add this TV to my certificate");
+  const copyDuid = el("button", { type: "button", class: "secondary" }, "Copy device ID");
+  const certCommand = el("p", { class: "subtle" });
+  const cert = el("section", { class: "guide cert", "aria-label": "Certificate", hidden: true },
+    certLine, el("div", { class: "row" }, certButton, copyDuid), certCommand);
+  const job = el("div", { class: "job", role: "status", "aria-live": "polite" });
+  const list = el("dl");
+  const details = el("details", { class: "tv-details" }, el("summary", {}, "TV details"), list);
+  const { remote, why, hint, keys } = remotePanel();
+  const connected = el("div", { class: "connected-body" }, screen, apps, installSection);
   const root = el("article", { class: "device", "aria-label": alias },
     el("div", { class: "device-main" },
-      el("div", { class: "title-row" }, name, pill, rename),
-      info, dev, reason, el("div", { class: "row" }, connect, disconnect), guide, details),
-    screen, remote);
-  const card = { root, name, pill, reason, connect, identify, disconnect, info, guide, certGuide, list, job, app, pkg, run, remote, why, hint, keys, screenText, devLabel, devNext, install, summary: "",
-    previewApp, open, opener, refreshPicture, frames, age, revision: null };
-  open.addEventListener("click", async () => {
-    const tv = state.tvs.find((t) => t.alias === alias), appId = previewApp.value.trim(); if (!tv) return;
-    if (!appId) { error("Enter the app ID to preview, for example Package.AppName."); previewApp.focus(); return; }
-    const answer = await ask(tv.name, "", `This restarts ${appId} on the TV. Only the app's own drawing is shown, not the whole TV screen or video.`,
-      `Open ${appId} for preview?`, "Restart and preview");
-    if (answer === null) return;
-    const opened = await tvCommand("preview", alias, { app: appId, restart: true });
-    const tvNow = state.tvs.find((t) => t.alias === alias);
-    if (opened && tvNow && tvNow.preview && tvNow.preview.ready) {
-      try { localStorage.setItem(previewKey(alias), appId); } catch { /* storage unavailable */ }
-    }
-  });
-  refreshPicture.addEventListener("click", () => command(alias, "capture", {}));
-  for (const key of keys) key.addEventListener("click", () => {
-    if (usablePreview(card, sourceById(alias))) command(alias, "key", { key: key.dataset.key });
-  });
-  remote.addEventListener("keydown", (event) => {
-    if (!handledShortcut(event)) return;
-    event.preventDefault();
-    const p = sourceById(alias), ready = usablePreview(card, p) && p.input_allowed;
-    const key = shortcut(event, ready, busy);
-    if (!key) return;
-    if (key === "ok" && !p.activation_allowed) { error("OK is limited to safe, audited buttons on this app."); return; }
-    command(alias, "key", { key });
-  });
-  connect.addEventListener("click", async () => {
-    const tv = state.tvs.find((t) => t.alias === alias); if (!tv) return;
-    // Connect needs no dialog: it reserves nothing and launches no app.
-    tvCommand("connect", alias, { confirm: "" });
-  });
-  identify.addEventListener("click", () => tvCommand("identify", alias));
+      el("div", { class: "title-row" }, name, pill, rename), reason,
+      el("div", { class: "row" }, connect, disconnect), guide, cert, job, connected, details),
+    remote);
+  const card = { root, name, pill, reason, connect, disconnect, guide, screenText, frames, age, refreshPicture, save,
+    appsNote, appList, reloadApps, apps, pkg, choose, install, installSection, cert, certLine, certButton, copyDuid,
+    certCommand, job, list, details, connected, remote, why, hint, keys, summary: "", revision: null, appRows: new Map() };
+
+  connect.addEventListener("click", () => tvCommand("connect", alias, {}));
   disconnect.addEventListener("click", () => tvCommand("disconnect", alias));
   rename.addEventListener("click", async () => {
-    const tv = state.tvs.find((t) => t.alias === alias); if (!tv) return;
+    const tv = current(); if (!tv) return;
     const value = await renamePrompt(tv.renamed ? tv.name : "");
     if (value !== null) tvCommand("rename", alias, { name: value });
   });
-  run.addEventListener("click", () => {
-    const typed = prompt(`Installing changes this TV. Type ${alias} to confirm.`);
-    if (typed !== null) tvCommand("run", alias, { confirm: typed.trim(), app: app.value.trim(), package: pkg.value.trim() });
+  refreshPicture.addEventListener("click", () => command(alias, "capture", {}));
+  save.addEventListener("click", () => tvCommand("screenshot", alias, {}));
+  reloadApps.addEventListener("click", () => tvCommand("apps", alias, {}));
+  choose.addEventListener("click", async () => {
+    error("");
+    try { const picked = await request("/api/choose-package", {}); if (picked.path) pkg.value = picked.path; }
+    catch (problem) { error(`${problem.message}. Paste the .wgt path instead.`); }
+  });
+  install.addEventListener("click", () => {
+    const path = pkg.value.trim();
+    if (!path) { error("Choose a .wgt file or paste its path first."); pkg.focus(); return; }
+    tvCommand("install", alias, { package: path });
+  });
+  certButton.addEventListener("click", () => tvCommand("cert", alias, {}));
+  copyDuid.addEventListener("click", async () => {
+    const duid = current()?.details?.duid; if (!duid) return;
+    try { await navigator.clipboard.writeText(duid); copyDuid.textContent = "Copied"; setTimeout(() => { copyDuid.textContent = "Copy device ID"; }, 1500); }
+    catch { error(`Copy failed. The device ID is ${duid}.`); }
+  });
+  const send = (key) => { if (usablePreview(card, sourceById(alias))) command(alias, "key", { key }); };
+  for (const key of keys) key.addEventListener("click", () => send(key.dataset.key));
+  remote.addEventListener("keydown", (event) => {
+    if (!handledShortcut(event)) return;
+    event.preventDefault();
+    const p = sourceById(alias), key = shortcut(event, usablePreview(card, p) && p.input_allowed, busy);
+    if (key) command(alias, "key", { key });
   });
   return card;
 }
+function openApp(alias, appId) { return tvCommand("preview", alias, { app: appId, restart: true }); }
+function appRow(card, alias, appId) {
+  const id = el("code", { class: "app-id" }, appId), tag = el("span", { class: "app-tag" });
+  const open = el("button", { type: "button", class: "secondary" }, "Open screen (restarts app)");
+  const shot = el("button", { type: "button", class: "secondary" }, "Screenshot");
+  const remove = el("button", { type: "button", class: "secondary danger" }, "Uninstall");
+  open.addEventListener("click", () => openApp(alias, appId));
+  shot.addEventListener("click", () => tvCommand("screenshot", alias, { app: appId }));
+  remove.addEventListener("click", () => tvCommand("remove", alias, { app: appId }));
+  const item = el("li", { class: "app" }, el("div", { class: "app-name" }, id, tag), el("div", { class: "row" }, open, shot, remove));
+  return { item, tag, open, shot, remove };
+}
+function renderApps(card, tv) {
+  const a = tv.apps || { items: [], store: [], installed_here: [] };
+  const store = new Set(a.store || []), mine = new Set(a.installed_here || []);
+  const showing = tv.preview?.app, last = rememberedApp(tv.alias), working = Boolean(tv.pending) || offline;
+  card.appsNote.textContent = a.state === "listed" ? `${a.items.length} app${a.items.length === 1 ? "" : "s"}. Store apps may refuse; the TV gives the answer.`
+    : a.state === "unreadable" ? "The TV did not return its app list. Choose Reload list." : "Reading the app list…";
+  const wanted = a.state === "listed" ? a.items : [];
+  for (const [appId, row] of card.appRows) if (!wanted.includes(appId)) { row.item.remove(); card.appRows.delete(appId); }
+  wanted.forEach((appId, index) => {
+    if (!card.appRows.has(appId)) card.appRows.set(appId, appRow(card, tv.alias, appId));
+    const row = card.appRows.get(appId);
+    row.tag.textContent = appId === showing ? "On screen" : store.has(appId) ? "Store app — can't be viewed"
+      : mine.has(appId) ? "Installed from here" : appId === last ? "Last opened" : "";
+    row.tag.className = `app-tag${store.has(appId) ? " muted" : appId === showing ? " live" : ""}`;
+    row.open.className = mine.has(appId) || appId === last ? "primary" : "secondary";
+    row.open.textContent = appId === showing ? "Reopen (restarts app)" : "Open screen (restarts app)";
+    for (const b of [row.open, row.shot, row.remove]) b.disabled = working;
+    if (card.appList.children[index] !== row.item) card.appList.insertBefore(row.item, card.appList.children[index] || null);
+  });
+}
+function renderJob(card, tv) {
+  const j = tv.job;
+  if (!j) { card.job.replaceChildren(); return; }
+  const parts = [el("p", { class: j.ok ? "" : "problem" }, j.message || (j.ok ? "Done" : "Failed"))];
+  for (const path of j.paths || []) parts.push(el("p", { class: "subtle" }, "Saved to ", el("code", {}, path)));
+  if (j.backup) parts.push(el("p", { class: "subtle" }, "Old certificate files backed up to ", el("code", {}, j.backup)));
+  if (j.command) parts.push(el("p", { class: "subtle" }, "Command: ", el("code", {}, j.command)));
+  if (j.next) parts.push(el("p", { class: "subtle" }, `Next: ${j.next}`));
+  if (j.output) parts.push(el("pre", { class: "output" }, j.output));
+  card.job.replaceChildren(...parts);
+}
 async function updateTv(card, tv, keep) {
-  // Fail closed: "Connected" needs a usable picture here, whatever the helper reports.
   const p = tv.preview;
   card.previewReady = false;
   let live = tv.status === "connected" && Boolean(p?.ready) && (p.frames || []).length > 0 && !p.stale && !offline;
@@ -251,90 +261,77 @@ async function updateTv(card, tv, keep) {
       for (let i = 0; i < p.frames.length; i++) {
         const frame = p.frames[i];
         const img = el("img", { src: await image({ id: tv.alias, revision: p.revision }, i),
-          alt: `${tv.name} app screen, layer ${i + 1}; may be incomplete`, width: frame.width, height: frame.height });
+          alt: `${tv.name}: ${p.app} screen, layer ${i + 1}`, width: frame.width, height: frame.height });
         await img.decode();
         figures.push(el("figure", {}, img));
       }
-      const current = state.tvs.find((item) => item.alias === tv.alias);
-      live = !offline && current?.status === "connected" && current.preview?.ready &&
-        !current.preview.stale && current.preview.revision === p.revision && current.preview.frames?.length > 0;
-      if (live) {
-        card.frames.replaceChildren(...figures);
-        card.revision = p.revision;
-      }
+      card.frames.replaceChildren(...figures);
+      card.revision = p.revision;
     } catch (problem) {
       live = false;
-      previewError = `Could not display the app preview: ${problem.message}. Open the app for preview again to retry.`;
+      previewError = `Could not show the picture: ${problem.message}`;
     }
   }
-  const status = tv.status === "connected" && !live ? (tv.held ? "developer" : "not-connected") : tv.status;
   card.name.textContent = tv.name;
-  const working = Boolean(tv.pending);
-  // One status per TV: the pill, the list row and the explanation all come from tvStatus().
-  const shown = tvStatus(tv, live, previewError);
+  const shown = tvStatus(tv), working = Boolean(tv.pending);
   card.pill.textContent = shown.label;
   card.pill.className = `pill ${shown.tone}`;
   card.reason.textContent = shown.detail;
-  card.reason.className = `reason${shown.problem ? " problem" : ""}`;
-  const free = !working;
-  card.connect.hidden = status !== "not-connected" || !shown.canConnect;
-  card.connect.textContent = tv.error ? "Retry" : "Connect";
-  card.connect.disabled = !free || offline || state.sdk === "missing";
-  card.identify.hidden = card.disconnect.hidden = !tv.held;
-  card.identify.disabled = card.disconnect.disabled = !free || offline;
-  const meta = tv.metadata || {}, year = meta.model_year || {}, devMode = tv.dev_mode || {};
-  const yearText = year.value ? `Model year ${year.value}` : "Model year unknown";
-  card.summary = [meta.model && tv.name.includes(meta.model) ? "" : meta.model || "Model unknown",
-    year.value ? `Model year ${year.value}` : "Model year unknown"].filter(Boolean).join(" · ");
-  const inName = meta.model && tv.name.includes(meta.model);
-  card.info.textContent = [inName ? "" : meta.model || "Model unknown", yearText, meta.os?.text || "OS unknown"]
-    .filter(Boolean).join(" · ");
-  // The next step is shown only when the TV is not usable yet; it never restates the status.
-  card.devLabel.textContent = "";
-  card.devNext.textContent = shown.next ? `Next: ${shown.next}` : "";
-  card.devNext.parentElement.hidden = !shown.next;
-  card.install.textContent = tv.install || "";
-  card.install.hidden = !tv.install;
-  const guidance = tv.guidance;
-  // Certificate/install guidance is optional machinery: it lives under Advanced, never in the main pane.
-  const target = guidance && guidance.kind === "certificate" ? card.certGuide : card.guide;
-  card.guide.hidden = card.certGuide.hidden = true;
+  card.reason.className = `reason${shown.tone === "lost" ? " problem" : ""}`;
+  const canConnect = !tv.held && ["Ready to connect", "Connection problem", "Not reachable", "Not found"].includes(tv.label);
+  card.connect.hidden = !canConnect;
+  card.connect.textContent = tv.label === "Connection problem" || tv.label === "Not reachable" || tv.label === "Not found" ? "Try again" : "Connect";
+  card.connect.disabled = working || offline || state.sdk === "missing";
+  card.disconnect.hidden = !tv.held;
+  card.disconnect.disabled = working || offline;
+  const meta = tv.metadata || {}, d = tv.details || {};
+  card.summary = [meta.model, meta.os?.text, d.address].filter(Boolean).join(" · ");
+  // Setup guidance appears only when it explains why this TV can't be used yet.
+  const guidance = tv.held && tv.status === "connected" ? null : tv.guidance;
+  const next = tv.dev_mode?.next && !tv.held && tv.label !== "Ready to connect" ? tv.dev_mode.next : "";
+  card.guide.hidden = !guidance && !next;
   if (guidance) {
-    target.hidden = false;
-    const host = guidance.host_ip ? el("p", {}, "Host PC IP to enter on the TV: ", el("code", {}, guidance.host_ip)) : null;
-    target.replaceChildren(...[el("h3", {}, guidance.title), host,
-      el("ol", {}, ...guidance.steps.map((step) => el("li", {}, step.replace("{host}", guidance.host_ip || "this computer's address"))))].filter(Boolean));
+    const host = guidance.host_ip ? el("p", {}, "This computer's address: ", el("code", {}, guidance.host_ip)) : null;
+    card.guide.replaceChildren(...[el("h3", {}, guidance.title), host,
+      el("ol", {}, ...(guidance.steps || []).map((step) => el("li", {}, step.replace("{host}", guidance.host_ip || "this computer's address"))))].filter(Boolean));
+  } else if (next) card.guide.replaceChildren(el("p", {}, `Next: ${next}`));
+  // Certificate: one action, only when this connected TV is not in the active certificate.
+  const c = tv.certificate || {}, fix = tv.held && ["not-covered", "no-profile", "default"].includes(c.state) && d.duid;
+  card.cert.hidden = !fix;
+  if (fix) {
+    card.certLine.textContent = c.state === "not-covered" ? `${certText(c)} This TV is ${d.duid}.`
+      : `You have no Samsung distributor certificate yet. This TV is ${d.duid}.`;
+    card.certButton.textContent = tv.cert_tool === "installed"
+      ? (c.state === "not-covered" ? "Add this TV to my certificate" : "Create a certificate for this TV")
+      : "Install tizen-cert and add this TV";
+    card.certCommand.textContent = tv.cert_tool === "installed" ? "Opens tizen-cert in a terminal; Samsung sign-in happens in your browser."
+      : "Shows and runs the tizen-cert installer in a terminal, then opens tizen-cert. Samsung sign-in happens in your browser.";
+    card.certButton.disabled = card.copyDuid.disabled = working || offline;
   }
-  const d = tv.details || {};
-  const rows = [["Name source", tv.renamed ? "Your name" : tv.default_name === tv.name ? "From the TV" : "Default"],
-    ["Network address", d.network], ["Developer port", d.developer_port], ["Link", d.sdk_link], ["Device ID", d.duid],
-    ["Lock", d.lease], ["Certificate", tv.certificate],
-    ["Manufacturer", meta.manufacturer], ["Model", meta.model], ["Family", meta.family],
-    ["Model year", year.value ? `${year.value} (${year.provenance})` : "Unknown"],
-    ["Manufacture date", "Unknown (model year is not a manufacture date)"],
-    ["OS", meta.os ? `${meta.os.text} (${meta.os.provenance})` : null], ["Platform baseline", meta.baseline],
-    ["Resolution", meta.resolution], ["The Frame", meta.frame_tv ? "Yes" : null], ["Firmware", meta.firmware],
-    ["Developer Mode", devMode.explanation]];
+  renderJob(card, tv);
+  card.connected.hidden = !tv.held;
+  if (tv.held) renderApps(card, tv);
+  card.install.disabled = card.choose.disabled = working || offline;
+  card.refreshPicture.hidden = card.save.hidden = !live;
+  card.refreshPicture.disabled = card.save.disabled = busy || working || !live;
+  card.screenText.hidden = live;
+  card.screenText.textContent = previewError || (tv.pending === "preview" ? "Opening the app's screen…" : "Pick an app to see its screen.");
+  card.previewReady = live;
+  // Remembered per TV, and only once its picture actually showed.
+  if (live && rememberedApp(tv.alias) !== p.app) {
+    try { localStorage.setItem(previewKey(tv.alias), p.app); } catch { /* storage unavailable */ }
+  }
+  for (const key of card.keys) key.disabled = busy || !live || !p.input_allowed;
+  card.why.textContent = offline ? "Connection lost. Keys are off until the page reconnects."
+    : !tv.held ? "Connect to the TV, then open an app."
+    : !live ? "Open an app's screen to use the remote." : busy ? "Sending…" : `Keys go to ${p.app}.`;
+  card.age.textContent = live && p.captured_at ? `Picture from ${new Date(p.captured_at * 1000).toLocaleTimeString()} · the app's own drawing; video and the TV menu don't appear` : "";
+  const rows = [["Network address", d.address], ["Device ID (DUID)", d.duid], ["Model", d.model || meta.model],
+    ["OS", d.os], ["Firmware", d.firmware], ["Model year", meta.model_year?.value],
+    ["Developer port", d.developer_port], ["Developer link", d.sdk_link],
+    ["Certificate", c.profile ? `${c.profile} · covers ${(c.covers || []).join(", ") || "no TVs"}` : c.state === "no-profile" ? "None yet" : null]];
   card.list.replaceChildren(...rows.filter(([, v]) => v !== undefined && v !== null && v !== "")
     .flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, String(v))]));
-  card.run.disabled = !tv.held || tv.certificate !== "match" || working || offline;
-  card.job.textContent = tv.job ? `Last run: ${tv.job.status}${tv.job.message ? ` — ${tv.job.message}` : ""}` :
-    tv.held && tv.certificate !== "match" ? "Install is blocked until this TV is in your certificate." : "";
-  card.opener.hidden = live || !tv.held;
-  card.open.disabled = working || offline;
-  card.refreshPicture.hidden = !live;
-  card.refreshPicture.disabled = busy || !live;
-  card.screenText.textContent = offline ? "Connection lost to this page's helper. No picture is shown; reopen the portal to retry."
-    : previewError ? previewError
-    : status === "not-connected" ? "Connect to this TV first."
-    : live ? "" : "No app on screen. Open an app to see it here. Only the app's own drawing is shown, not the whole TV or video.";
-  card.screenText.parentElement.hidden = live;
-  card.previewReady = live;
-  for (const key of card.keys) key.disabled = busy || !live || !p.input_allowed || (key.dataset.key === "ok" && !p.activation_allowed);
-  card.hint.textContent = live && p.activation_allowed ? "Keyboard: arrows, Enter = OK, Backspace = Back" : "Keyboard: arrows, Backspace = Back";
-  card.why.textContent = !live ? "The remote turns on once an app is open for preview."
-    : !p.activation_allowed ? "Arrows and Back go to the app. OK is off: this app has no audited safe buttons." : busy ? "Sending…" : "Ready.";
-  card.age.textContent = live && p.captured_at ? `Picture from ${new Date(p.captured_at * 1000).toLocaleTimeString()} · the app's own drawing, not the whole TV` : "";
   if (!live) { card.frames.replaceChildren(); card.revision = null; return; }
   for (let i = 0; i < p.frames.length; i++) keep.add(`${tv.alias}/${i}/${p.revision}`);
 }
@@ -374,13 +371,8 @@ function sourceCard(id) {
     picture, remote);
   const card = { root, name, kind, pill, reason, connect, disconnect, capture, stream, duration, interval, frames, age, view, list, limits, inputs, remote, why, hint, keys, filled: false, revision: null };
   const current = () => state.sources.find((s) => s.id === id);
-  connect.addEventListener("click", async () => {
-    const source = current(); if (!source) return;
-    if (!confirmed.has(id)) {
-      if ((await ask(sourceName(source), "", "Shows this app's own drawing (it may include account info) and sends remote keys to the app.")) === null) return;
-      confirmed.add(id);
-    }
-    // One confirmation grants the session, the picture and remote keys for this run.
+  connect.addEventListener("click", () => {
+    if (!current()) return;
     command(id, "connect", { authorized: true, pixels: true, input: true, run_seconds: Number(duration.value) });
   });
   disconnect.addEventListener("click", () => command(id, "disconnect", {}));
@@ -393,7 +385,6 @@ function sourceCard(id) {
     const s = current(), ready = s?.status === "connected" && s.expires_in > 0 && s.input_allowed;
     const key = shortcut(event, ready, busy);
     if (!key) return;
-    if (key === "ok" && !s.activation_allowed) { error("OK is limited to safe, audited buttons on this app."); return; }
     command(id, "key", { key });
   };
   remote.addEventListener("keydown", keyboard);
@@ -438,7 +429,7 @@ async function updateSource(card, s, keep) {
   card.hint.textContent = ready && s.activation_allowed ? "Keyboard: arrows, Enter = OK, Backspace = Back" : "Keyboard: arrows, Backspace = Back";
   card.why.textContent = offline ? "Connection lost. Keys are off until the page reconnects."
     : !ready ? "Choose Connect on this card to turn the remote on."
-    : !s.activation_allowed ? "OK is off: this app has no audited safe buttons." : busy ? "Sending…" : "Ready.";
+    : busy ? "Sending…" : "Ready.";
   if (!card.filled) {
     for (const f of fields) {
       card.inputs[f].input.value = s.metadata?.[f]?.value || "";

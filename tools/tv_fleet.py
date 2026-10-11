@@ -1,7 +1,8 @@
 """TVs on this network: bounded read-only scan and stateless, user-operated connect.
 
-Addresses, serials and DUIDs stay in this process's memory. Everything returned by
-state() uses keyed aliases and redacted details so it can reach the UI safely.
+state() feeds only the loopback page and CLI output of the person at this computer, so it
+shows the TV's full address, DUID and app IDs. Errors, jobs and receipts are scrubbed of
+addresses, and nothing here writes addresses or DUIDs to logs, caches or the repository.
 """
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -9,9 +10,12 @@ import hmac
 import ipaddress
 import os
 from pathlib import Path
+import platform
 import re
 import secrets
+import shlex
 import shutil
+import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
@@ -32,10 +36,14 @@ API_PORT = 8001
 INFO_FIELDS = ("name", "model", "year", "developer_mode", "os", "firmware", "platform_year",
                "manufacturer", "resolution", "frame_tv")
 
-DEV_LABELS = {"enabled": "Dev mode enabled", "not-enabled": "Dev mode not enabled",
-              "needs-config": "Needs to be configured", "reachable": "Dev mode reachable · not checked",
-              "closed": "Dev mode port closed",
+DEV_LABELS = {"enabled": "Developer Mode on", "not-enabled": "Developer Mode off",
+              "needs-config": "Host PC IP points elsewhere", "reachable": "Developer port open",
+              "closed": "Developer port closed",
               "unknown": "Not reachable"}
+# The only status words a TV card, list row or CLI line may show.
+STATUSES = ("Not found", "Not reachable", "Developer Mode off", "Ready to connect", "Connecting…",
+            "Connected", "Connection problem")
+STORE_APP = "Samsung doesn't allow debugging this store app. Only apps you install can be viewed."
 MAX_TVS = 16
 MAX_NETWORKS = 4
 MAX_CERTIFICATE = 1024 * 1024
@@ -133,14 +141,62 @@ def signing_profiles(data_root):
     except ET.ParseError:
         return None
     names = [p.get("name") for p in root.iter("profile") if p.get("name")]
-    return {"names": names, "active": root.get("active") if root.get("active") in names else None}
+    active = root.get("active") if root.get("active") in names else None
+    distributor = None
+    for profile in root.iter("profile"):
+        if profile.get("name") != active:
+            continue
+        for item in profile.iter("profileitem"):
+            # Only the key path is read; password attributes are never touched.
+            if item.get("distributor") == "1" and item.get("key"):
+                distributor = item.get("key")
+    return {"names": names, "active": active, "distributor": distributor}
+
+
+def _safe_xml(path):
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_CERTIFICATE:
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+        return None
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError:
+        return None
+
+
+def certificate_coverage(data_root, duid=None):
+    """Which TVs the active signing profile's distributor certificate lists (device-profile.xml).
+
+    Returns DUIDs and the profile name only; the profile's email and passwords are never read out."""
+    profiles = signing_profiles(data_root)
+    if not profiles or not profiles["active"]:
+        return {"state": "no-profile", "profile": None, "covers": [], "duid": duid, "folder": None}
+    key = profiles.get("distributor")
+    if not key:
+        # Tizen's built-in distributor certificate: Developer Mode TVs accept it without a DUID list.
+        return {"state": "default", "profile": profiles["active"], "covers": [], "duid": duid, "folder": None}
+    folder = Path(key).expanduser().parent
+    root = _safe_xml(folder / "device-profile.xml")
+    covers = [] if root is None else [
+        (d.text or "").strip() for d in root.iter("TestDevice") if (d.text or "").strip()]
+    if root is None:
+        state = "unreadable"
+    elif not duid:
+        state = "unknown-tv"
+    else:
+        state = "covered" if duid in covers else "not-covered"
+    return {"state": state, "profile": profiles["active"], "covers": covers, "duid": duid, "folder": str(folder)}
 
 
 INSTALL_HELP = {
     "tizen-studio": "Install Tizen Studio with the Samsung TV extension (https://developer.samsung.com/smarttv), "
                     "or set TIZEN_SDK_ROOT to an existing installation",
     "profile": "Create a signing profile: for Developer Mode the default Tizen distributor certificate works on "
-               "the 2017 and 2019 TVs tested. Run `tv cert TV` for the steps",
+               "the 2017 and 2019 TVs tested. Run `tv cert add TV` to add a TV to a Samsung certificate",
     "tizen-cert": "Optional, only for Samsung certificates: curl -fsSL https://tizen-cert-cli.vercel.app/install.sh | sh "
                   "(Windows: the project's install.ps1)",
 }
@@ -177,13 +233,13 @@ APP_ID_TOKEN = re.compile(r"(?<![A-Za-z0-9.])[A-Za-z0-9]{10}\.[A-Za-z0-9]{1,52}(
 INSTALL_ERRORS = (
     ("author-mismatch", re.compile(r"-11\b|author certificate not match", re.I),
      "The TV already has this app signed by someone else (a different author certificate)",
-     "Remove the other version first: tv remove TV APP_ID --yes, then install again"),
+     "Remove the other version first: tv uninstall TV APP_ID, then install again"),
     ("certificate-expired", re.compile(r"expired", re.I),
      "The signing certificate has expired",
      "Renew the certificate (tizen-cert: Renew, or create a new Tizen Studio author certificate), then install again"),
     ("certificate-chain", re.compile(r"-12\b|invalid certificate chain|check certificate error", re.I),
      "The certificate does not list this TV, so the TV rejects the app",
-     "Create a certificate that includes this TV: tv cert TV"),
+     "Add this TV to your certificate: tv cert add TV"),
     ("signing-password", re.compile(r"inva[il]{2}d password", re.I),
      "The signing profile's password could not be read (common without a desktop keyring)",
      "Re-create the profile, or store its passwords in profiles.xml; details are in "
@@ -198,6 +254,68 @@ def explain(output, fallback_code, fallback_message, fallback_next):
     return fallback_code, fallback_message, fallback_next
 
 
+INSTALL_COMMAND = {"posix": "curl -fsSL https://tizen-cert-cli.vercel.app/install.sh | sh",
+                   "windows": "irm https://tizen-cert-cli.vercel.app/install.ps1 | iex"}
+
+
+def open_terminal(command, system=None, popen=subprocess.Popen):
+    """Run a command in a terminal window the user can see and type into. The command is shown first."""
+    system = system or platform.system()
+    if system == "Windows":
+        popen(["cmd", "/c", "start", "", "powershell", "-NoExit", "-Command",
+               f"Write-Host '> {command}'; {command}"])
+        return
+    folder = Path(tempfile.mkdtemp(prefix="tizen-cert-"))
+    script = folder / "tizen-cert.command"
+    script.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote("> " + command) + "\n" + command + "\n")
+    script.chmod(0o700)
+    if system == "Darwin":
+        popen(["open", "-a", "Terminal", str(script)])
+    else:
+        terminal = shutil.which("x-terminal-emulator") or shutil.which("gnome-terminal") or shutil.which("xterm")
+        if not terminal:
+            fail("terminal", "No terminal found; run this yourself: " + command)
+        popen([terminal, "-e", str(script)])
+
+
+def copy_text(text, system=None, run=subprocess.run):
+    system = system or platform.system()
+    command = ["pbcopy"] if system == "Darwin" else ["clip"] if system == "Windows" else (
+        ["xclip", "-selection", "clipboard"] if shutil.which("xclip") else None)
+    if not command:
+        return False
+    try:
+        run(command, input=text.encode(), check=True, timeout=5)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def choose_package(system=None, run=subprocess.run):
+    """Native "choose a .wgt" dialog, because a browser page cannot learn a file's path. None = cancelled."""
+    system = system or platform.system()
+    if system == "Darwin":
+        command = ["osascript", "-e", 'POSIX path of (choose file with prompt "Choose a Tizen app (.wgt)")']
+    elif system == "Windows":
+        command = ["powershell", "-NoProfile", "-STA", "-Command",
+                   "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; "
+                   "$d.Filter = 'Tizen app (*.wgt)|*.wgt'; if ($d.ShowDialog() -eq 'OK') { $d.FileName }"]
+    elif shutil.which("zenity"):
+        command = ["zenity", "--file-selection", "--file-filter=*.wgt"]
+    else:
+        fail("unsupported", "No file dialog on this computer; paste the .wgt path instead")
+    try:
+        done = run(command, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError) as error:
+        fail("unsupported", f"Could not open a file dialog ({type(error).__name__}); paste the .wgt path instead")
+    path = (done.stdout or "").strip()
+    if done.returncode != 0 or not path:
+        return None
+    if not path.lower().endswith(".wgt") or not Path(path).is_file():
+        fail("invalid", f"{path} is not a .wgt file")
+    return path
+
+
 _Link = _HeldLease = live_tv.MemoryLink
 
 
@@ -208,7 +326,9 @@ class Fleet:
     def __init__(self, sdb_path="auto", runner=flows.run_tool, interfaces=network_tv.interfaces,
                  sweep=network_tv.sweep, info=_info, ssdp=network_tv.ssdp_hosts, key_path=None, lease_root=None, canonical=None,
                  certificate_duids=None, retail=flows.retail, names=None, save_names=None,
-                 session=None, cdp=live_tv.CDP, discover=None, tizen_path="auto", data_root=None):
+                 session=None, cdp=live_tv.CDP, discover=None, tizen_path="auto", data_root=None,
+                 which=shutil.which, launcher=None, clipboard=None, pictures=None, clock=time.time,
+                 chooser=None):
         if sdb_path == "auto":
             sdb_path = _find_tool("sdb")
         if tizen_path == "auto":
@@ -216,6 +336,12 @@ class Fleet:
         self.sdb = sdb_path
         self.tizen = tizen_path
         self.data_root = Path(data_root) if data_root else default_data_root()
+        self.which = which
+        self.launcher = launcher or open_terminal
+        self.chooser = chooser or choose_package
+        self.clipboard = clipboard or copy_text
+        self.pictures = Path(pictures) if pictures else Path.home() / "Pictures" / "TV Screenshots"
+        self.clock = clock
         self.runner = runner
         self.interfaces = interfaces
         self.sweep = sweep
@@ -397,40 +523,50 @@ class Fleet:
         year = info.get("year", "unknown")
         return f"Samsung TV ({year}) #{number}" if re.fullmatch(r"20[0-9]{2}", year) else f"Samsung TV #{number}"
 
-    PENDING = {"connect": "Connecting…", "identify": "Checking…", "disconnect": "Disconnecting…",
-               "run": "Starting app…", "preview": "Opening app screen…", "apps": "Listing apps…",
-               "install": "Installing…", "remove": "Uninstalling…"}
+    PENDING = {"connect": "Connecting…", "identify": "Reading TV details…", "disconnect": "Disconnecting…",
+               "preview": "Opening app screen (restarts the app)…", "apps": "Listing apps…",
+               "install": "Installing…", "remove": "Uninstalling…", "launch": "Starting app…",
+               "screenshot": "Saving screenshot…", "cert": "Preparing certificate…"}
 
     def headline(self, record, status, reason):
-        """One plain-language status line per card: (pill label, tone, sentence)."""
-        if record["pending"]:
-            label = self.PENDING.get(record["pending"], "Working…")
-            return label, "progress", label
-        if record.get("missing"):
-            return "Not found", "warn", "Not found in the last scan. Check that the TV is on, then scan again"
+        """One status per TV, identical in the pill, the list row and the CLI: (label, tone, detail)."""
+        pending = record["pending"]
+        if pending == "connect":
+            return "Connecting…", "progress", "Connecting…"
         if status == "connected":
-            return "Connected", "ok", "Connected · showing " + (record.get("preview") or {}).get("app", "the app") + " (the app's own drawing, not the whole TV)"
-        if status == "developer":
-            # Developer Mode is a prerequisite, not the product's ready state.
-            apps = record.get("apps")
-            if apps is None:
-                return "Ready", "idle", "Choose Show apps to pick an app on this TV, or install a package"
-            return "Ready", "idle", f"{len(apps)} apps listed on this TV · choose one to open its screen"
-        if record["guidance"]:
-            return "Needs setup", "warn", record["guidance"]["title"]
+            meta = self.metadata(record)
+            parts = ["Connected"]
+            if meta["os"]["version"]:
+                parts.append(meta["os"]["text"])
+            if meta["model"]:
+                parts.append(meta["model"])
+            if self.preview_ready(record):
+                parts.append("Showing " + record["preview"]["app"])
+            detail = " · ".join(parts)
+            if pending:
+                detail += " · " + self.PENDING.get(pending, "Working…")
+            return "Connected", "ok", detail
+        if status == "problem":
+            return "Connection problem", "lost", record["error"] or "The developer link stopped working"
+        if pending:
+            return self.PENDING.get(pending, "Working…"), "progress", self.PENDING.get(pending, "Working…")
+        if record.get("missing"):
+            return "Not found", "warn", "The TV did not answer the last scan. Check that it is on, then scan again"
+        if record.get("dev_refused") or (record["error"] and record["reachable"]):
+            return "Connection problem", "lost", record["error"] or (
+                "The TV refused this computer. On the TV set Host PC IP to this computer, restart the TV, then Connect")
         if record["reachable"]:
             return "Ready to connect", "idle", reason or "Developer Mode port is open"
         if record.get("api"):
-            return "Not connected", "warn", reason
-        return "Not reachable", "warn", reason or "Developer Mode port is closed or the TV is off"
+            return "Developer Mode off", "warn", reason or "The TV answers, but its Developer Mode port is closed"
+        return "Not reachable", "warn", reason or "Neither the TV nor its Developer Mode port answered"
 
     def dev_mode(self, record, status):
         """Developer readiness from observed evidence only; separate from connection status."""
-        diagnosis = None
+        diagnosis = label = None
         if record["lease"] is not None or record["sdb_state"] == "device":
             state, why = "enabled", "This computer has a working developer connection to the TV"
-            nxt = ("Choose an app on this TV" if status == "developer"
-                   else "Connect to use it" if status == "not-connected" else "None")
+            nxt = "Connect to use it" if status == "not-connected" else None
         elif record["reachable"] and record.get("dev_refused"):
             # Only an observed refusal means setup is needed; an untried port is not a failure.
             state = "needs-config"
@@ -451,7 +587,7 @@ class Fleet:
         elif record.get("api"):
             reported = (record.get("info") or {}).get("developer_mode")
             if reported in ("on", "1"):
-                state = "needs-config"
+                state, label = "needs-config", "Developer Mode on, port closed"
                 why = "The TV reports Developer Mode on, but its Developer Mode port is closed"
                 nxt = "Restart the TV (hold Power until the logo), then scan again"
             elif reported in ("off", "0"):
@@ -467,16 +603,7 @@ class Fleet:
         else:
             state, why = "unknown", "Neither the Developer Mode port nor the TV's API answered"
             nxt = "Turn the TV on, make sure it is on this network, then scan again"
-        return {"state": state, "label": DEV_LABELS[state], "explanation": why, "next": nxt, "diagnosis": diagnosis}
-
-    @staticmethod
-    def install_line(record):
-        if not record["identity"]:
-            return None
-        return {"match": "Install: ready (certificate includes this TV)",
-                "missing": "Install: blocked until the certificate includes this TV",
-                "unconfigured": "Install: no certificate configured",
-                "unreadable": "Install: certificate file could not be read"}.get(record["certificate"], "Install: unknown")
+        return {"state": state, "label": label or DEV_LABELS[state], "explanation": why, "next": nxt, "diagnosis": diagnosis}
 
     @staticmethod
     def metadata(record):
@@ -513,42 +640,57 @@ class Fleet:
                 "firmware": info["firmware"] if info["firmware"] != "unknown" else None}
 
     def summary(self, record, number):
-        developer = record["lease"] is not None
-        # Connected means the developer link AND a working app preview (attached and captured).
-        status = ("connected" if developer and self.preview_ready(record)
-                  else "developer" if developer else "not-connected")
+        held = record["lease"] is not None
+        # Connected = a working developer link. A picture is extra detail, not a different status.
+        status = ("problem" if held and record["error"] else "connected" if held else "not-connected")
         info = record.get("info") or {}
         default = self.default_name(record, number)
         guidance = record["guidance"]
         if guidance and guidance.get("kind") in {"host-ip", "developer-mode"}:
             guidance = dict(guidance, host_ip=self.host_ip(record))
         if status == "not-connected" and not record["pending"]:
-            reason = ("Developer Mode port is open; not connected yet" if record["reachable"] else
+            reason = ("Developer Mode port is open" if record["reachable"] else
                       "The TV answers, but its Developer Mode port is closed" if record.get("api") else
                       "Developer Mode port is closed or the TV is off")
         else:
             reason = None
         label, tone, headline = self.headline(record, status, reason)
+        meta = self.metadata(record)
+        duid = record.get("duid")
         return {"alias": record["alias"], "name": self.names.get(record["alias"], default),
                 "label": label, "tone": tone, "headline": headline,
                 "default_name": default, "renamed": record["alias"] in self.names,
                 "status": status, "not_connected_reason": reason,
                 "reachable": bool(record["reachable"]), "missing": record.get("missing", False),
                 "developer_mode": info.get("developer_mode", "unknown"),
-                "dev_mode": self.dev_mode(record, status), "install": self.install_line(record),
+                "dev_mode": self.dev_mode(record, status),
                 "model": {"value": info.get("model", "unknown"),
                           "provenance": "observed" if info.get("model", "unknown") != "unknown" else "unknown"},
-                "year": info.get("year", "unknown"), "metadata": self.metadata(record),
-                "owned": bool(record["owned"]), "held": record["lease"] is not None,
+                "year": info.get("year", "unknown"), "metadata": meta,
+                "owned": bool(record["owned"]), "held": held,
                 "preview": self.preview_summary(record),
                 "apps": self.apps_summary(record),
-                "identity": record["identity"], "certificate": record["certificate"],
+                "identity": record["identity"], "certificate": self.coverage(duid),
+                "cert_tool": "installed" if self.which("tizen-cert") else "missing",
                 "guidance": guidance, "pending": record["pending"], "error": record["error"],
                 "job": record["job"],
-                "details": {"network": redacted_address(record.get("host")),
+                # Shown in full on this loopback page and CLI only; never logged or cached.
+                "details": {"address": record.get("host"), "duid": duid,
+                            "model": meta["model"], "os": meta["os"]["text"], "firmware": meta["firmware"],
                             "developer_port": "open" if record["reachable"] else "closed or unknown",
-                            "sdk_link": record["sdb_state"] or "none",
-                            "duid": "present (hidden)" if (record["identity"] or {}).get("duid_present") else "not read"}}
+                            "sdk_link": record["sdb_state"] or "none"}}
+
+    def coverage(self, duid):
+        """Certificate coverage of the active signing profile, cached briefly: state() is polled."""
+        now = time.monotonic()
+        cached = getattr(self, "_coverage", None)
+        if cached is None or now - cached[0] > 5:
+            cached = (now, certificate_coverage(self.data_root))
+            self._coverage = cached
+        base = dict(cached[1], duid=duid)
+        if base["state"] in {"unknown-tv", "covered", "not-covered"}:
+            base["state"] = "unknown-tv" if not duid else "covered" if duid in base["covers"] else "not-covered"
+        return base
 
     def state(self):
         with self.lock:
@@ -572,10 +714,13 @@ class Fleet:
         """Installed apps exactly as the TV listed them; never guessed from exit codes."""
         apps = record.get("apps")
         if record["lease"] is None:
-            return {"state": "unknown", "items": []}
+            apps = None
+        store = sorted(record.get("store_apps") or ())
+        mine = sorted(record.get("installed_here") or ())
         if apps is None:
-            return {"state": "unreadable" if record.get("apps_unreadable") else "unknown", "items": []}
-        return {"state": "listed", "items": sorted(apps)[:500]}
+            state = "unreadable" if record["lease"] is not None and record.get("apps_unreadable") else "unknown"
+            return {"state": state, "items": [], "store": store, "installed_here": mine}
+        return {"state": "listed", "items": sorted(apps)[:500], "store": store, "installed_here": mine}
 
     # ---- user operations --------------------------------------------------
     def _require_sdk(self):
@@ -586,7 +731,8 @@ class Fleet:
         return (self._devices() or {}).get(serial) == "device"
 
     def connect(self, alias, data):
-        exact(data, {"confirm"})
+        if not isinstance(data, dict) or not set(data) <= {"confirm"}:  # A legacy "confirm" is ignored.
+            fail("invalid", "Request fields do not match this operation")
         self._require_sdk()
         with self.lock:
             record = self.record(alias)
@@ -638,6 +784,7 @@ class Fleet:
         return self.state()
 
     def identify(self, alias, data):
+        """Read the TV's identity over the developer link. Runs by itself on Connect and Scan."""
         exact(data, {})
         with self.lock:
             record = self.record(alias)
@@ -651,21 +798,15 @@ class Fleet:
             with self.lock:
                 record["error"] = record["error"] or "Could not read the TV identity: " + scrub(error)
             fail("identity", record["error"])
-        certificate = self._certificate(duid)
-        del duid
         with self.lock:
             record["fingerprint"] = public["fingerprint"]
+            record["duid"] = duid  # Memory only; shown on this local page, never logged or cached.
             if public["platform_version"] and public["platform_version"] != "unknown":
                 record["observed_tizen"] = public["platform_version"]
             record["identity"] = {"duid_present": True, "tizen": public["platform_version"],
                                   "profile": public["profile"], "tier": public["tier"]}
-            record["certificate"] = certificate
             record["error"] = None
-            record["guidance"] = None if certificate == "match" else {
-                "kind": "certificate", "title": "Connected, install blocked: needs certificate update",
-                "steps": ["Create or update the Samsung distributor certificate so it includes this TV's DUID.",
-                          "Point the portal profile's certificate_duids at the new device-profile file.",
-                          "Choose Identify again."]}
+            record["guidance"] = None
         return self.state()
 
     def _refused(self, record, error):
@@ -682,72 +823,12 @@ class Fleet:
             record["error"] = (f"{name} accepted the connection but refused commands. On the TV set Host PC IP "
                                "to this computer, restart the TV, then Connect (" + scrub(error) + ")")
 
-    def _certificate(self, duid):
-        if not self.certificate_duids:
-            return "unconfigured"
-        try:
-            with open(self.certificate_duids, "r", encoding="utf-8", errors="replace") as stream:
-                text = stream.read(MAX_CERTIFICATE + 1)
-        except OSError:
-            return "unreadable"
-        if len(text) > MAX_CERTIFICATE:
-            return "unreadable"
-        pattern = rf"(?<![{DUID_EDGE}-]){re.escape(duid)}(?![{DUID_EDGE}-])"
-        return "match" if re.search(pattern, text) else "missing"
-
-    def _gate(self, record, data):
-        if record["lease"] is None:
-            fail("connect", "Connect to this TV first")
-        if data["confirm"] != record["alias"]:
-            fail("confirm", f"Type {record['alias']} to confirm installing on this TV")
-        reasons = {"unknown": "identify the TV first", "unconfigured": "no certificate is configured",
-                   "unreadable": "the certificate file could not be read",
-                   "missing": "this TV is not in the certificate"}
-        if record["certificate"] != "match":
-            fail("certificate", "certificate lacks this DUID: " + reasons.get(record["certificate"], "unknown"))
-
-    def run(self, alias, data):
-        exact(data, {"confirm", "app", "package"})
-        with self.lock:
-            record = self.record(alias)
-            self._gate(record, data)
-            if record["job"] and record["job"].get("status") == "running":
-                fail("busy", "A run is already in progress on this TV")
-            try:
-                app = application_id(data["app"]) if isinstance(data["app"], str) else application_id("")
-            except ValueError as error:
-                fail("invalid", str(error))
-            package = data["package"]
-            if not isinstance(package, str) or len(package) > 1024:
-                fail("invalid", "Package must be a path or empty")
-            record["job"] = {"op": "run", "status": "running", "passed": None, "failed_steps": []}
-            lease, serial, target = record["lease"], record["serial"], record["fingerprint"]
-
-        def work():
-            try:
-                receipt = self.retail(serial, target, app, package or None, lease=lease,
-                                      sdb=self.sdb, runner=self.runner)
-                job = {"op": "run", "status": "passed" if receipt.get("passed") else "failed",
-                       "passed": bool(receipt.get("passed")),
-                       "failed_steps": [scrub(s) for s in receipt.get("failed_steps", [])][:20]}
-            except (LiveError, ValueError, OSError) as error:
-                job = {"op": "run", "status": "error", "passed": False, "failed_steps": [],
-                       "message": scrub(error) if isinstance(error, LiveError) else "Run failed"}
-            with self.lock:
-                record["job"] = job
-        thread = threading.Thread(target=work, daemon=True)
-        self.threads.append(thread)
-        thread.start()
-        return self.state()
-
     def disconnect(self, alias, data):
         exact(data, {})
         with self.lock:
             record = self.record(alias)
             if record["lease"] is None:
                 fail("connect", "This portal is not connected to that TV")
-            if record["job"] and record["job"].get("status") == "running":
-                fail("busy", "Wait for the run to finish before disconnecting")
         self._release(record)
         return self.state()
 
@@ -766,8 +847,7 @@ class Fleet:
             if record["lease"] is not None:
                 record["lease"].release()
             record.update(lease=None, owned=False, sdb_state=None if not failed else record["sdb_state"],
-                          identity=None, certificate="unknown", guidance=None, fingerprint=None,
-                          apps=None, apps_unreadable=False)
+                          identity=None, guidance=None, fingerprint=None, apps=None, apps_unreadable=False)
         if failed:
             fail("cleanup", "Disconnect failed: " + scrub(failed))
 
@@ -794,16 +874,14 @@ class Fleet:
             return preview["source"] if preview else None
 
     def preview(self, alias, data):
-        """Open one app for preview. Restarting the app needs explicit consent every time."""
-        exact(data, {"app", "restart"})
+        """Open any app's screen. This restarts the app; the button says so. The TV gives the real answer."""
+        if not isinstance(data, dict) or not set(data) <= {"app", "restart"} or "app" not in data:
+            fail("invalid", "Request fields do not match this operation")
         with self.lock:
             record = self.record(alias)
             if record["lease"] is None:
                 fail("connect", "Connect to this TV first")
-            try:
-                app = application_id(data["app"]) if isinstance(data["app"], str) else application_id("")
-            except ValueError as error:
-                fail("invalid", str(error))
+            app = self._app(data["app"])
             current = record.get("preview")
             serial = record["serial"]
             legacy = str(record.get("observed_tizen") or "").startswith("3.")
@@ -811,8 +889,6 @@ class Fleet:
             # Re-attach to the inspector this portal already opened; no restart.
             self._attach(record, current)
             return self.state()
-        if data["restart"] is not True:
-            fail("confirm", f"Opening {app} for preview restarts it on the TV. Confirm to continue")
         self._end_preview(record)
         session = self.session(serial, app, legacy)
         preview = {"app": app, "session": session, "source": None}
@@ -829,7 +905,15 @@ class Fleet:
                 pass
             with self.lock:
                 record["preview"] = None
-            fail("preview", "Could not open the app for preview: " + scrub(error))
+                closed = isinstance(error, LiveError) and re.search(r"\bclosed\b", str(error), re.I)
+                if closed and app not in (record.get("installed_here") or ()):
+                    # Observed fact for this TV: the debug launch of this app was refused.
+                    record.setdefault("store_apps", set()).add(app)
+            if closed and app not in (record.get("installed_here") or ()):
+                fail("preview", STORE_APP + " (" + app + ": " + scrub(error) + ")")
+            fail("preview", "Could not open " + app + ": " + scrub(error))
+        with self.lock:
+            (record.get("store_apps") or set()).discard(app)
         return self.state()
 
     def _attach(self, record, preview):
@@ -837,7 +921,8 @@ class Fleet:
         page = flows.wait_pages(self.discover, local)[0]
         config = {"id": record["alias"], "kind": "tv", "endpoint": f"http://127.0.0.1:{local}",
                   "target_id": page, "lease_path": str(self.lease_path(record["alias"])),
-                  "lease_seconds": PREVIEW_SECONDS, "metadata": {}, "safe_activation_ids": []}
+                  "lease_seconds": PREVIEW_SECONDS, "metadata": {}, "safe_activation_ids": [],
+                  "user_activation": True}
         old = preview.get("source")
         if old is not None:
             old.disconnect()
@@ -898,14 +983,14 @@ class Fleet:
             fail("identity", "Could not read the TV's DUID: " + scrub(error))
         return duid
 
-    def _change(self, alias, data, keys, verb):
-        exact(data, keys)
+    def _change(self, alias, data, keys, optional=()):
+        # No typed confirmations: the person clicking is a trusted developer. A legacy "confirm" is ignored.
+        if not isinstance(data, dict) or not set(keys) <= set(data) <= set(keys) | set(optional) | {"confirm"}:
+            fail("invalid", "Request fields do not match this operation")
         with self.lock:
             record = self.record(alias)
             if record["lease"] is None:
                 fail("connect", "Connect to this TV first")
-            if data["confirm"] != alias:
-                fail("confirm", f"Type {alias} to confirm you want to {verb} on this TV")
         if not self.tizen:
             fail("sdk", "Tizen Studio's tizen CLI was not found. " + INSTALL_HELP["tizen-studio"])
         return record
@@ -923,10 +1008,15 @@ class Fleet:
 
     def install(self, alias, data):
         """Re-sign a private copy with the user's profile, then install it. Errors in plain language."""
-        record = self._change(alias, data, {"confirm", "package", "sign"}, "install an app")
-        package, sign = data["package"], data["sign"]
+        record = self._change(alias, data, {"package"}, {"sign"})
+        package = data["package"]
+        sign = data.get("sign") or (signing_profiles(self.data_root) or {}).get("active")
         if not isinstance(package, str) or not package.lower().endswith(".wgt") or not Path(package).is_file():
             fail("invalid", "Package must be an existing .wgt file")
+        if not sign:
+            return self._finish(record, {"op": "install", "ok": False, "code": "no-profile",
+                                         "message": "There is no active signing profile in Tizen Studio",
+                                         "next": INSTALL_HELP["profile"]})
         if not isinstance(sign, str) or not re.fullmatch(r"[A-Za-z0-9 _.-]{1,64}", sign):
             fail("invalid", "Signing profile name is not valid")
         profiles = signing_profiles(self.data_root) or {"names": []}
@@ -934,7 +1024,7 @@ class Fleet:
             names = ", ".join(profiles["names"]) or "none yet"
             return self._finish(record, {"op": "install", "ok": False, "code": "no-profile",
                                          "message": f"There is no signing profile called {sign}",
-                                         "next": f"Use one of: {names}. Or create one: tv cert {alias}"})
+                                         "next": f"Use one of: {names}"})
         try:
             app = appkit.check_package(package)["app"]
         except (ValueError, OSError, KeyError, zipfile.BadZipFile):
@@ -954,17 +1044,18 @@ class Fleet:
                 code, message, nxt = explain(output[1], "signing-failed", "The package could not be signed",
                                              "Check the profile with tv setup, then try again")
                 return self._finish(record, {"op": "install", "ok": False, "code": code, "message": message,
-                                             "next": nxt.replace("TV", alias), "app": app})
+                                             "next": nxt.replace(" TV", " " + alias), "output": output[1][-400:],
+                                             "app": app})
             safe = out / "app.wgt"  # The CLI names the output after <name>, which may hold spaces.
             built[0].replace(safe)
             failed, text = self._tizen(["install", "-n", safe.name, "-t", device, "--", str(out)], timeout=180)
         if failed or not re.search(r"successfully installed|install completed", text, re.I):
             code, message, nxt = explain(text, "install-failed", "The TV did not install the app",
-                                         "Run tv check " + alias + ", then try again")
+                                         "Check the output below, then try again")
             return self._finish(record, {"op": "install", "ok": False, "code": code, "message": message,
-                                         "next": nxt.replace("TV APP_ID", f"{alias} {app}").replace("tv cert TV",
-                                                                                                    "tv cert " + alias),
-                                         "app": app})
+                                         "next": nxt.replace("TV APP_ID", f"{alias} {app}").replace(
+                                             "tv cert add TV", "tv cert add " + alias),
+                                         "output": text[-400:], "app": app})
         # "Installed" only when the TV's own app list shows this exact ID afterwards.
         listed = self._installed_apps(record["serial"])
         self._remember_apps(record, listed)
@@ -977,9 +1068,12 @@ class Fleet:
             return self._finish(record, {"op": "install", "ok": False, "code": "not-listed",
                                          "message": "The TV reported an install, but " + app + " is not in its app list",
                                          "next": f"tv apps {alias}", "app": app})
+        with self.lock:
+            record.setdefault("installed_here", set()).add(app)
+            (record.get("store_apps") or set()).discard(app)
         return self._finish(record, {"op": "install", "ok": True, "code": "installed",
                                      "message": "Installed " + app + " (confirmed by the TV's app list)",
-                                     "next": f"tv open {alias} {app} --out DIR --yes", "app": app})
+                                     "next": f"tv open {alias} {app}", "app": app})
 
     def apps(self, alias, data):
         """Read-only: list the apps installed on a connected TV."""
@@ -1002,19 +1096,19 @@ class Fleet:
                 record["apps_unreadable"] = listed is None
 
     def launch(self, alias, data):
-        record = self._change(alias, data, {"confirm", "app"}, "launch an app")
+        record = self._change(alias, data, {"app"})
         app = self._app(data["app"])
         failed, text = self._tizen(["run", "-p", app, "-t", self._device_name(record["serial"])])
         if failed or not re.search(r"successfully launched", text, re.I):
             return self._finish(record, {"op": "launch", "ok": False, "code": "launch-failed",
                                          "message": "The TV did not start " + app + " (is it installed?)",
-                                         "next": f"tv install {alias} APP.wgt --sign PROFILE --yes", "app": app})
+                                         "output": text[-400:], "next": f"tv install {alias} APP.wgt", "app": app})
         return self._finish(record, {"op": "launch", "ok": True, "code": "launched",
                                      "message": "Started " + app, "next": None, "app": app})
 
     def remove(self, alias, data):
         """Uninstall, then re-list: on Tizen 5.0 `tizen uninstall` can exit 0 and change nothing."""
-        record = self._change(alias, data, {"confirm", "app"}, "remove an app")
+        record = self._change(alias, data, {"app"})
         app = self._app(data["app"])
         failed, text = self._tizen(["uninstall", "-p", app, "-t", self._device_name(record["serial"])])
         listed = self._installed_apps(record["serial"])
@@ -1032,6 +1126,8 @@ class Fleet:
             result.update(ok=False, code="not-installed", message=app + " is not installed on this TV")
         else:
             result.update(ok=True, code="removed", message="Removed " + app + " (confirmed by the TV's app list)")
+            with self.lock:
+                (record.get("installed_here") or set()).discard(app)
         return self._finish(record, result)
 
     def _installed_apps(self, serial):
@@ -1055,6 +1151,98 @@ class Fleet:
         except LiveError as error:
             return True, scrub(error)
 
+    # ---- screenshot and certificate ------------------------------------------
+    def screenshot(self, alias, data, folder=None):
+        """Save the app picture as PNG. One file per captured paint layer; the TV's video plane is never in it."""
+        if not isinstance(data, dict) or not set(data) <= {"app"}:
+            fail("invalid", "Request fields do not match this operation")
+        with self.lock:
+            record = self.record(alias)
+            if record["lease"] is None:
+                fail("connect", "Connect to this TV first")
+            current = record.get("preview")
+        if "app" in data and (not current or current["app"] != self._app(data["app"])):
+            self.preview(alias, {"app": data["app"]})
+            with self.lock:
+                current = record.get("preview")
+        if not current or current.get("source") is None:
+            fail("screenshot", "Open an app's screen first; a screenshot saves that picture")
+        source = current["source"]
+        try:
+            source.operate("capture", {})
+        except LiveError as error:
+            if error.code != "busy":
+                raise
+        with source.lock:
+            frames = [f["raw"] for f in source.frames]
+        if not frames:
+            fail("screenshot", "No picture was captured")
+        target = Path(folder).expanduser() if folder else self.pictures
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", self.names.get(alias) or alias).strip("-")[:40] or alias
+        stamp = time.strftime("%Y-%m-%d-%H%M%S", time.localtime(self.clock()))
+        paths = []
+        for index, raw in enumerate(frames):
+            suffix = "" if len(frames) == 1 else f"-layer{index + 1}"
+            path = target / f"{name}-{stamp}{suffix}.png"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # The picture may show private screens.
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+            paths.append(str(path))
+        what = "Saved " + paths[0] if len(paths) == 1 else f"Saved {len(paths)} layers to {target}"
+        return self._finish(record, {"op": "screenshot", "ok": True, "code": "saved", "message": what,
+                                     "paths": paths, "app": current["app"], "next": None})
+
+    def choose(self):
+        return {"path": self.chooser()}
+
+    def cert(self, alias, data):
+        """Add this TV to the active Samsung distributor certificate with tizen-cert.
+
+        Backs up the current files first, copies the TV's DUID, and opens tizen-cert (or its documented
+        installer, then tizen-cert) in a visible terminal. Samsung sign-in happens only in the browser."""
+        exact(data, {})
+        with self.lock:
+            record = self.record(alias)
+            duid = record.get("duid")
+        if not duid:
+            fail("connect", "Connect to this TV first so its Device ID can be read")
+        self._coverage = None  # Re-read after tizen-cert; never a stale answer here.
+        coverage = certificate_coverage(self.data_root, duid)
+        if coverage["state"] == "covered":
+            return self._finish(record, {"op": "cert", "ok": True, "code": "covered",
+                                         "message": f"Certificate {coverage['profile']} already includes this TV",
+                                         "next": None})
+        backup = None
+        if coverage.get("folder"):
+            folder = Path(coverage["folder"])
+            backup = folder / ("backup-" + time.strftime("%Y%m%d-%H%M%S", time.localtime(self.clock())))
+            backup.mkdir(mode=0o700, parents=True, exist_ok=False)  # Holds private keys.
+            for name in ("distributor.p12", "distributor.crt", "author.p12", "author.crt", "device-profile.xml"):
+                if (folder / name).is_file() and not (folder / name).is_symlink():
+                    shutil.copy2(folder / name, backup / name)
+        installed = bool(self.which("tizen-cert"))
+        command = "tizen-cert" if installed else INSTALL_COMMAND["windows" if os.name == "nt" else "posix"] + \
+            (" ; tizen-cert" if os.name == "nt" else " && tizen-cert")
+        copied = self.clipboard(duid)
+        self.launcher(command)
+        profile = coverage["profile"] or "your profile"
+        steps = (f"In tizen-cert choose Renew → {profile}, add {duid}"
+                 + (" (already on the clipboard)" if copied else "")
+                 + ", then sign in with your Samsung account in the browser")
+        return self._finish(record, {
+            "op": "cert", "ok": True, "code": "opened", "command": command,
+            "backup": str(backup) if backup else None, "covers": coverage["covers"], "duid": duid,
+            "message": ("Opened tizen-cert in a terminal" if installed else
+                        "Opened a terminal that installs tizen-cert, then runs it") + ". " + steps,
+            "next": "When tizen-cert finishes, this page re-checks the certificate by itself"})
+
+    OPERATIONS = {"connect", "identify", "disconnect", "preview", "apps", "install", "remove",
+                  "launch", "screenshot", "cert"}
+
+    # Failures of these mean the developer link is broken; any other failure is that action's result only.
+    LINK_OPS = {"connect", "identify", "disconnect"}
+
     def submit(self, operation, alias, data):
         """Start a slow operation in the background; progress and errors appear in state()."""
         if operation == "detect":
@@ -1068,18 +1256,31 @@ class Fleet:
         else:
             if operation == "rename":
                 return self.rename(alias, data)
+            if operation not in self.OPERATIONS:
+                fail("route", "Unknown operation")
             with self.lock:
                 record = self.record(alias)
                 if record["pending"]:
                     fail("busy", "This TV is already busy with " + record["pending"])
                 record["pending"] = operation
-                record["error"] = None
+                if operation in self.LINK_OPS:
+                    record["error"] = None
+                else:
+                    record["job"] = None
             target = getattr(self, operation)
             args = (alias, data)
 
         def work():
             try:
-                if operation == "connect":
+                if operation == "detect":
+                    target(*args)
+                    # Scan also refreshes the details of TVs this portal is connected to.
+                    for held in [a for a, r in self.records.items() if r["lease"] is not None and not r["pending"]]:
+                        try:
+                            self.identify(held, {})
+                        except LiveError:
+                            pass
+                elif operation == "connect":
                     target(*args)
                     try:
                         self.identify(alias, {})
@@ -1088,30 +1289,33 @@ class Fleet:
                     try:
                         if self.records[alias]["lease"] is not None:
                             self.apps(alias, {})  # Read-only list; changes nothing on the TV.
-                    except LiveError:
+                    except Exception:
                         pass  # Shown as "app list unreadable"; Show apps retries.
                 else:
                     target(*args)
-            except LiveError as error:
+            except Exception as error:
                 if operation != "detect":
+                    message = scrub(error) if isinstance(error, LiveError) else "Operation failed unexpectedly"
                     with self.lock:
                         record = self.records.get(alias)
-                        if record is not None and not record["error"]:
-                            record["error"] = scrub(error)
-            except Exception:
-                if operation != "detect":
-                    with self.lock:
-                        if alias in self.records:
-                            self.records[alias]["error"] = "Operation failed unexpectedly"
+                        if record is None:
+                            pass
+                        elif operation in self.LINK_OPS:
+                            record["error"] = record["error"] or message
+                        else:
+                            record["job"] = {"op": operation, "ok": False, "code": "failed",
+                                             "message": message, "next": None,
+                                             "app": data.get("app") if isinstance(data, dict) else None}
             finally:
                 if operation != "detect":
                     with self.lock:
                         if alias in self.records:
                             self.records[alias]["pending"] = None
+        snapshot = self.state()  # Shows "pending" even when a fast operation finishes first.
         thread = threading.Thread(target=work, daemon=True)
         self.threads.append(thread)
         thread.start()
-        return self.state()
+        return snapshot
 
     def wait(self, timeout=30):
         for thread in list(self.threads):

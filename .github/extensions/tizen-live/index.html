@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>TV Remote</title>
+  <title>Samsung TV Developer Companion</title>
   <link rel="stylesheet" href="/ui.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <h1>TV Remote</h1>
-      <p class="subtle">Find Samsung TVs on your network, connect, and use the remote.</p>
+      <h1>Samsung TV Developer Companion</h1>
+      <p class="subtle">Find your TVs, open any app's screen, install, debug and use the remote.</p>
     </div>
   </header>
   <div id="error" class="banner" role="alert" hidden></div>
@@ -30,20 +30,6 @@
       <p id="pick" class="empty-state" hidden>Choose a TV on the left to see it here.</p>
     </main>
   </div>
-  <dialog id="confirm" aria-labelledby="confirm-title">
-    <form method="dialog">
-      <h2 id="confirm-title">Connect?</h2>
-      <p id="confirm-text"></p>
-      <label id="confirm-type" hidden>
-        <span id="confirm-type-text"></span>
-        <input id="confirm-alias" autocomplete="off" spellcheck="false">
-      </label>
-      <div class="row end">
-        <button value="cancel" type="submit" class="secondary">Cancel</button>
-        <button id="confirm-ok" value="ok" type="submit" class="primary">Connect</button>
-      </div>
-    </form>
-  </dialog>
   <dialog id="rename" aria-labelledby="rename-title">
     <form method="dialog">
       <h2 id="rename-title">Rename TV</h2>

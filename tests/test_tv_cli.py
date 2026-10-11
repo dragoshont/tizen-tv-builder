@@ -15,14 +15,27 @@ from test_tv_fleet import FakeSdb, LAN_A, DUID  # noqa: E402
 from test_live_tv import FakeCDP, source_config, live  # noqa: E402
 
 
+APP = "AbCdEfGhIj.App"
+STORE = "StOrEaPpId.store"
+
+
+class AppsSdb(FakeSdb):
+    """FakeSdb that also lists installed apps, like vd_applist on the observed TVs."""
+    def __call__(self, argv, timeout=60, limit=None):
+        if argv[1:][2:] == ["shell", "0", "vd_applist"]:
+            self.calls.append(argv[1:])
+            return f"get app list...\napps count: 2\napp_tizen_id: {APP}\napp_tizen_id: {STORE}\n"
+        return super().__call__(argv, timeout, limit)
+
+
 @unittest.skipUnless(os.name == "posix", "Private profiles require POSIX ownership")
 class TvCliTests(unittest.TestCase):
-    """The tv CLI shares the portal's Fleet/Source paths; fakes only, no SDK, network or TV."""
+    """The tv CLI uses the portal's Fleet paths and words; fakes only, no SDK, network or TV."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.sdb = FakeSdb()
+        self.sdb = AppsSdb()
         self.tool = self.root / "sdb"
         self.tool.write_text("")
         self.certificate = self.root / "device-profile.xml"
@@ -30,6 +43,8 @@ class TvCliTests(unittest.TestCase):
         self.profile = self.root / "profile.json"
         # Emulator kind: a native TV source must use /tmp lease paths, which tests never create.
         self.write_profile({"sources": [source_config(self.root, kind="emulator")], "certificate_duids": str(self.certificate)})
+        self.sessions = []
+        self.launches = []
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -39,13 +54,27 @@ class TvCliTests(unittest.TestCase):
         self.profile.chmod(0o600)
 
     def fleet(self, certificate_duids=None, names=None, save_names=None):
+        test = self
+        class Session:
+            def __init__(self, serial, app, legacy):
+                self.app, self.forward, self.client = app, None, None
+                test.sessions.append(self)
+            def launch(self):
+                if self.app == STORE:
+                    raise tv_fleet.LiveError("sdk", "SDK command failed: closed")
+                self.forward = (45555, 9222)
+            def close(self):
+                self.forward = None
         return tv_fleet.Fleet(
             sdb_path=str(self.tool), runner=self.sdb, interfaces=lambda: ["10.255.255.10"],
             sweep=lambda address, port, timeout: {LAN_A}, ssdp=lambda: set(),
             info=lambda host: {"name": "[TV] Samsung 7 Series (55)", "model": "UE55NU7400", "year": "2018",
                                "developer_mode": "1", "uid": "uuid:fixture"},
             key_path=self.root / "alias.key", lease_root=self.root, canonical=self.root / "canonical.lock",
-            certificate_duids=certificate_duids, names=names or {}, save_names=save_names)
+            certificate_duids=certificate_duids, names=names or {}, save_names=save_names,
+            data_root=self.root / "tizen-data", tizen_path=None, which=lambda name: None,
+            launcher=lambda command: self.launches.append(command), clipboard=lambda text: True,
+            pictures=self.root / "Pictures", session=Session, cdp=FakeCDP, discover=lambda port: ["page-1"])
 
     def run_cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()
@@ -58,54 +87,129 @@ class TvCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         return json.loads(out)["tvs"][0]["alias"]
 
-    def assert_private(self, text):
-        for secret in (LAN_A, DUID, "12345", "uuid:fixture", "test-page"):
+    def assert_cache_private(self, text):
+        for secret in (LAN_A, DUID, "uuid:fixture"):
             self.assertNotIn(secret, text)
 
-    def test_scan_prints_named_cards_with_plain_status_and_no_identifiers(self):
+    def test_scan_prints_status_words_and_full_address(self):
         code, out, err = self.run_cli("scan")
         self.assertEqual((code, err), (0, ""))
         self.assertIn("Samsung 7 Series (55) · UE55NU7400", out)
         self.assertIn("Ready to connect", out)
+        self.assertIn(LAN_A, out)  # Shown to the developer on this computer.
         self.assertRegex(out, r"tv-[0-9a-f]{6}")
-        self.assert_private(out)
         self.assertEqual(self.sdb.mutations(), [])
 
-    def test_status_is_scan_and_json_matches_portal_state_shape(self):
+    def test_status_is_scan_and_json_matches_portal_state(self):
         code, out, _ = self.run_cli("status", "--json")
         state = json.loads(out)
         self.assertEqual(code, 0)
         self.assertEqual(set(state), {"scan", "sdk", "tizen", "signing_profiles", "tvs"})
         self.assertEqual(state["tvs"][0]["label"], "Ready to connect")
-        self.assert_private(out)
+        self.assertEqual(state["tvs"][0]["details"]["address"], LAN_A)
 
-    def test_connect_identifies_then_disconnects_owned(self):
-        alias = self.alias()
-        code, out, err = self.run_cli("--profile", str(self.profile), "connect", alias)
+    def test_connect_by_name_without_yes_shows_everything_then_disconnects(self):
+        code, out, err = self.run_cli("connect", "samsung 7 series (55) · ue55nu7400")
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("Choose Show apps to pick an app on this TV, or install a package", out)
-        self.assertNotIn("Connected ·", out)
-        self.assertIn("Disconnected", out)
+        self.assertIn(": Connected", out)
+        for value in (LAN_A, DUID, "UE55NU7400", APP, STORE, "Apps on this TV (2)"):
+            self.assertIn(value, out)
+        self.assertIn("No Samsung certificate yet. This TV is " + DUID, out)
         self.assertEqual([c[0] for c in self.sdb.mutations()], ["connect", "disconnect"])
         self.assertEqual(list(self.root.glob("tizen-tv-*.lock")), [])
-        self.assert_private(out + err)
+        for banned in ("No app open", "Developer Mode ready", "Dev mode enabled", "Preview not connected",
+                       "Needs to be configured", "Busy", "--yes"):
+            self.assertNotIn(banned, out)
 
-    def test_connect_failure_prints_guided_fix_and_host_ip_without_tv_address(self):
+    def test_aliases_share_connect_and_scan(self):
+        alias = self.alias()
+        for command in ("check", "identify"):
+            code, out, _ = self.run_cli(command, alias)
+            self.assertEqual(code, 0)
+            self.assertIn(DUID, out)
+        self.assertEqual(self.run_cli("apps", alias.upper())[0], 0)
+        code, out, _ = self.run_cli("duid", alias)
+        self.assertEqual((code, out.strip().splitlines()[-1]), (0, DUID))
+
+    def test_connect_failure_prints_guided_fix_and_host_ip(self):
         self.sdb.accept = False
         alias = self.alias()
-        code, out, err = self.run_cli("connect", alias, "--yes")
+        code, out, err = self.run_cli("connect", alias)
         self.assertEqual(code, 1)
+        self.assertIn("Connection problem", out)
         self.assertIn("Check the TV's Host PC IP", out)
         self.assertIn("This computer's IP to enter on the TV: 10.255.255.10", out)
-        self.assertIn("12345", out.replace(" ", ""))  # The Developer Mode step, not the TV address.
-        self.assertNotIn(LAN_A, out + err)
 
-    def test_unknown_alias_and_raw_address_are_refused(self):
-        for target in ("tv-ffffff", LAN_A):
-            code, _, err = self.run_cli("connect", target, "--yes")
-            self.assertNotEqual(code, 0)
-            self.assertNotIn(LAN_A, err.replace(target, "") if target != LAN_A else "")
+    def test_unknown_tv_is_refused_with_the_list_of_names(self):
+        code, _, err = self.run_cli("connect", "tv-ffffff")
+        self.assertEqual(code, 1)
+        self.assertIn("No TV called tv-ffffff", err)
+        self.assertIn("Samsung 7 Series", err)
         self.assertEqual(self.sdb.mutations(), [])
+
+    def test_open_shows_app_and_store_refusal_is_explained(self):
+        alias = self.alias()
+        code, out, err = self.run_cli("open", alias, APP)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Showing " + APP, out)
+        code, out, _ = self.run_cli("open", alias, STORE)
+        self.assertEqual(code, 1)
+        self.assertIn(tv_fleet.STORE_APP, out)
+        self.assertIn("closed", out)
+        self.assertEqual([c[0] for c in self.sdb.mutations()][-2:], ["connect", "disconnect"])
+
+    def test_screenshot_writes_private_png_without_yes(self):
+        alias = self.alias()
+        self.assertEqual(self.run_cli("screenshot", alias)[0], 2)  # Names the app to capture.
+        out_dir = self.root / "shots"
+        code, out, err = self.run_cli("screenshot", alias, "--app", APP, "--out", str(out_dir))
+        self.assertEqual((code, err), (0, ""))
+        written = sorted(out_dir.iterdir())
+        self.assertEqual(len(written), 1)
+        self.assertTrue(written[0].read_bytes().startswith(b"\x89PNG"))
+        self.assertEqual(oct(written[0].stat().st_mode & 0o777), "0o600")
+        self.assertIn("Saved " + str(written[0].resolve()), out)
+        self.assertEqual(self.run_cli("screenshot", alias, "--app", APP, "--out", str(ROOT / "shots"))[0], 2)
+        self.assertFalse((ROOT / "shots").exists())
+
+    def test_key_sends_ok_and_rejects_unknown_keys(self):
+        alias = self.alias()
+        code, out, err = self.run_cli("key", alias, "down", "ok", "back", "--app", APP)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Sent down, ok, back to " + APP, out)
+        code, _, err = self.run_cli("key", alias, "power", "--app", APP)
+        self.assertEqual(code, 2)
+        self.assertIn("power", err)
+
+    def test_profile_source_keys_and_screenshot_need_no_yes(self):
+        code, out, err = self.run_cli("--profile", str(self.profile), "key", "sample", "down", "ok")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Sent down, ok", out)
+        self.assertFalse(Path(source_config(self.root)["lease_path"]).exists())
+        code, out, err = self.run_cli("--profile", str(self.profile), "screenshot", "sample",
+                                      "--out", str(self.root / "shots"))
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("video plane", out)
+
+    def test_cert_shows_coverage_and_add_backs_up_and_opens_tizen_cert(self):
+        alias = self.alias()
+        code, out, _ = self.run_cli("cert", alias)
+        self.assertEqual(code, 0)
+        self.assertIn("This TV is " + DUID, out)
+        self.assertIn("tv cert add " + alias, out)
+        code, out, _ = self.run_cli("cert", "add", alias)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.launches), 1)
+        self.assertIn("tizen-cert", self.launches[0])
+        self.assertEqual(self.run_cli("cert", "add")[0], 2)
+
+    def test_uninstall_and_remove_alias_need_tizen_cli_and_no_yes(self):
+        alias = self.alias()
+        for command in ("uninstall", "remove"):
+            code, _, err = self.run_cli(command, alias, APP)
+            self.assertEqual(code, 1)
+            self.assertIn("tizen CLI was not found", err)
+        self.assertEqual([c[0] for c in self.sdb.mutations()][-2:], ["connect", "disconnect"])
 
     def test_rename_persists_in_private_profile_by_alias(self):
         alias = self.alias()
@@ -116,41 +220,11 @@ class TvCliTests(unittest.TestCase):
         self.assertEqual(oct(self.profile.stat().st_mode & 0o777), "0o600")
         code, out, _ = self.run_cli("--profile", str(self.profile), "scan")
         self.assertIn("Den TV", out)
-        # Without --profile, rename saves to the private default profile it creates.
+        self.assertEqual(self.run_cli("--profile", str(self.profile), "connect", "den tv")[0], 0)
         self.assertEqual(self.run_cli("rename", alias, "Den")[0], 0)
         default = self.root / "state" / "profile.json"
         self.assertEqual(json.loads(default.read_text())["tv_names"], {alias: "Den"})
         self.assertIn("Den", self.run_cli("list")[1])
-
-    def test_key_sends_allowlisted_keys_then_disconnects(self):
-        self.assertEqual(self.run_cli("--profile", str(self.profile), "key", "sample", "down")[0], 2)
-        code, out, err = self.run_cli("--profile", str(self.profile), "key", "sample", "down", "back", "--yes")
-        self.assertEqual((code, err), (0, ""))
-        self.assertIn("Sent down, back", out)
-        self.assertFalse(Path(source_config(self.root)["lease_path"]).exists())
-        # OK keeps the portal's audited-safe-target gate, then still releases the lease.
-        code, _, err = self.run_cli("--profile", str(self.profile), "key", "sample", "ok", "--yes")
-        self.assertEqual(code, 1)
-        self.assertIn("OK", err)
-        self.assertFalse(Path(source_config(self.root)["lease_path"]).exists())
-        code, _, err = self.run_cli("--profile", str(self.profile), "key", "sample", "power", "--yes")
-        self.assertEqual(code, 2)
-        self.assertIn("power", err)
-
-    def test_screenshot_writes_private_png_outside_repo_only(self):
-        out_dir = self.root / "shots"
-        code, out, err = self.run_cli("--profile", str(self.profile), "screenshot", "sample",
-                                      "--out", str(out_dir), "--yes")
-        self.assertEqual((code, err), (0, ""))
-        written = sorted(out_dir.iterdir())
-        self.assertEqual(len(written), 1)
-        self.assertTrue(written[0].read_bytes().startswith(b"\x89PNG"))
-        self.assertEqual(oct(written[0].stat().st_mode & 0o777), "0o600")
-        self.assertIn("renderer layers, not the full panel or video", out)
-        code, _, err = self.run_cli("--profile", str(self.profile), "screenshot", "sample",
-                                    "--out", str(ROOT / "shots"), "--yes")
-        self.assertEqual(code, 2)
-        self.assertFalse((ROOT / "shots").exists())
 
     def test_default_profile_is_created_private_and_empty_without_credentials(self):
         state = self.root / "state"
@@ -174,7 +248,7 @@ class TvCliTests(unittest.TestCase):
         alias = self.alias()
         cache = self.root / "state" / "last-scan.json"
         self.assertEqual(oct(cache.stat().st_mode & 0o777), "0o600")
-        self.assert_private(cache.read_text())
+        self.assert_cache_private(cache.read_text())
         calls = len(self.sdb.calls)
         out, err = io.StringIO(), io.StringIO()
         def no_scan(**_):
@@ -184,47 +258,6 @@ class TvCliTests(unittest.TestCase):
         self.assertIn(alias, out.getvalue())
         self.assertIn("Ready to connect", out.getvalue())
         self.assertEqual(len(self.sdb.calls), calls)
-        self.assert_private(out.getvalue())
-
-    def test_check_separates_open_port_from_working_developer_connection(self):
-        alias = self.alias()
-        code, out, err = self.run_cli("check", alias)
-        self.assertEqual((code, err), (0, ""))
-        self.assertIn("Developer Mode port: open", out)
-        self.assertIn("Developer connection: accepted", out)
-        self.assertIn("Identity: Tizen 4.0, DUID present (hidden)", out)
-        self.assertIn("Developer Mode ready", out)
-        self.assertIn("Dev mode enabled", out)
-        self.assertIn("About: UE55NU7400 · Model year 2018 (reported) · Tizen · version unavailable", out)
-        self.assertEqual([c[0] for c in self.sdb.mutations()], ["connect", "disconnect"])
-        self.assert_private(out)
-
-    def test_check_reports_port_open_but_connection_refused_as_not_ready(self):
-        self.sdb.accept = False
-        alias = self.alias()
-        code, out, _ = self.run_cli("check", alias)
-        self.assertEqual(code, 1)
-        self.assertIn("Developer Mode port: open", out)
-        self.assertIn("Developer connection: refused", out)
-        self.assertIn("Needs to be configured: Developer Mode is on, but the TV refused this computer: its Host PC IP "
-                      "most likely points to another computer", out)
-        self.assertIn("Next: On the TV set Host PC IP to this computer", out)
-        self.assertIn("Not ready", out)
-        self.assertNotIn("Developer Mode ready", out)
-        self.assertNotIn(LAN_A, out)
-
-    def test_scan_and_list_share_portal_metadata_and_dev_labels(self):
-        code, out, _ = self.run_cli("scan")
-        self.assertEqual(code, 0)
-        self.assertIn("Dev mode reachable · not checked", out)
-        self.assertNotIn("Needs to be configured", out)
-        self.assertIn("UE55NU7400 · Model year 2018 (reported) · Tizen · version unavailable", out)
-        self.assertIn("Next: Connect to check", out)
-        code, listed, _ = self.run_cli("list")
-        self.assertEqual(code, 0)
-        self.assertIn("Model year 2018 (reported)", listed)
-        self.assertIn("Dev mode reachable · not checked", listed)
-        self.assert_private(out + listed)
 
     def test_portal_uses_default_profile_and_prints_plain_url(self):
         seen = {}
@@ -249,7 +282,8 @@ class TvCliTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(ROOT / "tools/tizen.py"), "tv", "--help"],
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for command in ("scan", "list", "check", "connect", "portal"):
+        for command in ("scan", "list", "connect", "apps", "open", "screenshot", "key", "install",
+                        "uninstall", "cert add", "portal"):
             self.assertIn(command, result.stdout)
         result = subprocess.run([sys.executable, str(ROOT / "tools/tizen.py"), "--help"],
                                 capture_output=True, text=True, timeout=30)
@@ -258,7 +292,8 @@ class TvCliTests(unittest.TestCase):
     def test_help_lists_portal_capabilities(self):
         parser = tv.parser()
         text = parser.format_help()
-        for command in ("scan", "list", "check", "status", "rename", "connect", "key", "screenshot", "portal"):
+        for command in ("scan", "list", "connect", "apps", "open", "screenshot", "key", "install", "uninstall",
+                        "cert add", "duid", "rename", "setup", "portal", "check", "status", "remove"):
             self.assertIn(command, text)
 
 

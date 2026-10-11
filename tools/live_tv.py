@@ -447,7 +447,7 @@ class Source:
                 "capture_age_seconds": max(0, round(time.time() - self.captured)) if self.captured else None,
                 "stale": self.stale, "command_ms": self.command_ms,
                 "capture_ms": self.capture_ms, "streaming": self.streaming,
-                "interval": self.interval, "activation_allowed": bool(self.config["safe_activation_ids"]),
+                "interval": self.interval, "activation_allowed": bool(self.config["safe_activation_ids"] or self.config.get("user_activation")),
                 "run_limit_seconds": self.config["lease_seconds"],
                 "input_fidelity": "CDP synthesized; physical remote parity unverified",
                 "capabilities": {"capture": "LayerTree protocol probe required",
@@ -628,6 +628,8 @@ class Source:
                 return
 
     def activation(self, x=None, y=None):
+        if self.config.get("user_activation"):
+            return  # The developer opened this app; OK goes to it like a real remote's OK.
         ids = self.config["safe_activation_ids"]
         if not ids:
             fail("guard", "OK/click require audited safe activation IDs; household writes are not authorized")
@@ -925,7 +927,12 @@ def handler(app):
                 if self.path == "/api/detect" and app.fleet is not None:
                     self.reply(200, app.fleet.submit("detect", None, data))
                     return
-                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|run|rename|preview)/(tv-[0-9a-f]{6})", self.path)
+                if self.path == "/api/choose-package" and app.fleet is not None:
+                    if data != {}:
+                        fail("invalid", "No options are accepted")
+                    self.reply(200, app.fleet.choose())
+                    return
+                match = re.fullmatch(r"/api/tv/(connect|identify|disconnect|rename|preview|apps|install|remove|launch|screenshot|cert)/(tv-[0-9a-f]{6})", self.path)
                 if match and app.fleet is not None:
                     self.reply(200, app.fleet.submit(match[1], match[2], data))
                     return
