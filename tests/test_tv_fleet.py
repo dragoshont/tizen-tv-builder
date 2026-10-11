@@ -305,6 +305,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual((tvs[bedroom]["label"], tvs[bedroom]["missing"], tvs[bedroom]["status"]),
                          ("Not found", True, "not-connected"))
         self.assertEqual(tvs[bedroom]["name"], before[bedroom])
+        self.assertEqual(tvs[bedroom]["dev_mode"]["state"], "unknown", "Cached API info is not a diagnosis")
         self.assertEqual(fleet.records[held]["serial"], identity, "The held TV is never retargeted")
         self.assertEqual(tvs[held]["status"], "developer")
         # It returns while its REST info times out: same card, not a second serial-keyed one.
@@ -619,6 +620,39 @@ class DiscoveryAndReadinessTests(FleetTests):
         dev = self.only(fleet)["dev_mode"]
         self.assertEqual(dev["label"], "Needs to be configured")
         self.assertIn("Restart", dev["next"])
+        fleet.close()
+
+    def test_tv_missing_from_the_scan_is_never_diagnosed_from_cached_api_info(self):
+        hits = [LAN_A]
+        answering = {LAN_A}
+
+        def info(host):
+            if host not in answering:
+                raise OSError("timed out")
+            return {"name": "[TV] Den", "model": "UE55NU7400", "developer_mode": "on", "uid": "uuid:" + host}
+        fleet = self.fleet(hits=hits, info=info)
+        fleet.detect()
+        hits.clear()
+        answering.clear()
+        fleet.detect()  # Off or gone: the cached "developer_mode on" plus a closed port proves nothing now.
+        tv = self.only(fleet)
+        self.assertEqual((tv["label"], tv["missing"]), ("Not found", True))
+        self.assertEqual(tv["dev_mode"]["state"], "unknown")
+        self.assertNotEqual(tv["dev_mode"]["label"], "Needs to be configured")
+        self.assertIsNone(tv["dev_mode"]["diagnosis"])
+        fleet.close()
+
+    def test_an_earlier_developer_connection_is_not_reported_as_working_now(self):
+        fleet = self.lab()
+        fleet.detect()
+        alias = self.by_host(fleet)["21"]["alias"]
+        fleet.connect(alias, {"confirm": ""})
+        self.assertEqual(self.by_host(fleet)["21"]["dev_mode"]["state"], "enabled")
+        fleet.disconnect(alias, {})
+        dev = self.by_host(fleet)["21"]["dev_mode"]
+        self.assertNotEqual(dev["state"], "enabled")
+        self.assertNotIn("has a working developer connection", dev["explanation"])
+        self.assertIn("earlier", dev["explanation"])
         fleet.close()
 
     def test_offline_tv_stays_not_reachable_not_dev_mode_off(self):

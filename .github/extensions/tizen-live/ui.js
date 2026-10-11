@@ -135,9 +135,9 @@ function tvStatus(tv, live, previewError) {
     closed: ["Can't connect", "lost"],
     unknown: ["Not reachable", ""],
   }[dev.state];
-  if (blocked) return { label: blocked[0], tone: blocked[1], problem: Boolean(problem),
-    detail: problem || dev.explanation || "", next: dev.next && dev.next !== "None" ? dev.next : "" };
-  return { label: problem ? "Couldn't connect" : "Ready to connect", tone: problem ? "lost" : "", problem: Boolean(problem),
+  if (blocked) return { label: blocked[0], tone: blocked[1], problem: Boolean(problem), canConnect: dev.state !== "not-enabled",
+    detail: problem || (dev.state === "not-enabled" ? "" : dev.explanation || ""), next: dev.next && dev.next !== "None" ? dev.next : "" };
+  return { label: problem ? "Couldn't connect" : "Ready to connect", tone: problem ? "lost" : "", problem: Boolean(problem), canConnect: true,
     detail: problem || "Developer Mode is on. Connect to use this TV.", next: "" };
 }
 
@@ -274,7 +274,7 @@ async function updateTv(card, tv, keep) {
   card.reason.textContent = shown.detail;
   card.reason.className = `reason${shown.problem ? " problem" : ""}`;
   const free = !working;
-  card.connect.hidden = status !== "not-connected";
+  card.connect.hidden = status !== "not-connected" || !shown.canConnect;
   card.connect.textContent = tv.error ? "Retry" : "Connect";
   card.connect.disabled = !free || offline || state.sdk === "missing";
   card.identify.hidden = card.disconnect.hidden = !tv.held;
