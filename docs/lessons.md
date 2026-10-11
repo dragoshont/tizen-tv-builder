@@ -24,6 +24,13 @@ not a completed device run of this new toolkit.
 
 ## Inspector: important correction
 
+Stop the authorized package before debug-launching the full app ID, and rediscover
+after every launch. Inspector ports are ephemeral; successful discovery on an old
+port does not establish the intended app identity. The standalone workbench owns
+this stop/debug/forward sequence; `tizen.py debug` alone does not stop first.
+Keep a lease across one coordinated run, not host-side edits. Short per-command
+leases do not by themselves prevent another computer changing the physical TV.
+
 The 2017 target initially answered `sdb shell 0 debug APP` with `closed`. This did **not** prove
 that debugging was unavailable. Adding explicit trailing `0` launched a debug port despite
 an unrecognized timeout-option warning. A similar older-device workaround was reported in
@@ -64,6 +71,43 @@ no marker. A framebuffer recipe requiring root and `enlightenment_info` was not 
 Do not promote it as a retail solution. Keep implementation and sanitized evidence in
 the [committed upstream inspector study](https://github.com/dragoshont/plx-native/blob/e48a829b/docs/samsung-web-inspector.md);
 do not copy its GPL inspector into this MIT toolkit.
+
+## Old engines, privileges and remote keys
+
+- Tizen 3.0/M47 and Tizen 4.0/M56 are old Chromium generations. Prefer ES5 shipped
+  output for these targets; separately probe the runtime APIs you actually use.
+  The upstream 2017 probe found fetch/Promise but no WebAssembly or async-function
+  syntax; `class`/`let` behavior also depended on strict mode. A WebKit-style
+  user agent did not override the observed old V8/Chromium behavior.
+- Samsung ProductInfo calls require the Samsung WebAPI script
+  `$WEBAPIS/webapis/webapis.js` and
+  `http://developer.samsung.com/privilege/productinfo`. Its API documents
+  `SecurityError` when permission is absent. Diagnose loading/privilege/version
+  before concluding that the TV lacks the feature. Never emit `getDuid()` into
+  public logs. The hello template deliberately does not call ProductInfo.
+- ArrowLeft/Up/Right/Down, Enter and Back are mandatory app keys; they need no
+  registration and **cannot** be registered with `registerKey`. Optional keys
+  come from `tizen.tvinputdevice.getSupportedKeys()` (which omits mandatory keys);
+  register only supported names with `registerKey`, using
+  `http://tizen.org/privilege/tv.inputdevice`. Missing privilege can raise
+  `SecurityError`; unsupported names can raise `InvalidValuesError`.
+- Preserve baseline D-pad/Enter/Back when discovering optional codes. A complete
+  Samsung remote button inventory is not evidence that every key is exposed:
+  leave unexposed actions dimmed. Home/system behavior is not equivalent to a
+  browser key event; injected events do not prove native remote registration,
+  app exit or system navigation. Extra app actions require the corresponding
+  consent and current handler audit; a discovered key is not a permission grant.
+- New-TV discovery metadata is device-dependent. Bounded SSDP DIAL,
+  RemoteControlReceiver and MediaRenderer candidates need Samsung confirmation;
+  the private `:8001/api/v2/` endpoint does not guarantee model/name/OS/firmware/
+  Developer Mode/year. Leave missing fields unknown and record the provenance
+  of owner/Settings observations. Never scan while a sibling device lane is live.
+
+Sources: [upstream P0 probe](https://github.com/dragoshont/plx-native/blob/dragoshont-samsung-tizen-feasibility/docs/samsung-tizen-poc.md),
+[Samsung ProductInfo](https://developer.samsung.com/smarttv/develop/api-references/samsung-product-api-references/productinfo-api.html),
+[Samsung TVInputDevice](https://developer.samsung.com/smarttv/develop/api-references/tizen-web-device-api-references/tvinputdevice-api.html)
+(API references read 2026-10-11). Discovery policy above describes the unreleased
+toolkit contract, not an upstream all-model observation.
 
 ## Media and accounts
 

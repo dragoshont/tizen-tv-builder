@@ -19,6 +19,17 @@ No SDK installation, account sign-in or device access is implied by loading this
 
 ## Work on the application
 
+For a first account-free app, read [prerequisites](../../docs/prerequisites.md) and
+[zero to signed app](../../docs/getting-started.md). Use the narrow checkout skills
+when appropriate: [lease](../samsung-tv-lease/SKILL.md),
+[connection/new TV](../samsung-tv-connect/SKILL.md),
+[kill-before-debug](../samsung-tv-debug/SKILL.md),
+[inspector/viewer/remote](../samsung-tv-inspect/SKILL.md),
+[certificates](../samsung-tv-certificates/SKILL.md) and
+[new app/sign/install/verify](../samsung-tv-new-app/SKILL.md).
+They use normal plugin skill discovery, not extra hooks or a separate host skills
+directory. These additions are unreleased; published 0.1.0 remains unchanged.
+
 Workflow: inspect named model and official engine/API tables -> validate manifest -> host tests
 and unsigned source build -> certificate profile -> explicit authorized install -> named-model
 remote/media/lifecycle acceptance -> clean teardown and evidence receipt.

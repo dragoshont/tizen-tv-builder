@@ -12,7 +12,7 @@ from tizen import execute
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = {"plugin.json", ".github/plugin/marketplace.json", "README.md", "AGENTS.md",
-              "LICENSE", "CHANGELOG.md"}
+              "LICENSE", "CHANGELOG.md", "PRODUCT.md", "DESIGN.md"}
 CANVAS_FILES = {".github/extensions/tizen-live/" + name for name in
                 ("extension.mjs", "index.html", "ui.js", "ui.css", "controls.mjs")}
 TREES = ("skills/", "com.github.copilot/agents/", "docs/", "tools/", "tests/", "examples/hello-tv/")

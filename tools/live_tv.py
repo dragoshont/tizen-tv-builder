@@ -364,6 +364,7 @@ def png(data):
 
 
 class Source:
+    keymap = KEYS
     def __init__(self, config, factory=CDP):
         self.config = config
         self.factory = factory
@@ -531,9 +532,9 @@ class Source:
                     fail("grant", "User-controlled input was not authorized")
                 if operation == "key":
                     exact(data, {"key"})
-                    if not isinstance(data["key"], str) or data["key"] not in KEYS:
+                    if not isinstance(data["key"], str) or data["key"] not in self.keymap:
                         fail("invalid", "Only D-pad, OK and Back keys are permitted")
-                    code, key = KEYS[data["key"]]
+                    code, key = self.keymap[data["key"]]
                     if data["key"] == "ok":
                         self.activation()
                     self.discard()
@@ -746,7 +747,8 @@ def handler(app):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy",
                              "default-src 'none'; script-src 'self'; style-src 'self'; "
-                             "img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'")
+                             "img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'" +
+                             ("; frame-ancestors " + app.frame_ancestors if hasattr(app, "frame_ancestors") else ""))
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
@@ -769,6 +771,10 @@ def handler(app):
 
         def do_GET(self):
             try:
+                if self.path == "/favicon.ico" and hasattr(app, "frame_ancestors"):
+                    self.check(public_static=True)
+                    self.reply(204, b"", "image/x-icon")
+                    return
                 static = {"/": ("index.html", "text/html; charset=utf-8"),
                           "/ui.js": ("ui.js", "text/javascript"),
                           "/controls.mjs": ("controls.mjs", "text/javascript"),
@@ -778,11 +784,18 @@ def handler(app):
                     # profile, token or pixels; authenticated API routes stay strict.
                     self.check(public_static=True)
                     name, mime = static[self.path]
-                    self.reply(200, (ASSETS / name).read_bytes(), mime)
+                    assets = ASSETS if name == "controls.mjs" else getattr(app, "assets", ASSETS)
+                    self.reply(200, (assets / name).read_bytes(), mime)
                     return
                 self.check(private=True)
                 if self.path == "/api/state":
                     self.reply(200, app.state())
+                    return
+                if self.path == "/api/setup" and hasattr(app, "setup_status"):
+                    self.reply(200, app.setup_status())
+                    return
+                if self.path == "/api/record" and hasattr(app, "record_status"):
+                    self.reply(200, app.record_status())
                     return
                 match = re.fullmatch(r"/api/frame/([a-z][a-z0-9-]{0,31})/([0-7])/([a-f0-9]{24})", self.path)
                 if not match or match[1] not in app.sources:
@@ -816,6 +829,12 @@ def handler(app):
                         fail("invalid", "Request body was truncated")
                     raw.extend(chunk)
                 data = json.loads(raw)
+                if self.path == "/api/setup" and hasattr(app, "setup"):
+                    self.reply(200, app.setup(data))
+                    return
+                if self.path == "/api/record" and hasattr(app, "record"):
+                    self.reply(200, app.record(data))
+                    return
                 match = re.fullmatch(r"/api/(connect|disconnect|capture|key|click|metadata|stream)/([a-z][a-z0-9-]{0,31})", self.path)
                 if not match or match[2] not in app.sources:
                     fail("route", "Unknown route")

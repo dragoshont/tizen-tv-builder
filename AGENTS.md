@@ -5,6 +5,13 @@ TV Web applications; it does not certify hardware support from successful host t
 Canonical agent: com.github.copilot/agents/tizen-tv-builder.agent.md. Canonical skill:
 skills/tizen-tv-builder/SKILL.md. plugin.json owns the release version.
 
+For a first app, read docs/prerequisites.md and docs/getting-started.md.
+Generic workflow skills are auto-discovered from skills/*/SKILL.md; this checkout adds
+samsung-tv-lease, samsung-tv-connect, samsung-tv-debug, samsung-tv-inspect,
+samsung-tv-certificates and samsung-tv-new-app. Their shared contract is skills/common.md.
+They are unreleased additions, not a change to the published 0.1.0 package. Do not duplicate
+them into .agents/skills or infer discovery from this inventory alone.
+
 Use Python 3.10+ standard library. No SDK/tool installation without permission.
 Run `python3 -m unittest discover -s tests -v` before committing. Add a failing regression
 before a bug fix. Do not weaken validation to make a target work.

@@ -11,6 +11,20 @@ media client. It does not promise that one app will work on every TV from 2015
 to today. We keep [the model-year table](docs/compatibility.md), what was actually
 tested, and what is still unknown.
 
+**Start a new app:** follow [prerequisites](docs/prerequisites.md), then
+[the signed-app getting-started guide](docs/getting-started.md). Humans and
+agents use the same commands and checks; [AGENTS.md](AGENTS.md) indexes the
+focused workflows and lessons.
+
+The checkout includes focused agent skills for
+[device leases](skills/samsung-tv-lease/SKILL.md),
+[connecting a new TV](skills/samsung-tv-connect/SKILL.md),
+[debug launch](skills/samsung-tv-debug/SKILL.md),
+[inspection and input](skills/samsung-tv-inspect/SKILL.md),
+[certificates/signing](skills/samsung-tv-certificates/SKILL.md) and
+[starting an app](skills/samsung-tv-new-app/SKILL.md).
+These additions are unreleased; the published 0.1.0 plugin is unchanged.
+
 ## Install the plugin
 
 You need a current **GitHub Copilot CLI**. The plugin uses the documented
@@ -79,6 +93,20 @@ Already working in another session? Load the skill there. You do not need anothe
 supervisor or a new project just to use these tools.
 
 ## Use the tools yourself
+
+For a standalone remote, inspector and native paint preview, run
+`python3 tools/workbench.py` on macOS or `py -3 tools/workbench.py` on Windows.
+**TV Workbench** opens in your browser without Plex, Copilot or npm. Its
+first-run flow checks installed tools and guides explicit TV/app debug setup.
+It detects connected TVs and installed apps, and shows a complete Samsung-style
+remote with app-supported keys. See [workbench setup](docs/workbench.md):
+this is unreleased, and Windows/device acceptance is pending.
+
+**Record** saves one genuine app paint layer as PNG frames or a still.
+An already-installed optional ffmpeg enables optimized GIF, MP4 and WebM
+exports—no encoder is bundled or silently installed. FPS, size, length and
+the private output folder are in **Recording & export**.
+See [recording formats and setup](docs/recording.md).
 
 The plugin includes the Python tools, docs and a small hello app. Run the commands
 below from an extracted release or a repository checkout. To get a checkout:
