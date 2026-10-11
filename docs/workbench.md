@@ -202,9 +202,13 @@ offline with the saved native bytes. No video plane or full panel was captured.
 
 Unaudited OK was correctly refused. The settled focused button did not match
 the available read-only label allowlist, so arrow/Back/media injection effects
-were **skipped**, not fabricated or bypassed. App-key support and physical
-remote/system/IME behavior remain different acceptance gates. TV network
-discovery on this LAN was not exercised.
+were **skipped**, not fabricated or bypassed. A later lane release (installed app
+source `e8b3b4ab`, toolkit `f2ba970`) ran an arrows-only pass: after confirming
+the focused element was not editable, injected Down moved focus and Up returned
+it to the original geometry; OK was again refused (`guard`). Back, media and
+other keys were not injected. App-key support and physical remote/system/IME
+behavior remain different acceptance gates. TV network discovery on this LAN
+was not exercised.
 
 Both runs stopped their source, removed only their own forward, disconnected
 their own loopback SDB connection and stopped their relay. The absent lane and
