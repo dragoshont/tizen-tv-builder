@@ -109,6 +109,10 @@ exports—no encoder is bundled or silently installed. FPS, size, length and
 the private output folder are in **Recording & export**.
 See [recording formats and setup](docs/recording.md).
 
+**New app in one command:** `python3 tools/tizen.py new ./MyTv --name "My TV"`, then
+`audit`, `pack` and `check-package` without an SDK. Retail TV and emulator runs with
+per-tier start-up budgets: see [app flows](docs/app-flows.md).
+
 The plugin includes the Python tools, docs and a small hello app. Run the commands
 below from an extracted release or a repository checkout. To get a checkout:
 

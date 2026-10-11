@@ -7,6 +7,10 @@ Host checks do not certify hardware support; this toolkit has not completed its
 own named-TV acceptance. Windows SDK examples are instructions, not tested Windows
 execution. No install, network scan or device operation was performed to write this guide.
 
+Fastest start: `python3 tools/tizen.py new ./MyTv --name "My TV"` creates an app with a
+unique ID and host tests; `audit`, `pack` and `check-package` check it without an SDK.
+See [app flows](app-flows.md). The steps below use the copied example instead.
+
 ## 1. Copy the minimal app
 
 From this toolkit checkout, copy to a **new** owner-selected directory outside

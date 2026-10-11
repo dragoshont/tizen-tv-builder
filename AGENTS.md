@@ -5,7 +5,8 @@ TV Web applications; it does not certify hardware support from successful host t
 Canonical agent: com.github.copilot/agents/tizen-tv-builder.agent.md. Canonical skill:
 skills/tizen-tv-builder/SKILL.md. plugin.json owns the release version.
 
-For a first app, read docs/prerequisites.md and docs/getting-started.md.
+For a first app, read docs/prerequisites.md and docs/getting-started.md. For `new`, `audit`,
+`pack`, `check-package`, `retail`, `emulator` and `budgets`, read docs/app-flows.md.
 Generic workflow skills are auto-discovered from skills/*/SKILL.md; this checkout adds
 samsung-tv-lease, samsung-tv-connect, samsung-tv-debug, samsung-tv-inspect,
 samsung-tv-certificates and samsung-tv-new-app. Their shared contract is skills/common.md.

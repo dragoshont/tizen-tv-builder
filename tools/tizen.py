@@ -252,6 +252,40 @@ def parser():
             command.add_argument("--port", type=int, required=True)
     command = sub.add_parser("inspect")
     command.add_argument("--port", type=int, required=True)
+    command = sub.add_parser("new", help="Create a starter app with a fresh package ID")
+    command.add_argument("target", type=Path)
+    command.add_argument("--name", required=True)
+    command.add_argument("--package")
+    command = sub.add_parser("audit", help="Manifest IDs, privileges vs API use, ES5 and credential scan")
+    command.add_argument("source", type=Path)
+    command = sub.add_parser("pack", help="Deterministic unsigned .wgt (CI receipt, not installable)")
+    command.add_argument("source", type=Path)
+    command.add_argument("--output", type=Path, required=True)
+    command = sub.add_parser("check-package", help="Structure and signature digests of a .wgt")
+    command.add_argument("package", type=Path)
+    command.add_argument("--require-signed", action="store_true")
+    command = sub.add_parser("budgets", help="Evaluate measured metrics against a tier budget")
+    command.add_argument("--tier", required=True, choices=("legacy", "mid", "current"))
+    command.add_argument("--metrics", type=Path, required=True, help="JSON with coldStartMs/firstFrameMs/firstHomeMs")
+    for name in ("identify", "retail"):
+        command = sub.add_parser(name)
+        command.add_argument("--serial", required=True)
+        command.add_argument("--authorized", action="store_true")
+        if name == "retail":
+            command.add_argument("--target", required=True, help="Fingerprint from `identify`")
+            command.add_argument("--app", required=True)
+    command = sub.add_parser("emulator", help="Launch a VM, run the flow, stop the VM it launched")
+    command.add_argument("--vm", required=True)
+    command.add_argument("--app", required=True)
+    command.add_argument("--em-cli")
+    for command in (sub.choices["retail"], sub.choices["emulator"]):
+        command.add_argument("--package", type=Path)
+        command.add_argument("--keys", default="", help="Comma-separated keys: up,down,left,right,ok,back")
+        command.add_argument("--runs", type=int, default=1)
+        command.add_argument("--tier", choices=("legacy", "mid", "current"))
+        command.add_argument("--output", type=Path, help="Existing folder for capture and log tail")
+        command.add_argument("--uninstall", action="store_true")
+        command.add_argument("--legacy-timeout", action="store_true", help="Append 0 to debug launch (Tizen 3)")
     return cli
 
 
@@ -264,6 +298,8 @@ def run(args):
         application_id(args.app)
     if hasattr(args, "port") and not 1024 <= args.port <= 65535:
         raise ValueError("Debug port must be between 1024 and 65535")
+    if args.command in ("new", "audit", "pack", "check-package", "budgets", "identify", "retail", "emulator"):
+        return _app_command(args)
     if args.command == "doctor":
         tools = {}
         for name in ("tizen", "sdb"):
@@ -276,6 +312,11 @@ def run(args):
         return validate(args.source)
     if args.command in ("build", "package"):
         validate(args.source)
+        import appkit
+        errors = [f for f in appkit.audit(args.source)["findings"] if f["level"] == "error"]
+        if errors:
+            raise ValueError("App audit failed; run `tizen.py audit` for details: "
+                             + "; ".join(f"{f['code']} {f.get('where', '')}".strip() for f in errors[:5]))
         if args.command == "package":
             if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.profile) or args.profile.startswith("-"):
                 raise ValueError("Invalid certificate profile name")
@@ -323,6 +364,36 @@ def run(args):
     return {"sdk_response": output, "acceptance": "command result only; verify actual device behavior"}
 
 
+def _app_command(args):
+    import appkit
+    if args.command == "new":
+        return appkit.scaffold(args.target, args.name, args.package)
+    if args.command == "audit":
+        return appkit.audit(args.source)
+    if args.command == "pack":
+        return appkit.pack(args.source, args.output)
+    if args.command == "check-package":
+        return appkit.check_package(args.package, args.require_signed)
+    import flows
+    from live_tv import LiveError
+    try:
+        if args.command == "budgets":
+            return flows.evaluate(json.loads(args.metrics.read_text()), args.tier)
+        if args.command == "identify":
+            return flows.identify(args.serial, args.sdb)
+        options = {"package": args.package, "keys": [k.strip().lower() for k in args.keys.split(",") if k.strip()], "runs": args.runs,
+                   "tier": args.tier, "output": args.output, "uninstall": args.uninstall,
+                   "sdb": args.sdb, "tizen": args.tizen, "legacy": args.legacy_timeout}
+        options = {k: v for k, v in options.items() if v is not None}
+        if args.output and not args.output.is_dir():
+            raise ValueError("--output must be an existing folder")
+        if args.command == "retail":
+            return flows.retail(args.serial, args.target, args.app, **options)
+        return flows.emulator(args.vm, args.app, em_cli=args.em_cli, **options)
+    except LiveError as error:
+        raise ValueError(str(error)) from None
+
+
 class _Cancelled(KeyboardInterrupt):
     def __init__(self, signum):
         super().__init__()
@@ -336,7 +407,10 @@ def _cancel(signum, frame):
 def main():
     previous_sigterm = signal.signal(signal.SIGTERM, _cancel)
     try:
-        print(json.dumps(run(parser().parse_args()), indent=2))
+        result = run(parser().parse_args())
+        print(json.dumps(result, indent=2))
+        if isinstance(result, dict) and result.get("passed") is False:
+            return 2
     except (ValueError, OSError, ET.ParseError, http.client.HTTPException, subprocess.TimeoutExpired) as error:
         print("ERROR: " + redact(str(error)), file=sys.stderr)
         return 1

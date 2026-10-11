@@ -7,6 +7,13 @@ not a completed device run of this new toolkit.
 
 ## Deployment and host
 
+- Real SDK-signed `.wgt` signatures percent-encode Reference URIs (`css%2Fapp.css`) and
+  wrap DigestValue base64 at 76 characters. A checker must decode both or it reports a
+  valid package as tampered (`tizen.py check-package` does).
+- The Samsung TV emulator image is x86_64 and needs HAXM, WHPX or KVM. On Apple Silicon
+  `em-cli` exits with "cannot support HW virtualization"; use an Intel/AMD host or a TV.
+- `typeof window.fetch` is feature detection, not network use; only real calls need the
+  internet privilege.
 - A public retail-TV Web app uses `.wgt` and Samsung signing; Linux underneath does not confer
   root, a general shell, native daemon deployment or LG ABI compatibility.
 - The observed package identifier was ten alphanumeric characters. Keep app ID/package ID
