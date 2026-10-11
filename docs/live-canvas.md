@@ -6,6 +6,19 @@ Node adapter uses the host's bundled SDK; do not install SDK npm packages.
 The published 0.1.0 plugin is unchanged. **No new release or installed-plugin
 replacement until parent acceptance.** Identify this candidate by its commit.
 
+## Start the Samsung TV Developer Companion
+
+```
+python3 tools/tizen.py tv portal        # or: python3 tools/tv.py portal
+```
+
+- It prints `http://127.0.0.1:47811/`; open that in your browser. Ctrl+C stops it.
+  Run the same command again to restart. `--port N` picks another port.
+- Requirements: Python 3.10+, Tizen Studio's `sdb` and `tizen` CLI.
+- On the TV: Apps → 1 2 3 4 5 → Developer mode On → Host PC IP = this computer →
+  restart the TV.
+- Then: Scan → pick a TV → Connect → Open screen on your app.
+
 ## Install and open
 
 In this toolkit checkout, `.github/extensions/tizen-live/` is discovered as a
