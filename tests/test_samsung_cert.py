@@ -4,8 +4,11 @@ import re
 from pathlib import Path
 import subprocess
 import sys
+import socket
 import tempfile
+import threading
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -30,7 +33,7 @@ class SignInFake:
     def __init__(self):
         self.closed = False
 
-    def wait(self, timeout):
+    def wait(self, timeout, cancel=None):
         return sc.parse_code(CODE)
 
     def close(self):
@@ -87,6 +90,21 @@ class PartsTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "signin-timeout")
         finally:
             listener.close()
+
+    def test_cancel_stops_waiting_and_a_closed_listener_frees_its_port(self):
+        listener = sc.SignIn(port=0)
+        port = listener.port
+        cancel = threading.Event()
+        threading.Timer(0.1, cancel.set).start()
+        try:
+            with self.assertRaises(sc.CertError) as caught:
+                listener.wait(30, cancel=cancel)
+            self.assertEqual((caught.exception.code, caught.exception.next), ("cancelled", "Start a new sign-in"))
+        finally:
+            listener.close()
+        # A retry can listen on the same port again: nothing leaked.
+        again = sc.SignIn(port=port)
+        again.close()
 
     def test_samsung_errors_are_shown_as_they_are_with_one_next_step(self):
         self.assertEqual(sc.samsung_error(403, b"").code, "rate-limited")
@@ -299,6 +317,55 @@ class OpensslTests(unittest.TestCase):
         self.assertIn(("backup", True), steps)
         self.assertEqual(sorted(p.name for p in Path(done["backup"]).iterdir())[-1], "profiles.xml")
         self.assertIn(DUID, (Path(done["folder"]) / "device-profile.xml").read_text())
+
+    def snapshot(self, profiles):
+        folder = self.root / "SamsungCertificate" / sc.PROFILE
+        files = {p.name: p.read_bytes() for p in folder.iterdir() if p.is_file()} if folder.exists() else None  # A backup is additive.
+        return files, profiles.read_bytes() if profiles.exists() else None
+
+    def test_batch_renewal_keeps_the_author_and_every_tv_already_allowed(self):
+        self.opened = []
+        profiles = self.root / "profile" / "profiles.xml"
+        self.add([OTHER], profiles)
+        author = [dict(item.attrib) for item in ET.parse(profiles).getroot().iter("profileitem")][0]
+        self.requests.clear()
+        done, _ = self.add([OTHER, DUID, "PLACEHOLDERDUID0003"], profiles)
+        self.assertNotIn("/v3/authors", [path for path, _, _ in self.requests], "No new author")
+        self.assertEqual(self.opened.count(sc.SIGNIN_URL), 2, "One sign-in per request, whatever the TV count")
+        after = [dict(item.attrib) for item in ET.parse(profiles).getroot().iter("profileitem")][0]
+        self.assertEqual(after, author, "The author key and its password are unchanged")
+        listed = (Path(done["folder"]) / "device-profile.xml").read_text()
+        for duid in (OTHER, DUID, "PLACEHOLDERDUID0003"):
+            self.assertIn(duid, listed)
+
+    def test_cancel_after_samsung_issued_the_certificate_changes_nothing(self):
+        self.opened = []
+        profiles = self.root / "profile" / "profiles.xml"
+        self.add([OTHER], profiles)
+        before = self.snapshot(profiles)
+        cancel = threading.Event()
+
+        def progress(step, text, done):
+            if step == "request" and done:
+                cancel.set()  # The user cancels while Samsung's answer is being saved.
+        with self.assertRaises(sc.CertError) as caught:
+            self.add([OTHER, DUID], profiles, progress=progress, cancel=cancel)
+        self.assertEqual(caught.exception.code, "cancelled")
+        self.assertEqual(self.snapshot(profiles), before)
+        self.assertFalse(list((self.root / "SamsungCertificate").glob(".tv-companion-*")))
+
+    def test_a_failure_while_saving_puts_the_old_certificate_and_profiles_back(self):
+        self.opened = []
+        profiles = self.root / "profile" / "profiles.xml"
+        self.add([OTHER], profiles)
+        before = self.snapshot(profiles)
+        broken = self.root / "never-written.xml"
+        for failure in (mock.patch.object(sc, "prepare_register", side_effect=OSError("disk full")),
+                        mock.patch.object(sc, "prepare_register", return_value=str(broken))):
+            with failure, self.assertRaises(OSError):
+                self.add([OTHER, DUID], profiles)
+            self.assertEqual(self.snapshot(profiles), before, "Old files and profiles.xml are intact")
+            self.assertFalse(list((self.root / "SamsungCertificate").glob(".tv-companion-*")), "No stage left over")
 
     def test_samsung_refusal_changes_nothing(self):
         self.opened = []

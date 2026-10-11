@@ -419,6 +419,115 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(job["note"], "Apps installed with your old certificate need one reinstall.")
         fleet.close()
 
+    DUID_B = "PLACEHOLDERDUID0002"
+
+    def batch_fleet(self, add_tvs, connect_b=True):
+        """Two TVs with different Device IDs, both connected and identified."""
+        duids = {LAN_A: DUID, LAN_B: self.DUID_B}
+        original = self.sdb.__call__
+
+        def runner(argv, timeout=60, limit=None):
+            args = argv[1:]
+            if args[2:] == ["shell", "0", "getduid"]:
+                return next(d for host, d in duids.items() if args[1].startswith(host)) + "\n"
+            return original(argv, timeout, limit)
+        fleet, _ = self.cert_fleet(add_tvs, hits=(LAN_A, LAN_B), runner=runner)
+        aliases = {}
+        for tv in fleet.state()["tvs"]:
+            fleet.connect(tv["alias"], {})
+            fleet.identify(tv["alias"], {})
+            duid = fleet.record(tv["alias"])["duid"]
+            aliases[duid] = tv["alias"]
+        a, b = aliases[DUID], aliases[self.DUID_B]
+        if not connect_b:
+            fleet.record(b)["duid"] = None
+        return fleet, a, b
+
+    def test_batch_cert_add_is_one_sign_in_for_every_tv_and_keeps_existing_coverage(self):
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+        gate = threading.Event()
+
+        def add_tvs(duids, progress, browser, **options):
+            progress("signin", "Waiting for Samsung sign-in\u2026", False)
+            gate.wait(5)
+            self.certificate.write_text(device_profile(*duids))
+            return {"profile": "tv-companion", "backup": "/backup", "reinstall": False}
+        fleet, a, b = self.batch_fleet(add_tvs)
+        job = fleet.cert(a, {"with": [b]})
+        self.assertEqual(job["code"], "waiting")
+        self.assertEqual([t["state"] for t in job["targets"]], ["waiting", "waiting"])
+        # The same job on both TVs; asking from either TV again starts nothing new.
+        self.assertEqual(fleet.cert(b, {})["code"], "waiting")
+        self.assertEqual(fleet.cert(b, {"with": [a]})["code"], "waiting")
+        for alias in (a, b):
+            self.assertEqual(fleet.cert_result(alias)["code"], "waiting")
+        gate.set()
+        job = self.wait_for_cert(fleet, a)
+        self.assertEqual(len(self.calls), 1, "One Samsung sign-in for both TVs")
+        self.assertEqual(self.calls[0][0], ["OTHERDEVICE0002", DUID, self.DUID_B], "Existing coverage is kept")
+        self.assertEqual((job["ok"], job["code"]), (True, "covered"))
+        self.assertEqual([t["state"] for t in job["targets"]], ["covered", "covered"])
+        self.assertEqual(self.wait_for_cert(fleet, b)["code"], "covered")
+        # Repeating the request: every TV is allowed, so no sign-in at all.
+        again = fleet.cert(a, {"with": [b]})
+        self.assertEqual((again["ok"], again["code"], len(self.calls)), (True, "covered", 1))
+        self.assertNotIn("token", json.dumps(fleet.state()).lower())
+        fleet.close()
+
+    def test_batch_cert_add_fails_before_sign_in_when_a_tv_has_no_device_id(self):
+        fleet, a, b = self.batch_fleet(lambda duids, **o: self.fail("No sign-in"), connect_b=False)
+        with self.assertRaises(live.LiveError) as caught:
+            fleet.cert(a, {"with": [b]})
+        self.assertEqual(caught.exception.code, "connect")
+        self.assertEqual(self.calls, [])
+        fleet.close()
+
+    def test_a_different_set_of_tvs_while_waiting_is_busy_not_a_second_sign_in(self):
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+        gate = threading.Event()
+
+        def add_tvs(duids, cancel=None, **options):
+            gate.wait(5)
+            raise tv_fleet.samsung_cert.CertError("cancelled", "Samsung sign-in was cancelled", "Start a new sign-in")
+        fleet, a, b = self.batch_fleet(add_tvs)
+        fleet.cert(a, {})
+        with self.assertRaises(live.LiveError) as caught:
+            fleet.cert(a, {"with": [b]})
+        self.assertEqual(caught.exception.code, "busy")
+        gate.set()
+        fleet.close()
+
+    def test_cancel_stops_the_sign_in_and_says_cancelled_never_success(self):
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+
+        def add_tvs(duids, cancel=None, **options):
+            self.assertTrue(cancel.wait(5), "The cancel event reaches the sign-in")
+            raise tv_fleet.samsung_cert.CertError("cancelled", "Samsung sign-in was cancelled", "Start a new sign-in")
+        fleet, a, b = self.batch_fleet(add_tvs)
+        fleet.cert(a, {"with": [b]})
+        job = fleet.cert(b, {"cancel": True})
+        self.assertEqual((job["ok"], job["code"], job["next"], job["url"]),
+                         (False, "cancelled", "Start a new sign-in", None))
+        self.assertIn("Nothing was changed", job["message"])
+        self.assertEqual(fleet.cert_result(a)["code"], "cancelled")
+        self.assertEqual(fleet.cert(a, {"cancel": True})["code"], "cancelled", "Cancelling twice is harmless")
+        with self.assertRaises(live.LiveError):
+            fleet.cert(a, {"cancel": True, "with": []})
+        fleet.close()
+
+    def test_batch_reports_each_tv_when_the_saved_certificate_misses_one(self):
+        self.certificate.write_text(device_profile("OTHERDEVICE0002"))
+
+        def add_tvs(duids, **options):
+            self.certificate.write_text(device_profile(DUID))  # Samsung left one TV out.
+            return {"profile": "tv-companion", "backup": None, "reinstall": False}
+        fleet, a, b = self.batch_fleet(add_tvs)
+        fleet.cert(a, {"with": [b]})
+        job = self.wait_for_cert(fleet, a)
+        self.assertEqual((job["ok"], job["code"]), (False, "unchanged"))
+        self.assertEqual({t["alias"]: t["state"] for t in job["targets"]}, {a: "covered", b: "not-covered"})
+        fleet.close()
+
     def two_profiles(self, switch=True):
         """test-profile (active, without this TV) and plx-tv-2 (a newer profile listing it)."""
         second = self.root / "certs2"

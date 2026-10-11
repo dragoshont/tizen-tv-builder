@@ -343,7 +343,7 @@ class Fleet:
         self.cert_home = Path(cert_home) if cert_home else Path.home() / "SamsungCertificate"
         self.openssl = samsung_cert.find_openssl(which) if openssl == "auto" else openssl
         self.cert_system = cert_system  # Tests pass "Linux" so the real Keychain is never touched.
-        self.cert_running = None  # (alias, thread, job) while a certificate request waits for sign-in.
+        self.cert_running = None  # (aliases, thread, job, cancel) while a certificate request waits for sign-in.
         self.pictures = Path(pictures) if pictures else Path.home() / "Pictures" / "TV Screenshots"
         self.clock = clock
         self.runner = runner
@@ -1373,46 +1373,115 @@ class Fleet:
         return {"path": self.chooser()}
 
     def cert(self, alias, data):
-        """Allow installing on this TV: one Samsung sign-in in the browser, everything else automatic.
+        """Allow installing on this TV (and any TVs in data["with"]): one Samsung sign-in, the rest automatic.
 
-        Keeps every TV the active certificate already lists, adds this one, and makes the resulting
-        "tv-companion" profile active. Runs in the background; the job's steps show progress."""
-        exact(data, {})
+        data may be {} (this TV), {"with": [aliases]} (several TVs, one sign-in) or {"cancel": true}."""
+        if not isinstance(data, dict) or set(data) - {"with", "cancel"}:
+            fail("invalid", "Request fields do not match this operation")
+        if "cancel" in data:
+            if data != {"cancel": True}:
+                fail("invalid", "Cancel takes no other fields")
+            return self.cert_cancel(alias)
+        others = data.get("with", [])
+        if not isinstance(others, list) or len(others) >= samsung_cert.MAX_DEVICES or \
+                not all(isinstance(a, str) for a in others):
+            fail("invalid", "with lists the other TVs to allow")
+        return self.cert_many([alias] + others)
+
+    @staticmethod
+    def _cert_active(running):
+        # A job that is created but whose thread has not started yet is still the running one.
+        return bool(running) and (running[1].ident is None or running[1].is_alive())
+
+    @staticmethod
+    def _names(names):
+        names = list(names)
+        return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+    def cert_many(self, aliases):
+        """Make the active certificate allow every TV in `aliases` with one Samsung sign-in.
+
+        Keeps every TV the active certificate already lists and adds the missing ones; TVs already
+        allowed need nothing (no sign-in at all when every TV is). One shared job appears on each
+        TV; a second request for the same TVs returns it and reopens the sign-in page."""
+        aliases = list(dict.fromkeys(aliases))
         with self.lock:
-            record = self.record(alias)
-            duid = record.get("duid")
-            name = self.short_name(alias) or "this TV"
+            records = [self.record(a) for a in aliases]
+            names = {a: self.short_name(a) or "this TV" for a in aliases}
             running = self.cert_running
-            if running and running[1].is_alive():
-                if running[0] != alias:
-                    fail("busy", f"Already waiting for Samsung sign-in for {self.short_name(running[0]) or 'another TV'}"
-                                 "; finish that first")
+            if self._cert_active(running):
+                if not set(aliases) <= set(running[0]):
+                    busy = self._names(self.short_name(a) or "another TV" for a in running[0])
+                    fail("busy", f"Already waiting for Samsung sign-in for {busy}; finish or cancel that first")
                 # Clicked again while waiting: bring the sign-in page back, keep the same job.
-                record["job"] = running[2]
+                for record in records:
+                    record["job"] = dict(running[2])
                 self.browser(samsung_cert.SIGNIN_URL)
                 return dict(running[2])
-        if not duid:
-            fail("connect", "Connect to this TV first so its Device ID can be read")
+        single = len(aliases) == 1
+        duids = {}
+        for alias, record in zip(aliases, records):
+            if not record.get("duid"):
+                fail("connect", "Connect to this TV first so its Device ID can be read" if single else
+                     f"Connect to {names[alias]} first so its Device ID can be read")
+            duids[alias] = record["duid"]
+        label = self._names(names.values())
         self._coverage = None
-        coverage = certificate_coverage(self.data_root, duid)
-        if coverage["state"] == "covered":
-            return self._finish(record, {"op": "cert", "ok": True, "code": "covered", "next": None,
-                                         "message": f"You can install your apps on {name}."})
-        if coverage["others"]:
-            return self._finish(record, self._other_profile_job(coverage, name))
-        duids = (coverage["covers"] if coverage["state"] == "not-covered" else []) + [duid]
-        job = {"op": "cert", "ok": True, "code": "waiting", "duid": duid, "url": samsung_cert.SIGNIN_URL,
-               "message": f"Allowing your apps on {name}", "steps": [],
+        coverage = {a: certificate_coverage(self.data_root, duids[a]) for a in aliases}
+        targets = [{"alias": a, "name": names[a], "state": "covered" if coverage[a]["state"] == "covered"
+                    else "waiting"} for a in aliases]
+        missing = [a for a in aliases if coverage[a]["state"] != "covered"]
+        if not missing:
+            job = {"op": "cert", "ok": True, "code": "covered", "next": None, "targets": targets,
+                   "message": f"You can install your apps on {label}."}
+            for record in records:
+                self._finish(record, dict(job))
+            return job
+        if single and coverage[aliases[0]]["others"]:
+            return self._finish(records[0], self._other_profile_job(coverage[aliases[0]], label))
+        active = coverage[missing[0]]
+        keep = active["covers"] if active["state"] == "not-covered" else []
+        wanted = list(dict.fromkeys(keep + [duids[a] for a in aliases]))
+        if len(wanted) > samsung_cert.MAX_DEVICES:
+            fail("invalid", f"A certificate allows at most {samsung_cert.MAX_DEVICES} TVs")
+        job = {"op": "cert", "ok": True, "code": "waiting", "duid": duids[aliases[0]], "url": samsung_cert.SIGNIN_URL,
+               "message": f"Allowing your apps on {label}", "steps": [], "targets": targets,
                "next": "Sign in to Samsung in the browser window that opened"}
-        thread = threading.Thread(target=self._cert_work, args=(record, name, duid, duids, job), daemon=True)
+        cancel = threading.Event()
+        thread = threading.Thread(target=self._cert_work, args=(records, aliases, names, duids, wanted, job, cancel),
+                                  daemon=True)
         with self.lock:
-            self.cert_running = (alias, thread, job)
-            record["job"] = job
+            running = self.cert_running
+            if self._cert_active(running):
+                fail("busy", "Another Samsung sign-in just started; try again")
+            self.cert_running = (tuple(aliases), thread, job, cancel)
+            for record in records:
+                record["job"] = dict(job)
         thread.start()
         return dict(job)
 
-    def _cert_work(self, record, name, duid, duids, job):
+    def cert_cancel(self, alias):
+        """Stop waiting for Samsung sign-in; the sign-in listener closes and nothing is saved."""
+        with self.lock:
+            self.record(alias)
+            running = self.cert_running
+        if not self._cert_active(running) or alias not in running[0]:
+            current = self.cert_result(alias)
+            if current and current.get("op") == "cert" and current.get("code") != "waiting":
+                return current
+            return {"op": "cert", "ok": False, "code": "not-running", "next": None,
+                    "message": "No Samsung sign-in is waiting for this TV"}
+        running[3].set()
+        if running[1].ident is not None:
+            running[1].join(5)
+        return self.cert_result(alias)
+
+    def _cert_work(self, records, aliases, names, duids, wanted, job, cancel):
         steps = {}
+
+        def publish():
+            for record in records:
+                record["job"] = dict(job)
 
         def progress(step, text, done):
             with self.lock:
@@ -1420,36 +1489,43 @@ class Fleet:
                 job["steps"] = list(steps.values())
                 if step == "signin" and done:
                     job["next"] = "Nothing to do: the certificate is being made"
-                record["job"] = dict(job)
+                publish()
 
         def end(update):
             with self.lock:
                 job.update(update, steps=list(steps.values()))
-                record["job"] = dict(job)
+                publish()
                 self.cert_running = None
                 self._coverage = self._profiles = None
 
         try:
             done = samsung_cert.add_tvs(
-                duids, profiles_path=self.data_root / "profile" / "profiles.xml", cert_home=self.cert_home,
+                wanted, profiles_path=self.data_root / "profile" / "profiles.xml", cert_home=self.cert_home,
                 openssl=self.openssl, ca=samsung_cert.find_ca(samsung_cert.sdk_roots(self.sdb, self.tizen)),
                 progress=progress, browser=self.browser, signin=self.signin, opener=self.opener, clock=self.clock,
-                system=self.cert_system)
+                system=self.cert_system, cancel=cancel)
         except samsung_cert.CertError as error:
+            if error.code == "cancelled":
+                end({"ok": False, "code": "cancelled", "url": None, "retry": True,
+                     "message": "Sign-in cancelled. Nothing was changed.", "next": "Start a new sign-in"})
+                return
             end({"ok": False, "code": error.code, "message": error.message, "next": error.next, "retry": True})
             return
         except Exception as error:  # A real error, shown as it is; never a silent success.
             end({"ok": False, "code": "cert-failed", "message": scrub(f"{type(error).__name__}: {error}"),
                  "next": "Try again", "retry": True})
             return
-        coverage = certificate_coverage(self.data_root, duid)
-        if coverage["state"] != "covered":
-            end({"ok": False, "code": "unchanged", "retry": True, "backup": done["backup"],
-                 "message": f"The certificate was saved, but installs still use one that doesn't list {name}",
-                 "next": "Try again"})
+        targets = [{"alias": a, "name": names[a],
+                    "state": "covered" if certificate_coverage(self.data_root, duids[a])["state"] == "covered"
+                    else "not-covered"} for a in aliases]
+        missing = [t["name"] for t in targets if t["state"] != "covered"]
+        if missing:
+            end({"ok": False, "code": "unchanged", "retry": True, "backup": done["backup"], "targets": targets,
+                 "message": f"The certificate was saved, but installs still use one that doesn't list "
+                            f"{self._names(missing)}", "next": "Try again"})
             return
-        end({"ok": True, "code": "covered", "backup": done["backup"], "url": None,
-             "message": f"You can install your apps on {name}.",
+        end({"ok": True, "code": "covered", "backup": done["backup"], "url": None, "targets": targets,
+             "message": f"You can install your apps on {self._names(names.values())}.",
              "note": "Apps installed with your old certificate need one reinstall." if done["reinstall"] else None,
              "next": None})
 
@@ -1599,7 +1675,7 @@ class Fleet:
                 record["pending"] = operation
                 if operation in self.LINK_OPS:
                     record["error"] = None
-                else:
+                elif operation != "cert":  # A certificate job is shared by TVs and replaced by cert() itself.
                     record["job"] = None
             target = getattr(self, operation)
             args = (alias, data)
@@ -1657,6 +1733,11 @@ class Fleet:
         self.threads = [t for t in self.threads if t.is_alive()]
 
     def close(self):
+        running = self.cert_running
+        if self._cert_active(running):
+            running[3].set()  # Closing stops a waiting sign-in and frees its listener.
+            if running[1].ident is not None:
+                running[1].join(5)
         self.wait(60)
         failed = False
         for record in list(self.records.values()):

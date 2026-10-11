@@ -12,7 +12,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 import tv  # noqa: E402
 import tv_fleet  # noqa: E402
-from test_tv_fleet import FakeSdb, LAN_A, DUID  # noqa: E402
+from test_tv_fleet import FakeSdb, LAN_A, LAN_B, DUID  # noqa: E402
+import threading  # noqa: E402
 from test_live_tv import FakeCDP, source_config, live  # noqa: E402
 
 
@@ -20,9 +21,18 @@ APP = "AbCdEfGhIj.App"
 STORE = "StOrEaPpId.store"
 
 
+DUID_B = "PLACEHOLDERDUID0002"
+
+
 class AppsSdb(FakeSdb):
     """FakeSdb that also lists installed apps, like vd_applist on the observed TVs."""
     def __call__(self, argv, timeout=60, limit=None):
+        if argv[1:][2:] == ["shell", "0", "getduid"] and getattr(self, "duids", None):
+            self.calls.append(argv[1:])
+            duid = next((d for host, d in self.duids.items() if argv[1:][1].startswith(host)), None)
+            if duid is None:
+                raise tv_fleet.LiveError("sdk", "SDK command failed: closed")
+            return duid + "\n"
         if argv[1:][2:] == ["shell", "0", "vd_applist"]:
             self.calls.append(argv[1:])
             return f"get app list...\napps count: 2\napp_tizen_id: {APP}\napp_tizen_id: {STORE}\n"
@@ -54,6 +64,8 @@ class TvCliTests(unittest.TestCase):
         self.profile.write_text(json.dumps(data))
         self.profile.chmod(0o600)
 
+    hosts = (LAN_A,)
+
     def fleet(self, certificate_duids=None, names=None, save_names=None, known=None, save_known=None):
         test = self
         class Session:
@@ -68,9 +80,9 @@ class TvCliTests(unittest.TestCase):
                 self.forward = None
         return tv_fleet.Fleet(
             sdb_path=str(self.tool), runner=self.run_tool, interfaces=lambda: ["10.255.255.10"],
-            sweep=lambda address, port, timeout: {LAN_A}, ssdp=lambda: set(),
+            sweep=lambda address, port, timeout: set(test.hosts), ssdp=lambda: set(),
             info=lambda host: {"name": "[TV] Samsung 7 Series (55)", "model": "UE55NU7400", "year": "2018",
-                               "developer_mode": "1", "uid": "uuid:fixture"},
+                               "developer_mode": "1", "uid": "uuid:fixture" + ("" if host == LAN_A else "-" + host)},
             key_path=self.root / "alias.key", lease_root=self.root, canonical=self.root / "canonical.lock",
             certificate_duids=certificate_duids, names=names or {}, save_names=save_names,
             data_root=self.root / "tizen-data", tizen_path=self.tizen_path, which=lambda name: None,
@@ -262,6 +274,92 @@ class TvCliTests(unittest.TestCase):
         self.assertIn("installs still use one that doesn't list", out)
         self.assertTrue(all("\u2026" not in line for line in out.splitlines() if "[" in line))
         self.assertEqual(self.run_cli("cert", "add")[0], 2)
+
+    def two_tvs(self, duid_b=DUID_B):
+        """Two TVs on the network with different Device IDs; returns their aliases (A, B)."""
+        self.hosts = (LAN_A, LAN_B)
+        self.sdb.duids = {LAN_A: DUID, **({LAN_B: duid_b} if duid_b else {})}
+        code, out, _ = self.run_cli("scan", "--json")
+        self.assertEqual(code, 0)
+        tvs = {tv["details"]["address"]: tv["alias"] for tv in json.loads(out)["tvs"]}
+        return tvs[LAN_A], tvs[LAN_B]
+
+    def companion(self, *duids):
+        """The active tv-companion profile's certificate lists `duids` (what a finished sign-in writes)."""
+        certs = self.root / "tv-companion"
+        certs.mkdir(exist_ok=True)
+        (certs / "device-profile.xml").write_text(
+            "<DeviceProfile>" + "".join(f"<TestDevice>{d}</TestDevice>" for d in duids) + "</DeviceProfile>")
+        folder = self.root / "tizen-data" / "profile"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "profiles.xml").write_text(
+            f'<profiles active="tv-companion"><profile name="tv-companion"><profileitem distributor="1" '
+            f'key="{certs / "distributor.p12"}"/></profile></profiles>')
+
+    def test_cert_add_for_several_tvs_reads_every_device_id_then_signs_in_once(self):
+        a, b = self.two_tvs()
+        self.companion("OTHERDEVICE0003")
+        calls = []
+
+        def add_tvs(duids, progress, browser, **options):
+            calls.append(list(duids))
+            progress("signin", "Waiting for Samsung sign-in\u2026", False)
+            browser(tv_fleet.samsung_cert.SIGNIN_URL)
+            self.companion(*duids)
+            return {"profile": "tv-companion", "backup": "/backup", "reinstall": False}
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv, "CERT_POLL", 0.01):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 1, "One Samsung sign-in for both TVs")
+        self.assertEqual(sorted(calls[0]), sorted(["OTHERDEVICE0003", DUID, DUID_B]), "Existing coverage is kept")
+        self.assertEqual(self.launches, [tv_fleet.samsung_cert.SIGNIN_URL])
+        self.assertEqual(out.count("): can install your apps"), 2, out)
+
+        calls.clear()
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual((code, calls, self.launches[1:]), (0, [], []), "Already covered: no new sign-in")
+
+    def test_cert_add_for_several_tvs_reports_each_tv_and_fails_when_one_is_not_allowed(self):
+        a, b = self.two_tvs()
+
+        def add_tvs(duids, progress, browser, **options):
+            self.companion(DUID)  # Samsung's certificate missed TV B.
+            return {"profile": "tv-companion", "backup": None, "reinstall": False}
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv, "CERT_POLL", 0.01):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual(code, 1, "A partial result is not a success")
+        self.assertIn("can install your apps", out)
+        self.assertIn("not allowed yet", out)
+
+    def test_cert_add_for_several_tvs_stops_before_sign_in_when_one_tv_cannot_be_read(self):
+        a, b = self.two_tvs(duid_b=None)
+
+        def add_tvs(*args, **kwargs):
+            self.fail("No sign-in while a TV's Device ID is unknown")
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual(code, 1)
+        self.assertIn("Nothing was changed", out)
+        self.assertEqual(self.launches, [])
+
+    def test_ctrl_c_while_waiting_cancels_the_sign_in(self):
+        a, b = self.two_tvs()
+        stopped = threading.Event()
+
+        def add_tvs(duids, progress, browser, cancel=None, **options):
+            progress("signin", "Waiting for Samsung sign-in\u2026", False)
+            cancel.wait(5)
+            stopped.set()
+            raise tv_fleet.samsung_cert.CertError("cancelled", "Samsung sign-in was cancelled", "Start a new sign-in")
+
+        def interrupt(seconds):
+            raise KeyboardInterrupt
+        with mock.patch.object(tv_fleet.samsung_cert, "add_tvs", add_tvs), mock.patch.object(tv.time, "sleep", interrupt):
+            code, out, _ = self.run_cli("cert", "add", a, b)
+        self.assertEqual(code, 1)
+        self.assertIn("Sign-in cancelled. Nothing was changed", out)
+        self.assertTrue(stopped.wait(5), "The waiting sign-in was told to stop")
 
     def test_cert_offers_and_switches_to_a_profile_that_allows_the_tv(self):
         self.tizen_path = str(self.root / "tizen")

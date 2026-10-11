@@ -55,7 +55,7 @@ def parser():
         "  key TV KEY... --app APP               Send remote keys to the app: " + ", ".join(KEYS) + "\n"
         "  install TV WGT_OR_HTTPS_URL [--sign PROFILE]   Sign with the active profile and install\n"
         "  uninstall TV APP       Uninstall an app\n"
-        "  cert TV | cert add TV  Certificate coverage / add this TV to your certificate\n"
+        "  cert TV | cert add TV [TV ...]  Certificate coverage / allow TVs (one sign-in for all)\n"
         "  cert use TV PROFILE    Make PROFILE the active signing profile (one that allows this TV)\n"
         "  duid TV                Print the TV's Device ID (DUID)\n"
         "  rename TV NAME         Name a TV\n"
@@ -87,8 +87,8 @@ def parser():
     item.add_argument("tv", nargs="?", help="The TV to set up (default: the one that answers)")
     item.add_argument("--check", action="store_true",
                       help="Only report what this computer has for signing and installing; changes nothing")
-    item = sub.add_parser("cert", help="Certificate coverage for a TV, or `cert add TV`")
-    item.add_argument("words", nargs="+", metavar="TV | add TV | use TV PROFILE")
+    item = sub.add_parser("cert", help="Certificate coverage for a TV, or `cert add TV [TV ...]` (one sign-in)")
+    item.add_argument("words", nargs="+", metavar="TV | add TV [TV ...] | use TV PROFILE")
     item = sub.add_parser("install", help="Sign a .wgt with the active profile and install it")
     item.add_argument("tv")
     item.add_argument("package", help="A .wgt file, or an https:// link to one")
@@ -589,6 +589,11 @@ def connect(fleet, tv, say):
 
 def result(say, job):
     say(job.get("message") or ("Done" if job.get("ok") else "Failed"))
+    if len(job.get("targets") or []) > 1:
+        for target in job["targets"]:
+            state = {"covered": "can install your apps", "waiting": "waiting for sign-in"}.get(
+                target["state"], "not allowed yet")
+            say(f"  {target['name']} ({target['alias']}): {state}")
     for step in job.get("steps") or []:
         # ASCII markers: a redirected Windows console may be cp1252.
         say(("  [done] " if step["done"] else "  [next] ") + step["text"].replace("→", "->").replace("…", "..."))
@@ -618,9 +623,40 @@ def cert_wait(fleet, alias, job, say, sleep=time.sleep):
                 break
             sleep(CERT_POLL)
     except KeyboardInterrupt:
-        say("Stopped waiting; the sign-in page no longer completes this request.")
+        try:
+            fleet.cert(alias, {"cancel": True})
+        except LiveError:
+            pass
+        say("Sign-in cancelled. Nothing was changed; run the same command to start a new sign-in.")
         return 1
     return result(say, dict(job, steps=None))
+
+
+def cert_batch(fleet, state, names, say):
+    """`tv cert add TV1 TV2 ...`: read every TV's Device ID first, then one Samsung sign-in for all."""
+    tvs = list({tv["alias"]: tv for tv in (find(state, name) for name in names)}.values())
+    aliases = []
+    try:
+        for tv in tvs:
+            connected = connect(fleet, tv, say)
+            if connected is None:
+                say("Nothing was changed: every TV must be connected before the one sign-in.")
+                return 1
+            if not (connected.get("details") or {}).get("duid"):
+                say(f"{title(connected)}: the TV did not report its Device ID. Nothing was changed.")
+                return 1
+            aliases.append(connected["alias"])
+        try:
+            job = fleet.cert(aliases[0], {"with": aliases[1:]})
+        except LiveError as error:
+            say(str(error))
+            return 1
+    finally:
+        for alias in [tv["alias"] for tv in tvs]:
+            release(fleet, alias, say)  # The sign-in needs no TV link.
+    if job.get("code") != "waiting":
+        return result(say, job)
+    return cert_wait(fleet, aliases[0], job, say)
 
 
 SETUP_POLL = 3.0  # Seconds between checks while waiting for the TV or the installer.
@@ -924,11 +960,12 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
         return 0 if report["ready"] else 1
     if args.command == "cert":
         words = args.words
-        args.add = words[0] == "add" and len(words) == 2
+        args.add = words[0] == "add" and len(words) >= 2
         args.use = words[1:] if words[0] == "use" and len(words) == 3 else None
-        if not args.use and (len(words) != (2 if args.add else 1) or words in (["add"], ["use"])):
-            raise Usage("Use: tv cert TV  or  tv cert add TV  or  tv cert use TV PROFILE")
-        args.tv = args.use[0] if args.use else words[-1]
+        if not args.use and ((not args.add and len(words) != 1) or words in (["add"], ["use"])):
+            raise Usage("Use: tv cert TV  or  tv cert add TV [TV ...]  or  tv cert use TV PROFILE")
+        args.tvs = words[1:] if args.add else []
+        args.tv = args.use[0] if args.use else (words[1] if args.add else words[-1])
     profile = config = None
     chosen = args.profile.expanduser().absolute() if args.profile is not None else \
         default_profile(state_dir, create=args.command in {"portal", "rename"})
@@ -976,6 +1013,8 @@ def run(args, fleet_factory, cdp_factory, out, state_dir=STATE_DIR, setup=defaul
                     say(line)
             return 0
         tv = find(state, args.tv)
+        if args.command == "cert" and args.add and len({find(state, t)["alias"] for t in args.tvs}) > 1:
+            return cert_batch(fleet, state, args.tvs, say)
         if args.command == "rename":
             tv = find(fleet.rename(tv["alias"], {"name": args.name}), tv["alias"])
             say(f"Renamed {tv['alias']} to {title(tv)}")

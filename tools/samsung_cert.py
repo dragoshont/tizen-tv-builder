@@ -264,9 +264,16 @@ class SignIn:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
-    def wait(self, timeout=SIGNIN_TIMEOUT):
-        if not self.done.wait(timeout):
-            raise CertError("signin-timeout", f"Samsung sign-in didn't finish within {timeout // 60} minutes")
+    def wait(self, timeout=SIGNIN_TIMEOUT, cancel=None):
+        """The sign-in answer; `cancel` (a threading.Event) stops waiting within a fraction of a second."""
+        deadline = time.monotonic() + timeout
+        while not self.done.is_set():
+            if cancel is not None and cancel.is_set():
+                raise CertError("cancelled", "Samsung sign-in was cancelled", "Start a new sign-in")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CertError("signin-timeout", f"Samsung sign-in didn't finish within {timeout // 60} minutes")
+            self.done.wait(min(remaining, 0.2 if cancel is not None else remaining))
         return self.result
 
     def close(self):
@@ -404,6 +411,11 @@ def has_profile(path):
 
 def register(path, name, author, distributor):
     """Add or replace profile `name` in profiles.xml and make it active; other profiles are kept."""
+    os.replace(prepare_register(path, name, author, distributor), path)
+
+
+def prepare_register(path, name, author, distributor):
+    """Write the new profiles.xml beside the current one; returns the file to os.replace() into place."""
     path = Path(path)
     root = _load(path)
     for old in [p for p in root.findall("profile") if p.get("name") == name]:
@@ -418,7 +430,7 @@ def register(path, name, author, distributor):
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text('<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' +
                          ET.tostring(root, encoding="unicode") + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    return temporary
 
 
 def keychain_store(account, password, system=None, run=subprocess.run):
@@ -458,13 +470,56 @@ def backup(folder, profiles_path, stamp):
     return str(target)
 
 
+def commit(folder, work, names, prepare_profiles, profiles_path):
+    """Swap in the new certificate folder and profiles.xml together, or leave both as they were.
+
+    The new folder is staged next to the old one (a copy plus the new files), then renamed into
+    place; profiles.xml is replaced last. If either step fails the previous folder comes back.
+    Passwords already written to the Keychain are not rolled back."""
+    folder = Path(folder)
+    folder.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=".tv-companion-stage-", dir=folder.parent))
+    old = None
+    try:
+        if folder.is_dir():
+            shutil.copytree(folder, stage, symlinks=True, dirs_exist_ok=True)
+        os.chmod(stage, 0o700)
+        for name in names:
+            shutil.copyfile(work / name, stage / name)
+            os.chmod(stage / name, 0o600)
+        profiles = prepare_profiles()
+        if folder.exists():
+            old = folder.with_name(stage.name.replace("-stage-", "-old-"))
+            os.replace(folder, old)
+        try:
+            os.replace(stage, folder)
+            try:
+                os.replace(profiles, profiles_path)
+            except BaseException:
+                os.replace(folder, stage)
+                raise
+        except BaseException:
+            if old is not None:
+                os.replace(old, folder)
+                old = None
+            Path(profiles).unlink(missing_ok=True)
+            raise
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+        if old is not None:
+            shutil.rmtree(old, ignore_errors=True)
+
+
 # ---- The whole job ----------------------------------------------------------------------------
 
 def add_tvs(duids, *, profiles_path, cert_home, openssl, ca, progress, browser, signin=SignIn,
-            opener=urllib_opener, clock=time.time, system=None, run=subprocess.run, timeout=SIGNIN_TIMEOUT):
+            opener=urllib_opener, clock=time.time, system=None, run=subprocess.run, timeout=SIGNIN_TIMEOUT,
+            cancel=None):
     """Create or renew the "tv-companion" profile so its certificate lists `duids`.
 
-    progress(step, text, done) reports each step. Returns what happened; raises CertError."""
+    One Samsung sign-in covers every Device ID in `duids`. progress(step, text, done) reports each
+    step; `cancel` (a threading.Event) stops the job before anything on this computer changes.
+    Returns what happened; raises CertError."""
     duids = list(dict.fromkeys(duids))
     if not duids or len(duids) > MAX_DEVICES or not all(isinstance(d, str) and DUID.fullmatch(d) for d in duids):
         raise CertError("invalid", f"A certificate lists 1 to {MAX_DEVICES} valid Device IDs", "Reconnect the TV")
@@ -479,13 +534,18 @@ def add_tvs(duids, *, profiles_path, cert_home, openssl, ca, progress, browser, 
     had_profile = has_profile(profiles_path)
     folder = Path(cert_home) / PROFILE
 
+    def stopped():
+        if cancel is not None and cancel.is_set():
+            raise CertError("cancelled", "Samsung sign-in was cancelled", "Start a new sign-in")
+
     listener = signin()
     try:
         progress("signin", "Waiting for Samsung sign-in…", False)
         browser(SIGNIN_URL)
-        account = listener.wait(timeout)
+        account = listener.wait(timeout) if cancel is None else listener.wait(timeout, cancel=cancel)
     finally:
-        listener.close()
+        listener.close()  # Port 4794 is free again whether sign-in finished, failed or was cancelled.
+    stopped()
     progress("signin", "Signed in to Samsung", True)
 
     work = Path(tempfile.mkdtemp(prefix="tv-companion-cert-"))
@@ -505,17 +565,14 @@ def add_tvs(duids, *, profiles_path, cert_home, openssl, ca, progress, browser, 
         make_p12(openssl, work, "distributor", certificates(answer, "distributor"), ca["distributor"], password)
         (work / "device-profile.xml").write_text(profile_xml, encoding="utf-8")
         progress("request", "Samsung issued your certificate", True)
+        stopped()  # Last point to stop: nothing on this computer has changed yet.
 
         saved = backup(folder, profiles_path, time.strftime("%Y%m%d-%H%M%S", time.localtime(clock())))
         if saved:
             progress("backup", "Backed up your previous certificate files", True)
-        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         names = ["distributor.p12", "distributor.crt", "device-profile.xml"]
         if reuse is None:
             names += ["author.p12", "author.crt"]
-        for name in names:
-            shutil.copyfile(work / name, folder / name)
-            os.chmod(folder / name, 0o600)
         stored = "keychain"
         entries = {}
         for stem in (["author"] if reuse is None else []) + ["distributor"]:
@@ -526,7 +583,8 @@ def add_tvs(duids, *, profiles_path, cert_home, openssl, ca, progress, browser, 
                 entries[stem] = encrypt_password(openssl, password)
                 stored = "profiles.xml"
         author = reuse or (str(folder / "author.p12"), entries["author"])
-        register(profiles_path, PROFILE, author, (str(folder / "distributor.p12"), entries["distributor"]))
+        commit(folder, work, names, lambda: prepare_register(
+            profiles_path, PROFILE, author, (str(folder / "distributor.p12"), entries["distributor"])), profiles_path)
         progress("register", "Saved and set for installs", True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
