@@ -71,9 +71,18 @@ function renamePrompt(current) {
 // ---- commands -----------------------------------------------------------------
 async function tvCommand(op, alias, data = {}) {
   error("");
-  try { state = { ...state, ...(await request(`/api/tv/${op}/${alias}`, data)) }; }
+  let ok = false;
+  try { state = { ...state, ...(await request(`/api/tv/${op}/${alias}`, data)) }; ok = true; }
   catch (problem) { error(problem.message); }
   render();
+  return ok;
+}
+// An app ID belongs to one TV and is remembered only after it actually opened there.
+// The old global key pre-filled every TV with whatever was typed last; drop it.
+try { localStorage.removeItem("tizen-preview-app"); } catch { /* storage unavailable */ }
+const previewKey = (alias) => `tizen-preview-app:${alias}`;
+function rememberedApp(alias) {
+  try { return localStorage.getItem(previewKey(alias)) || ""; } catch { return ""; }
 }
 async function scan() {
   error(""); $("scan").disabled = true;
@@ -106,6 +115,32 @@ async function command(id, operation, data) {
 function sourceById(id) {
   return state.sources.find((s) => s.id === id) || (state.tvs || []).find((t) => t.alias === id)?.preview || null;
 }
+// The one status a TV card, its list row and its explanation show. Nothing else may restate it.
+// "Connected" needs a decoded, current app picture; a developer link alone is "No app open".
+function tvStatus(tv, live, previewError) {
+  const dev = tv.dev_mode || {};
+  const problem = previewError || tv.error || "";
+  const pending = { connect: "Connecting…", identify: "Checking…", disconnect: "Disconnecting…",
+    run: "Starting app…", preview: "Opening app…" };
+  if (tv.pending) return { label: pending[tv.pending] || "Working…", tone: "working", detail: "", next: "", problem: false };
+  if (tv.missing && !tv.held) return { label: "Not found", tone: "", problem: false, next: "",
+    detail: "Not found in the last scan. Turn the TV on, then scan again." };
+  if (live) return { label: "Connected", tone: "connected", next: "", problem: Boolean(problem),
+    detail: problem || `Showing ${tv.preview?.app || "the app"}: its own drawing, not the whole TV.` };
+  if (tv.held) return { label: "No app open", tone: "ready", next: "", problem: Boolean(problem),
+    detail: problem || "Connected to the TV. Open an app to see its screen." };
+  const blocked = {
+    "not-enabled": ["Developer Mode off", "lost"],
+    "needs-config": ["Needs setup", "lost"],
+    closed: ["Can't connect", "lost"],
+    unknown: ["Not reachable", ""],
+  }[dev.state];
+  if (blocked) return { label: blocked[0], tone: blocked[1], problem: Boolean(problem),
+    detail: problem || dev.explanation || "", next: dev.next && dev.next !== "None" ? dev.next : "" };
+  return { label: problem ? "Couldn't connect" : "Ready to connect", tone: problem ? "lost" : "", problem: Boolean(problem),
+    detail: problem || "Developer Mode is on. Connect to use this TV.", next: "" };
+}
+
 function usablePreview(card, preview) {
   return card.previewReady && !offline && preview?.ready && !preview.stale &&
     preview.revision === card.revision && preview.frames?.length > 0;
@@ -144,7 +179,7 @@ function tvCard(alias) {
   const { remote, why, hint, keys } = remotePanel();
   const screenText = el("p"), frames = el("div", { class: "frames" }), age = el("p", { class: "note" });
   const previewApp = el("input", { maxLength: 40, placeholder: "Package.AppName", "aria-label": "App to preview",
-    autocomplete: "off", spellcheck: "false", value: localStorage.getItem("tizen-preview-app") || "" });
+    autocomplete: "off", spellcheck: "false", value: rememberedApp(alias) });
   const open = el("button", { type: "button", class: "primary" }, "Open app for preview");
   const refreshPicture = el("button", { type: "button", class: "secondary", hidden: true }, "Refresh picture");
   const opener = el("div", { class: "row" }, previewApp, open);
@@ -164,8 +199,11 @@ function tvCard(alias) {
     const answer = await ask(tv.name, "", `This restarts ${appId} on the TV. Only the app's own drawing is shown, not the whole TV screen or video.`,
       `Open ${appId} for preview?`, "Restart and preview");
     if (answer === null) return;
-    localStorage.setItem("tizen-preview-app", appId);
-    tvCommand("preview", alias, { app: appId, restart: true });
+    const opened = await tvCommand("preview", alias, { app: appId, restart: true });
+    const tvNow = state.tvs.find((t) => t.alias === alias);
+    if (opened && tvNow && tvNow.preview && tvNow.preview.ready) {
+      try { localStorage.setItem(previewKey(alias), appId); } catch { /* storage unavailable */ }
+    }
   });
   refreshPicture.addEventListener("click", () => command(alias, "capture", {}));
   for (const key of keys) key.addEventListener("click", () => {
@@ -229,14 +267,12 @@ async function updateTv(card, tv, keep) {
   const status = tv.status === "connected" && !live ? (tv.held ? "developer" : "not-connected") : tv.status;
   card.name.textContent = tv.name;
   const working = Boolean(tv.pending);
-  const label = working ? `${tv.pending[0].toUpperCase()}${tv.pending.slice(1)}ing…`.replace("eing", "ing")
-    : { connected: "Connected", developer: "Developer Mode ready", "not-connected": "Not connected" }[status] || status;
-  card.pill.textContent = label;
-  card.pill.className = `pill ${working ? "working" : status === "connected" ? "connected" : status === "developer" ? "ready" : ""}`;
-  const reason = previewError || tv.error || (status === "not-connected" ? tv.not_connected_reason
-    : status === "developer" ? "Preview not connected" : "") || "";
-  card.reason.textContent = reason;
-  card.reason.className = `reason${previewError || tv.error ? " problem" : ""}`;
+  // One status per TV: the pill, the list row and the explanation all come from tvStatus().
+  const shown = tvStatus(tv, live, previewError);
+  card.pill.textContent = shown.label;
+  card.pill.className = `pill ${shown.tone}`;
+  card.reason.textContent = shown.detail;
+  card.reason.className = `reason${shown.problem ? " problem" : ""}`;
   const free = !working;
   card.connect.hidden = status !== "not-connected";
   card.connect.textContent = tv.error ? "Retry" : "Connect";
@@ -246,14 +282,14 @@ async function updateTv(card, tv, keep) {
   const meta = tv.metadata || {}, year = meta.model_year || {}, devMode = tv.dev_mode || {};
   const yearText = year.value ? `Model year ${year.value}` : "Model year unknown";
   card.summary = [meta.model && tv.name.includes(meta.model) ? "" : meta.model || "Model unknown",
-    year.value ? `Model year ${year.value}` : "Model year unknown", devMode.label || ""].filter(Boolean).join(" · ");
+    year.value ? `Model year ${year.value}` : "Model year unknown"].filter(Boolean).join(" · ");
   const inName = meta.model && tv.name.includes(meta.model);
   card.info.textContent = [inName ? "" : meta.model || "Model unknown", yearText, meta.os?.text || "OS unknown"]
     .filter(Boolean).join(" · ");
-  card.devLabel.textContent = devMode.label || "Dev mode unknown";
-  card.devLabel.className = `dev-${devMode.state || "unknown"}`;
-  card.devNext.textContent = devMode.next && devMode.next !== "None" ? `Next: ${devMode.next}` : "";
-  card.devNext.title = devMode.explanation || "";
+  // The next step is shown only when the TV is not usable yet; it never restates the status.
+  card.devLabel.textContent = "";
+  card.devNext.textContent = shown.next ? `Next: ${shown.next}` : "";
+  card.devNext.parentElement.hidden = !shown.next;
   card.install.textContent = tv.install || "";
   card.install.hidden = !tv.install;
   const guidance = tv.guidance;
@@ -287,8 +323,8 @@ async function updateTv(card, tv, keep) {
   card.refreshPicture.disabled = busy || !live;
   card.screenText.textContent = offline ? "Connection lost to this page's helper. No picture is shown; reopen the portal to retry."
     : previewError ? previewError
-    : status === "not-connected" ? "Not connected. Choose Connect to start."
-    : live ? "" : "Preview not connected. Open an app to see its screen. Its own drawing is shown, not the whole TV or video.";
+    : status === "not-connected" ? "Connect to this TV first."
+    : live ? "" : "No app on screen. Open an app to see it here. Only the app's own drawing is shown, not the whole TV or video.";
   card.screenText.parentElement.hidden = live;
   card.previewReady = live;
   for (const key of card.keys) key.disabled = busy || !live || !p.input_allowed || (key.dataset.key === "ok" && !p.activation_allowed);

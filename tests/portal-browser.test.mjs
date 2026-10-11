@@ -66,6 +66,10 @@ try {
   if (baseline) await rpc("Fetch.enable", { patterns: [{ urlPattern: "*/ui.js" }] });
   await rpc("Page.addScriptToEvaluateOnNewDocument", { source: `
     window.testCalls = []; window.testOffline = false;
+    if (!sessionStorage.getItem("seeded")) {
+      sessionStorage.setItem("seeded", "1");
+      localStorage.setItem("tizen-preview-app", "Leaked0001.FromAnotherTv");
+    }
     const tv = (alias,name,status) => ({alias,name,status,held:true,metadata:{model:"HOST-FIXTURE",os:{text:"Tizen 5.0"}},
       dev_mode:{label:"Dev mode enabled",state:"enabled"},details:{},preview:{ready:false,input_allowed:false,activation_allowed:false,frames:[]}});
     window.testState = {sdk:"ready",scan:{status:"done",found:2},sources:[],
@@ -86,8 +90,18 @@ try {
   ` });
   await rpc("Page.navigate", { url: portalUrl });
   await evaluate("new Promise(r=>setTimeout(r,1400))");
+  await check("A typed app ID from another TV is never pre-filled",
+    "[...document.querySelectorAll('input[aria-label=\"App to preview\"]')].every(i=>i.value==='')", true);
+  await check("The legacy global preview app key is removed",
+    "localStorage.getItem('tizen-preview-app')", null);
   await check("No Connected label without a usable preview",
     "document.querySelector('.device:not([hidden]) .pill').textContent.includes('Connected')", false);
+  await check("A connected TV with no app shows one status: No app open",
+    "document.querySelector('.device:not([hidden]) .pill').textContent", "No app open");
+  await check("The list row shows exactly the card's status",
+    "[...document.querySelectorAll('.tv-row')].every(row=>{const d=[...document.querySelectorAll('.device')].find(x=>x.querySelector('h2').textContent===row.querySelector('.row-name').textContent);return d&&row.querySelector('.row-status').textContent===d.querySelector('.pill').textContent;})", true);
+  await check("No second developer-mode status is shown anywhere",
+    "/Dev mode enabled|Developer Mode ready|Preview not connected/.test(document.body.innerText)", false);
   await check("Missing preview has visible guidance",
     "document.querySelector('.device:not([hidden]) .placeholder p').textContent.trim().length>0", true);
   await check("Missing preview keeps all keys disabled",
@@ -106,6 +120,8 @@ try {
   await rpc("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", windowsVirtualKeyCode: 27 });
   await evaluate("new Promise(r=>setTimeout(r,100))");
   await check("Cancelling preview sends no provider commands", "window.testCalls.length", 0);
+  await check("A failed or cancelled preview remembers no app ID",
+    "Object.keys(localStorage).filter(k=>k.startsWith('tizen-preview-app')).length", 0);
   await evaluate(`window.testState.tvs[1].status="connected";
     window.testState.tvs[1].preview.ready=true;
     window.testState.tvs[1].preview.input_allowed=true;
