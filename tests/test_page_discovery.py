@@ -7,6 +7,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import flows
+import live_tv
 from live_tv import LiveError
 import workbench
 
@@ -77,6 +78,18 @@ class PageDiscoveryTests(unittest.TestCase):
         self.assertIn("'.' ':'", message)
         self.assertIn("socket path ends with id", message)
         self.assertIn("int", message)
+
+    def test_tizen5_parenthesized_hex_page_id_is_accepted_exactly(self):
+        hex32 = "0123456789abcdefABCDEF0123456789"
+        good = "(" + hex32 + ")"
+        bad = ["(" + hex32[:31] + ")", "(" + hex32 + "0)", "(" + hex32 + ")/x", "(" + hex32 + ")?q",
+               "(" + hex32 + ")\r\n", "(" + hex32[:31] + "g)", "((" + hex32[:30] + "))", "(test-page)"]
+        inspector = Inspector([[{"type": "page", "id": good}] + [{"type": "page", "id": b} for b in bad]])
+        self.addCleanup(inspector.close)
+        self.assertEqual(workbench.pages(inspector.port), [good])
+        for value in bad:
+            self.assertFalse(live_tv.target_id_ok(value), value)
+        self.assertTrue(live_tv.target_id_ok("test-page"))
 
     def test_wait_retries_while_the_engine_registers_its_page(self):
         inspector = Inspector([[], [{"type": "other", "id": "w"}], [{"type": "page", "id": "PAGE-1"}]])

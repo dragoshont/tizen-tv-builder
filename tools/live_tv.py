@@ -38,6 +38,14 @@ class LiveError(Exception):
         self.code = code
 
 
+# Tizen 5.0 (2019) Inspector advertises "(" + 32 hex + ")" page ids, proven on device.
+TARGET_ID = re.compile(r"(?:[A-Za-z0-9_-]{1,100}|\([A-Fa-f0-9]{32}\))")
+
+
+def target_id_ok(value):
+    return isinstance(value, str) and TARGET_ID.fullmatch(value) is not None
+
+
 def fail(code, message):
     raise LiveError(code, message)
 
@@ -133,7 +141,7 @@ def read_profile(path):
         ids.add(source["id"])
         kinds.add(source["kind"])
         endpoint(source["endpoint"])
-        if not isinstance(source["target_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source["target_id"]):
+        if not target_id_ok(source["target_id"]):
             fail("invalid", "Choose an explicit inspector page target ID")
         if not isinstance(source["lease_path"], str):
             fail("invalid", "Lease path must be a string")

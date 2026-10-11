@@ -174,22 +174,23 @@ with anchored family patterns (LED `UE43RU7092` → 2019, QLED, Neo QLED, OLED, 
 Frame/Serif/Sero); unknown or ambiguous codes give "Model year unknown".
 
 Each TV card shows one of four states. **Connected** means both a developer
-link and a working app preview (a capture with at least one picture); nothing
-else earns that label, and the page fails closed if the helper reports Connected
-without a usable picture. **Developer Mode ready** means the developer link works
+link and a current app picture that the page has decoded; a non-empty list of
+returned layers is not enough. Nothing else earns that label, and the page fails
+closed (keys stay off) if the helper reports Connected without a decodable,
+current picture. **Developer Mode ready** means the developer link works
 but no preview is attached ("Preview not connected"). **Not connected** and
 **Busy** (another session holds its lock; read-only) cover the rest.
 
-Connect asks once ("Connect to Developer Mode and read TV information. No app is
-launched or keys sent."), then runs `sdb connect` and Identify under that TV's
-own lease `/tmp/tizen-tv-<alias>.lock`, so it never preempts the canonical lock.
-If the canonical lock is present you must type the alias. When Connect fails the
+Connect has no confirmation dialog: it launches no app and sends no keys. It runs
+`sdb connect` and Identify under that TV's own lease
+`/tmp/tizen-tv-<alias>.lock`, so it never preempts the canonical lock. If the
+canonical lock is present the portal shows a caution and you must type the alias. When Connect fails the
 card explains why and offers Retry.
 
 From Developer Mode ready, **Open app for preview** takes an app ID and always
-asks first, because it restarts that app on the TV in debug mode (`tv preview`
-is never silent). The portal forwards the app's inspector to loopback, attaches,
-captures, and only then shows Connected. The picture is the app's own drawing
+asks first, because it restarts that app on the TV in debug mode; the portal
+never does this silently. The portal forwards the app's inspector to loopback, attaches,
+captures, and shows Connected only after the page decodes that picture. The picture is the app's own drawing
 (renderer paint layers), not the whole TV screen, other apps, AVPlay video, HDR
 or audio. Arrows and Back reach the app; OK is off because scanned apps have no
 audited safe buttons. Disconnect ends the preview and removes only the forward

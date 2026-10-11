@@ -163,6 +163,55 @@ class LiveTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join()
 
+    def test_parenthesized_page_id_uses_the_literal_advertised_socket_path(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        page = "(0123456789abcdef0123456789ABCDEF)"
+        advertised = {"path": "/devtools/page/" + page}
+        requests = []
+        class Inspector(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                requests.append(self.path)
+                if self.path == "/json/list":
+                    body = json.dumps([{"id": page, "type": "page",
+                                        "webSocketDebuggerUrl": "ws://192.0.2.10:45678" + advertised["path"]}]).encode()
+                    self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+                else:
+                    self.send_response(101)
+                    self.send_header("Upgrade", "websocket")
+                    self.send_header("Connection", "Upgrade")
+                    key = self.headers["Sec-WebSocket-Key"]
+                    self.send_header("Sec-WebSocket-Accept", base64.b64encode(hashlib.sha1(
+                        (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode())
+                    self.end_headers()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Inspector)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            live.CDP(server.server_port, page).close()
+            self.assertEqual(requests, ["/json/list", "/devtools/page/" + page])
+            advertised["path"] = "/devtools/page/%280123456789abcdef0123456789ABCDEF%29"
+            with self.assertRaisesRegex(live.LiveError, "Debugger URL"):
+                live.CDP(server.server_port, page)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
+    def test_source_accepts_only_the_exact_parenthesized_hex_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / "profile.json"
+            config = {"sources": [source_config(root)]}
+            config["sources"][0]["lease_path"] = "/tmp/plx-samsung-device.lock"
+            for value, ok in (("(0123456789abcdef0123456789ABCDEF)", True),
+                              ("(0123456789abcdef0123456789ABCDEF)/x", False),
+                              ("(0123456789abcdef0123456789ABCDE)", False)):
+                config["sources"][0]["target_id"] = value
+                profile.write_text(json.dumps(config)); profile.chmod(0o600)
+                if ok:
+                    self.assertEqual(live.read_profile(profile)[1]["sources"][0]["target_id"], value)
+                else:
+                    with self.assertRaisesRegex(live.LiveError, "target ID"):
+                        live.read_profile(profile)
+
     def test_refused_operation_keeps_connected_controls_available(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = live.Source(source_config(Path(temporary)), FakeCDP)

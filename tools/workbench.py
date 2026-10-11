@@ -18,7 +18,7 @@ import threading
 import time
 import webbrowser
 
-from live_tv import App, BoundedServer, CDP, KEYS, Lease, LiveError, Source, endpoint, exact, fail, handler
+from live_tv import App, BoundedServer, CDP, KEYS, Lease, LiveError, Source, endpoint, exact, fail, handler, target_id_ok
 from tizen import _DeadlineConnection, application_id, device_serial
 from network_tv import confirm as confirm_tv, discover as discover_tvs
 from recording import Encoder, Recorder, RecordingError
@@ -221,7 +221,7 @@ def pages(port):
         if not isinstance(data, list) or len(data) > 100:
             fail("discovery", "Inspector target list is invalid")
         result = [p["id"] for p in data if isinstance(p, dict) and p.get("type") == "page"
-                  and isinstance(p.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", p["id"])]
+                  and target_id_ok(p.get("id"))]
         if not result:
             fail("discovery", "No debug page target yet: " + _seen(data))
         return result
