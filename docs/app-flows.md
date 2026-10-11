@@ -65,7 +65,8 @@ python3 tools/tizen.py retail --serial TV_IP:26101 --authorized \
   budget did not pass; `failed_steps` names them. Kill counts as `not-running` only
   when the entire SDK output names the exact app ID or package as absent (wording
   unverified on a real TV); any additional error text, generic device/process errors,
-  a timeout or lost connection are `failed`.
+  a timeout or lost connection are `failed`. Truncated failure output is explicitly
+  marked `sdk_output_truncated` and cannot confirm app absence.
   Any missing or non-numeric run sample makes that median
   `invalid`. Budget limits and measurements must be
   finite, non-negative numbers no greater than `2 ** 53` milliseconds; anything else

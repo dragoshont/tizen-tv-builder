@@ -147,6 +147,28 @@ class ReReview(Base):
     def target(self):
         return flows.identify(SERIAL, TOOL, Runner(Clock()))["fingerprint"]
 
+    def test_truncated_sdk_output_cannot_confirm_app_absence(self):
+        for padding in (600, 512 * 1024):
+            output = b"error: device offline\n" + b" " * padding + b"AbCdEfGhIj is not running"
+            with self.subTest(padding=padding):
+                clock = Clock()
+                session = flows.Session(SERIAL, "AbCdEfGhIj.App",
+                                        **session_args(flows.run_tool, clock))
+                done = subprocess.CompletedProcess([], 1, stdout=output)
+                with patch.object(flows.subprocess, "run", return_value=done):
+                    session.kill()
+                self.assertEqual(session.receipt["steps"][0]["result"], "failed")
+                self.assertEqual(session.receipt["steps"][0]["reason"], "sdk_output_truncated")
+                self.assertFalse(flows.verdict(session.receipt)["passed"])
+        clock = Clock()
+        session = flows.Session(SERIAL, "AbCdEfGhIj.App",
+                                **session_args(flows.run_tool, clock))
+        done = subprocess.CompletedProcess([], 1, stdout=b"AbCdEfGhIj is not running")
+        with patch.object(flows.subprocess, "run", return_value=done):
+            session.kill()
+        self.assertEqual(session.receipt["steps"][0]["result"], "not-running")
+        self.assertTrue(flows.verdict(session.receipt)["passed"])
+
     def test_failed_capture_fails_the_receipt(self):
         clock, runner = Clock(), Runner()
         receipt = flows.retail(SERIAL, self.target(), "AbCdEfGhIj.App", lease_path=self.lock,
