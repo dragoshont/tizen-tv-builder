@@ -17,7 +17,8 @@ python3 tools/tizen.py portal
 
 **New here?** Four steps: clone this repository, run `python3 tools/tizen.py setup` (prepares
 this computer, installing Tizen Studio's CLI if missing), turn on Developer Mode on the TV, then
-`python3 tools/tizen.py scan` and `python3 tools/tizen.py install APP.wgt TV`.
+`python3 tools/tizen.py scan`, `python3 tools/tizen.py cert add TV` (one Samsung
+sign-in when certificate coverage is needed), and `python3 tools/tizen.py install APP.wgt TV`.
 [Getting started](docs/getting-started.md) is the one from-zero guide: TV
 Developer Mode, the one-click certificate, install, open, screenshot and uninstall, as
 `tv` commands and as portal steps, plus making your own app.
@@ -43,7 +44,38 @@ The checkout includes focused agent skills for
 [inspection and input](skills/samsung-tv-inspect/SKILL.md),
 [certificates/signing](skills/samsung-tv-certificates/SKILL.md) and
 [starting an app](skills/samsung-tv-new-app/SKILL.md).
-These additions are unreleased; the published 0.1.0 plugin is unchanged.
+These commands and focused skills are available in the main checkout. The
+versioned 0.1.0 plugin is an older snapshot; it does not include the current portal.
+
+## Scope and current limits
+
+The Python commands work without an AI agent or Copilot. Start with the checkout and
+[getting started](docs/getting-started.md), not the older plugin, for the current
+scan/certificate/install/remote workflow.
+
+On macOS, this workflow has been used with Plx on Samsung MU6172 (2017), RU7092
+(2019), Q80C (2023) and QN70F (2025) sets. That is evidence for those operations,
+not certification of every model or app. Windows desktop-to-TV operation and
+2015/2016 retail hardware remain unverified.
+
+Capture shows the app's browser drawing, not the panel or AVPlay video. It can fail
+when the app has more than eight paint layers, or when an inspector uses unsupported
+WebSocket behavior. Debug/capture relaunches the app. A successful command is not proof
+of physical-remote fidelity, codec support or Store approval.
+
+The portal runs on loopback without a token. Its browser Host/Origin checks reject
+other websites, and anti-framing headers prevent websites from embedding its controls.
+Local programs and other users on this computer can call it while
+it runs. Use it on a trusted single-user computer and stop it when done. The Workbench
+is a separate tool with a bearer token.
+
+Open the portal as a top-level browser page. Hosts that try to embed the optional
+canvas in an iframe will be blocked by this policy; no arbitrary frame-origin
+exception is enabled to make embedding work.
+
+There is no live `logs`/`debugger-tail` command yet; it is tracked in
+[issue #1](https://github.com/dragoshont/tizen-tv-builder/issues/1).
+Performance budgets consume measured timings; they do not measure presented TV FPS.
 
 ## Install the plugin
 
@@ -60,16 +92,15 @@ copilot plugin list
 copilot skill list
 ```
 
-This repository is currently **private**. You need repository access and working
-GitHub authentication. The marketplace is pinned to the release tag. It installs this plugin, not Python,
+The marketplace is pinned to the release tag. It installs this plugin, not Python,
 Tizen Studio, a Samsung certificate or a TV app.
 No hooks, MCP servers or background services are bundled.
 
-That describes the published **0.1.0** package. The checkout now also contains an
-**unreleased live-canvas candidate**, held for parent/device acceptance. Do not
-replace your installed plugin or publish it yet. See [live canvas setup](docs/live-canvas.md)
-for the standalone adapter, explicit private profile and SDK opening steps.
-It also adds unreleased TV commands with no setup: `python3 tools/tizen.py tv scan`,
+That describes the published **0.1.0** package. The main checkout also contains a
+standalone live canvas and the current Python TV commands. See
+[live canvas setup](docs/live-canvas.md) for the adapter, private profile and SDK opening
+steps. Plugin installation alone does not register a canvas extension.
+Current TV commands include `python3 tools/tizen.py tv scan`,
 `tv list`, `tv check TV`, `tv connect TV`, `tv info TV` (the portal's detail panel), first-run `tv setup`, `tv cert`, `tv install`,
 `tv launch`, `tv remove` and `tv portal` (the same features in a
 loopback web page). See [live canvas setup](docs/live-canvas.md#same-features-from-the-terminal-tizenpy-tv).

@@ -1,4 +1,15 @@
-# Experience coverage: 0.1.0
+# Experience coverage: release snapshot and main checkout
+
+The inventory below describes the older 0.1.0 plugin. The main checkout additionally
+contains the Python TV commands, scan-first portal, live certificate wizard,
+WebSocket/LayerTree capture and Workbench. Use
+[getting started](getting-started.md) for today's install workflow.
+
+On 12 October 2026 the main checkout was used from macOS with Plx on MU6172 (2017),
+RU7092 (2019), Q80C (2023) and QN70F (2025) sets. Live batch certificate issuance,
+signing and app-list-verified installation completed. Some renderer captures and
+remote navigation worked; others failed at the layer limit or WebSocket protocol.
+No Windows desktop-to-TV or universal model acceptance is asserted.
 
 Reviewed 2026-10-11 against the parent Samsung development study and this toolkit's
 committed behavior. This is an inventory of what we preserved, not a promise that
@@ -76,7 +87,7 @@ inventory or the annual hardware acceptance matrix.
 Stable references: [Samsung engine table](https://developer.samsung.com/smarttv/develop/specifications/web-engine-specifications.html),
 [Samsung CLI](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/command-line-interface.html),
 [Samsung Web Inspector](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/web-inspector.html),
-and [committed PlxNative inspector study](https://github.com/dragoshont/plx-native/blob/e48a829b/docs/samsung-web-inspector.md).
+and [PlxNative Samsung development process](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-tizen-development-process.md).
 The study branch is a moving reference; do not call an unmerged candidate a
 permanent upstream fact. No private receipt, personal artwork, certificate or
 copied GPL implementation is included.

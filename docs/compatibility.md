@@ -24,6 +24,17 @@ retrieved 2026-10-11. Recheck the live table before choosing a target or SDK.
 | 2025 | 9.0 | Chromium M120 | Not tested |
 | 2026 | 10.0 | Chromium M130 | Not tested |
 
+### Later main-checkout observations (12 October 2026)
+
+The annual table above is the original dated acceptance inventory, not the latest
+list of owner observations. The main checkout subsequently exercised Plx development
+operations on MU6172 (2017), RU7092 (2019), Q80C (2023) and QN70F (2025) TVs:
+discovery/connect, app-list reads, certificate coverage, signing and verified installs.
+Live certificate issuance and renderer/input operations have narrower receipts; a
+successful install does not prove playback, physical-remote parity or every capture
+path. Layer-limit and newer-inspector capture failures remain explicit limitations.
+No broader firmware matrix or Store certification is inferred.
+
 For every row, separately verify Samsung TV author/distributor signing, target DUID and
 installation permission, privileges/required_version, runtime APIs and product behavior.
 Engine generation alone proves none of those. Samsung's HTML uses shared, two-row cells

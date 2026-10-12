@@ -97,6 +97,6 @@ browser or emulator never certifies the named retail TV.
 - Keep certificates/DUIDs/serials and private terminal output outside git.
   No root, general retail shell, firmware modification or TLS bypass.
 
-Sources: [upstream getting started](https://github.com/dragoshont/plx-native/blob/dragoshont-samsung-tizen-feasibility/docs/samsung-getting-started.md),
+Sources: [upstream getting started](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-getting-started.md),
 [Samsung TV connection](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html),
 [compatibility matrix](compatibility.md). Vendor instructions win when changed.

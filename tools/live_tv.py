@@ -806,6 +806,7 @@ class App:
         self.sources = {s["id"]: Source(s, factory) for s in config["sources"]}
         self.persist_lock = threading.Lock()
         self.fleet = fleet
+        self.frame_ancestors = "'none'"
 
     def source(self, ident):
         if ident in self.sources:
@@ -911,6 +912,8 @@ def handler(app):
                              "default-src 'none'; script-src 'self'; style-src 'self'; "
                              "img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'" +
                              ("; frame-ancestors " + app.frame_ancestors if hasattr(app, "frame_ancestors") else ""))
+            if getattr(app, "frame_ancestors", None) == "'none'":
+                self.send_header("X-Frame-Options", "DENY")
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)

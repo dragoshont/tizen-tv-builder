@@ -6,6 +6,12 @@ intentionally breaking them. No version number is a claim of TV model support.
 
 ## Unreleased — live-canvas candidate
 
+- Public-main preparation: corrected install/status/capture documentation, pinned
+  source links instead of deleted investigation branches, and host CI on `main`.
+- Default portal responses now deny framing with CSP and X-Frame-Options. This closes
+  a clickjacking gap; iframe-based canvas hosts must use the standalone portal instead.
+- Later macOS observations on MU6172 (2017), RU7092 (2019), Q80C (2023) and QN70F
+  (2025) cover development operations, not universal model or media acceptance.
 - Standalone scaffold-derived Copilot canvas with an independently implemented
   bounded localhost/CDP/LayerTree provider and user-only mutation routes.
 - Native discrete 10-second feed, stale retention, pixel reuse, guarded controls,
@@ -39,8 +45,10 @@ intentionally breaking them. No version number is a claim of TV model support.
 - `cert reset PROFILE... [--yes]`: plan without `--yes`; with it, removes exactly those
   signing profiles (profiles.xml entry, certificate folder, macOS Keychain passwords)
   after a backup and receipt; refuses symlinks, unsafe names and shared folders.
-- Not production-ready: live batch sign-in, remove/reset on a TV, live certificate sign-in, HTTPS-URL install, the Tizen Studio
-  installer and Developer Mode detection on a fresh TV still need device acceptance.
+- Remaining acceptance gaps include a fresh-host Tizen Studio installer run, exhaustive
+  certificate reset/recovery, Windows desktop-to-TV operation, 2015/2016 hardware and
+  every model/operation combination. Live certificate sign-in, batch certificate
+  coverage and HTTPS-URL Plx installation were subsequently observed on macOS.
 
 ## 0.1.0 - 2026-10-11
 

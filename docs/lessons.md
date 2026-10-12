@@ -1,7 +1,7 @@
 # Lessons from a real development week
 
 These are independently expressed findings from the October 2026
-[PlxNative Samsung investigation](https://github.com/dragoshont/plx-native/tree/dragoshont-samsung-tizen-feasibility).
+[PlxNative Samsung investigation](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-tizen-poc.md).
 They are not transplanted client code. Named hardware observations belong to that project,
 not a completed device run of this new toolkit.
 
@@ -76,7 +76,7 @@ protocol independently, with host mocks only; it claims no TV capture of its own
 The parent also reports a one-shot retail SDB `printf` attempt returned `closed` with
 no marker. A framebuffer recipe requiring root and `enlightenment_info` was not run.
 Do not promote it as a retail solution. Keep implementation and sanitized evidence in
-the [committed upstream inspector study](https://github.com/dragoshont/plx-native/blob/e48a829b/docs/samsung-web-inspector.md);
+the [current Samsung development process](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-tizen-development-process.md);
 do not copy its GPL inspector into this MIT toolkit.
 
 ## Old engines, privileges and remote keys
@@ -110,7 +110,7 @@ do not copy its GPL inspector into this MIT toolkit.
   Developer Mode/year. Leave missing fields unknown and record the provenance
   of owner/Settings observations. Never scan while a sibling device lane is live.
 
-Sources: [upstream P0 probe](https://github.com/dragoshont/plx-native/blob/dragoshont-samsung-tizen-feasibility/docs/samsung-tizen-poc.md),
+Sources: [upstream P0 probe](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-tizen-poc.md),
 [Samsung ProductInfo](https://developer.samsung.com/smarttv/develop/api-references/samsung-product-api-references/productinfo-api.html),
 [Samsung TVInputDevice](https://developer.samsung.com/smarttv/develop/api-references/tizen-web-device-api-references/tvinputdevice-api.html)
 (API references read 2026-10-11). Discovery policy above describes the unreleased

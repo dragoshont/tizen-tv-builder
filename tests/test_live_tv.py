@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -147,6 +148,25 @@ class Chrome47Inspector:
 
 
 class LiveTests(unittest.TestCase):
+    def test_default_portal_cannot_be_framed(self):
+        app = live.App(None, {"sources": []})
+        server = live.BoundedServer(("127.0.0.1", 0), live.handler(app))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("frame-ancestors 'none'", response.getheader("Content-Security-Policy"))
+            self.assertEqual(response.getheader("X-Frame-Options"), "DENY")
+            response.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_pause_during_capture_stops_next_capture_without_waiting(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = live.Source(source_config(Path(temporary)), FakeCDP)

@@ -37,4 +37,4 @@ publish `sdb devices` output. Stop on ambiguous targets, refused permission,
 another lane or uncertain ownership. Report the blocked cause rather than
 rebooting, disconnecting everyone or claiming an install.
 
-Evidence: [upstream setup observations](https://github.com/dragoshont/plx-native/blob/dragoshont-samsung-tizen-feasibility/docs/samsung-getting-started.md).
+Evidence: [upstream setup observations](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-getting-started.md).

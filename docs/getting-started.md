@@ -59,10 +59,15 @@ Turn on Developer Mode once per TV:
 python3 tools/tizen.py scan
 ```
 
-This lists the Samsung TVs on your network with their name, model, Tizen version and
-status. A prepared TV shows "Developer Mode ready". "Not ready" means Developer Mode is
-on but the Host PC IP points to another computer. A TV that is switched off stays listed
-as "Not reachable"; turn it on and scan again.
+This lists Samsung TVs with their name, model and observed status. **Ready to connect**
+means the developer port answers, not that the certificate or installation permission
+has been checked. **Needs setup** means a setup step is needed; follow the reported
+step rather than assuming the cause is Host PC IP. An unavailable remembered TV stays
+listed as **Not reachable**. Turn it on and scan again.
+
+An open or closed port does not prove whether Developer Mode is enabled. Tizen version
+is observed on the developer connection; a model-year baseline is not the TV's current
+OS version.
 
 ## 5. Allow installing your apps on your TVs
 
@@ -208,19 +213,24 @@ Old-engine pitfalls: [lessons](lessons.md). What each TV year supports: [compati
 
 ## What has been checked
 
-On a 2017 (Tizen 3.0) and a 2019 (Tizen 5.0) TV: scan, connect, app list, install,
-**Open screen**, the remote and screenshots. `tv cert add` is tested against a fake
-Samsung service only, not yet against Samsung's live one. Other TV years are unverified;
-a working command on one TV does not prove another model.
+The main checkout has been used on macOS for scan/connect, app listing, signing and
+installation of Plx on MU6172 (2017), RU7092 (2019), Q80C (2023) and QN70F (2025)
+sets. Live Samsung sign-in and batch `cert add` completed on 12 October 2026.
+Remote navigation and renderer captures were exercised on named sets, not every
+possible model/operation combination. Some captures fail because of layer limits
+or inspector protocol behavior; they are not full-panel/video-plane captures.
+
+This is not universal app or firmware acceptance. No new Windows-to-retail-TV,
+2015/2016 hardware or emulator acceptance is claimed.
 
 ## When something fails
 
 | You see | Do this |
 |---|---|
 | "Not reachable" | Turn the TV on, then scan again |
-| "Not ready" | Set the TV's Host PC IP to this computer, restart the TV |
+| "Needs setup" | Follow the specific setup step shown; check Developer Mode and Host PC IP when indicated |
 | "You can't install your apps on this TV yet" | `python3 tools/tizen.py tv cert add NAME` |
-| `install failed[118]` | The certificate doesn't list this TV: `tv cert add NAME` |
+| `install failed[118]` | Check both certificate coverage and installation permission; this error alone does not establish which failed |
 | "No picture" after Open screen | Choose Open screen again; the app restarts |
 | sdb can't connect on a Mac | Allow Local Network access for your terminal in System Settings → Privacy & Security |
 
