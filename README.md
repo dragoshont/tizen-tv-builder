@@ -77,6 +77,13 @@ There is no live `logs`/`debugger-tail` command yet; it is tracked in
 [issue #1](https://github.com/dragoshont/tizen-tv-builder/issues/1).
 Performance budgets consume measured timings; they do not measure presented TV FPS.
 
+The checkout also includes a [bounded OFF/ON ABBA benchmark](docs/benchmark.md):
+`python3 tools/tizen.py benchmark run` attaches to an explicitly reviewed,
+account-free app adapter, and `benchmark validate` / `benchmark summarize` work
+offline. Raw samples, warmups and provenance are retained; callback intervals
+are not panel FPS and CPU/API timings are not GPU kernel time. No automatic
+deployment or production-account work is included.
+
 ## Install the plugin
 
 You need a current **GitHub Copilot CLI**. The plugin uses the documented

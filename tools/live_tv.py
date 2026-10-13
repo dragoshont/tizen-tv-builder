@@ -238,8 +238,9 @@ class Lease:
 
 class CDP:
     """Small RFC6455 client: fixed loopback endpoint, no extensions/compression."""
-    def __init__(self, port, target):
+    def __init__(self, port, target, deadline=None):
         self.sock = None
+        self.open_deadline = deadline
         self.next_id = 0
         self.layers = None
         self.phase = "target discovery (/json/list)"
@@ -250,7 +251,7 @@ class CDP:
             raise
 
     def _open(self, port, target):
-        deadline = time.monotonic() + 4
+        deadline = min(time.monotonic() + 4, self.open_deadline) if self.open_deadline is not None else time.monotonic() + 4
         connection = _DeadlineConnection("127.0.0.1", port, deadline)
         response = None
         try:
@@ -288,10 +289,13 @@ class CDP:
                 response.close()
             connection.close()
         self.phase = "WebSocket handshake"
-        sock = socket.create_connection(("127.0.0.1", port), timeout=4)
+        remaining = min(4, self.open_deadline - time.monotonic()) if self.open_deadline is not None else 4
+        if remaining <= 0:
+            fail("timeout", "Inspector connection deadline exceeded")
+        sock = socket.create_connection(("127.0.0.1", port), timeout=remaining)
         self.sock = sock
         try:
-            self.deadline = time.monotonic() + 4
+            self.deadline = min(time.monotonic() + 4, self.open_deadline) if self.open_deadline is not None else time.monotonic() + 4
             key = base64.b64encode(secrets.token_bytes(16)).decode()
             request = (f"GET /devtools/page/{target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
                        f"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"

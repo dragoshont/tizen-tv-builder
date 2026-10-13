@@ -360,10 +360,20 @@ def parser():
         command.add_argument("--output", type=Path, help="Existing folder for capture and log tail")
         command.add_argument("--uninstall", action="store_true")
         command.add_argument("--legacy-timeout", action="store_true", help="Append 0 to debug launch (Tizen 3)")
+    import benchmark
+    benchmark.add_parser(sub)
     return cli
 
 
 def run(args):
+    if args.command == "benchmark":
+        import benchmark
+        from live_tv import LiveError
+        try:
+            return benchmark.run(args)
+        except LiveError as error:
+            detail = str(error) if error.code.startswith("benchmark_") else "Inspector or lease operation failed"
+            raise ValueError("Benchmark failed: " + error.code + ": " + detail) from None
     if hasattr(args, "serial"):
         device_serial(args.serial)
         if not args.authorized:
