@@ -1,10 +1,16 @@
-# Live TV canvas — unreleased candidate
+# Live TV canvas and scan-first portal
 
 This is a standalone Copilot extension, not a PlxNative feature. Its native
 provider is independently written Python 3.10+ standard-library code. The thin
 Node adapter uses the host's bundled SDK; do not install SDK npm packages.
-The published 0.1.0 plugin is unchanged. **No new release or installed-plugin
-replacement until parent acceptance.** Identify this candidate by its commit.
+The published 0.1.0 plugin is an older snapshot. Use the main checkout for the
+current portal and extension; identify it by its source commit. The concise
+end-user flow is [getting started](getting-started.md).
+
+The portal sends `frame-ancestors 'none'` and `X-Frame-Options: DENY` to prevent
+clickjacking. Use a top-level browser page or browser view. A host that embeds this
+optional canvas in an iframe will be blocked; do not weaken the frame policy or
+interpret extension registration as successful rendering.
 
 ## Start the Samsung TV Developer Companion
 
@@ -58,7 +64,7 @@ It performs no device RPC and returns no endpoint, page identity, DOM, pixels or
 authentication token. There is no agent-callable mutation action.
 
 Opening starts an **unauthenticated**, loopback-only local service (user decision:
-no token prompt). **No inspector connection or device lease is acquired until the
+no token prompt). **No inspector connection is acquired until the
 human clicks Connect.** Every request must name Host `127.0.0.1:<port>`; duplicate
 headers are refused. API and frame requests are refused when the browser marks them
 `same-site` or `cross-site` (this also blocks other localhost ports), and every POST
@@ -101,19 +107,14 @@ addresses or identities:
 
 `lease_seconds` is the **maximum connected-run duration**, 10–120 seconds,
 not lock TTL. The UI explicitly displays this cap and lets the user choose a
-shorter run. At the deadline the client disconnects and ownership-checked cleanup
-releases its lane. It never renews or automatically breaks a stale lease.
+shorter run. At the deadline the client disconnects and cleans up only its own resources.
 Choose at least 40 seconds to observe three default 10-second feed cycles.
 
-Native sources must use the canonical `/tmp/plx-samsung-device.lock` atomic
-directory. Acquisition is mkdir 0700, lstat dev/inode and exclusive owner.json
-0600 with pid/UUID token. Release checks directory identity and token before
-unlink/rmdir. Existing ownership fails immediately as `device_lock_held`; a
-cleanup mismatch deletes nothing and reports `device_lock_cleanup_failed`.
-**Do not run beneath an outer wrapper already owning this lane:** stop/release
-that worker first. This candidate deliberately has no unchecked nested/no-op
-ownership adapter. It never calls flock, kill-server or remove-all-forwards.
-The external relay owner remains responsible for relay/forward/FIFO cleanup.
+The current portal does not reserve discovered TVs with lock files. Configured
+sources retain validated lease-path fields for compatibility, but these are not
+an exclusive-device reservation. Coordinate access with other tools and computers;
+two independent viewers can interfere. No shared SDB server or all-forward cleanup
+is performed. The external relay owner remains responsible for its relay and forwards.
 
 Metadata is optional and stored per profile/source, not panel ID. Editing in the
 canvas is user-provided (or unknown); it does not detect model/year/OS/firmware.
@@ -150,24 +151,24 @@ keyed by the hashed alias, never by address.
 
 Discovery limits: TVs that are off or in deep standby, on another subnet/VLAN or
 guest network, or that block both ports and SSDP do not appear. At most 16 TVs
-are listed. This discovery path is host-tested with mocks only and is
-**unverified** on real TVs.
+are listed. Discovery and developer operations were subsequently exercised with
+Plx on the named 2017, 2019, 2023 and 2025 owner sets; this is not all-model
+acceptance. See [the current observation scope](compatibility.md#later-main-checkout-observations-12-october-2026).
 
 ### Developer Mode labels
 
-Each card and `tv scan`/`tv check` show one developer-readiness label with a next
-action. It is separate from Connected / Developer Mode ready / Not connected, and comes from
-observed evidence only:
+The primary status is shared by each card and the CLI. It describes the observed
+connection or next step, not ownership or a universal diagnosis:
 
 | Evidence | Label |
 |---|---|
-| Developer connection accepted (this session or sdb lists it) | Dev mode enabled |
-| Port 26101 open, not tried yet | Dev mode reachable · not checked (Connect to check) |
-| Port 26101 open but the TV refused this computer | Needs to be configured (Host PC IP, restart TV) |
-| The TV API reports Developer Mode off and port 26101 is closed | Dev mode not enabled |
-| The TV API answers, does not report the mode, and port 26101 is closed | Dev mode port closed (off or blocked; not proof) |
-| Remembered TV, not scanned yet since the portal started | Checking… (the page scans on open) |
-| Nothing answered | Not reachable (unknown, never "not enabled") |
+| Developer port answers, no successful connect yet | Ready to connect |
+| Connection attempt in progress | Connecting… |
+| Developer connection accepted and identity read | Connected |
+| An observed setup step prevents progress | Needs setup |
+| Current operation on this portal prevents another action | In use |
+| Remembered TV did not answer | Not reachable |
+| TV was not located in the current scan | Not found |
 
 An open port alone is never "Dev mode enabled". Certificate/install readiness is a
 separate line that appears once Connect has read the TV identity. When the active
@@ -250,13 +251,15 @@ at once can interfere with each other; avoid that. Disconnect and portal exit
 remove only the link and forwards this portal created; the shared SDB server is
 never stopped. When Connect fails the card explains why and offers Retry.
 
-From Developer Mode ready, **Open app for preview** takes an app ID and always
+From a working developer connection, **Open app for preview** takes an app ID and
 asks first, because it restarts that app on the TV in debug mode; the portal
 never does this silently. The portal forwards the app's inspector to loopback, attaches,
-captures, and shows Connected only after the page decodes that picture. The picture is the app's own drawing
+captures, and shows a picture only after it is received and decoded. Connected alone
+means the developer connection is usable, not that a picture exists. The picture is the app's own drawing
 (renderer paint layers), not the whole TV screen, other apps, AVPlay video, HDR
-or audio. Arrows and Back reach the app; OK is off because scanned apps have no
-audited safe buttons. Disconnect ends the preview and removes only the forward
+or audio. Arrows and Back reach the app. A human-opened developer app receives
+authorized activation like its remote; configured sources otherwise require the
+audited safe-target allowlist. Disconnect ends the preview and removes only the forward
 this portal created. Certificate, package and install controls live under
 Advanced; install needs the alias typed and a matching DUID. Addresses, DUIDs and
 lock paths appear only under Details, redacted.
@@ -326,8 +329,9 @@ between runs, and `list` keeps only names and status from the last scan
 before any scan, it runs one read-only scan on its own; it connects to a TV only when you
 choose Connect. `python3 tools/tv.py ...` is the same CLI.
 
-The CLI calls the same Fleet/Source code as the portal, accepts aliases only (never
-raw addresses), keeps the key allowlist and the OK safe-target gate, writes
+The CLI calls the same Fleet/Source code as the portal, accepts the address, exact
+name or alias documented in getting started, keeps the key allowlist and activation
+rules, writes
 screenshots 0600 outside this repository only, and releases every connection
 and forward it made before it exits. Use `py tools\tizen.py tv ...` on Windows; the
 private profile (rename, key, screenshot, portal) requires POSIX permissions.

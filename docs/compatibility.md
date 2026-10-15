@@ -24,6 +24,32 @@ retrieved 2026-10-11. Recheck the live table before choosing a target or SDK.
 | 2025 | 9.0 | Chromium M120 | Not tested |
 | 2026 | 10.0 | Chromium M130 | Not tested |
 
+### Later main-checkout observations (12 October 2026)
+
+The annual table above is the original dated acceptance inventory, not the latest
+list of owner observations. The main checkout subsequently exercised Plx development
+operations on MU6172 (2017), RU7092 (2019), Q80C (2023) and QN70F (2025) TVs:
+discovery/connect, app-list reads, certificate coverage, signing and verified installs.
+Live certificate issuance and renderer/input operations have narrower receipts; a
+successful install does not prove playback, physical-remote parity or every capture
+path. Layer-limit and newer-inspector capture failures remain explicit limitations.
+No broader firmware matrix or Store certification is inferred.
+
+### Updated-runtime observation (15 October 2026)
+
+The parent reports Vemm 0.0.1 from source `2fc024c8` installed and launched on
+QE65Q80CATXXH (2023) running **observed Tizen 9.0**. Do not replace that observation
+with the annual 7.0 baseline or infer an engine version from it. The inspector
+rejected `LayerTree.makeSnapshot`; no device screenshot or runtime CSS receipt
+was obtained during deployment. A later parent-owned smoke verified app identity,
+debug launch and 1920x1080 body geometry without horizontal overflow, not a screenshot.
+This narrows install/launch evidence, not playback, capture, firmware
+or all-model acceptance. [Deployment details](lessons.md#vemm-deployment-observation-15-october-2026).
+The final parent-reported install/runtime smoke binds current Vemm evidence to
+`2b50628cd9a346dbe1d374e103124665b749b260`: appInfo 0.0.1, profile-picker state,
+1920x1080/no overflow and matching rebuilt payload hashes, still without capture,
+remote, media/account or physical-panel acceptance.
+
 For every row, separately verify Samsung TV author/distributor signing, target DUID and
 installation permission, privileges/required_version, runtime APIs and product behavior.
 Engine generation alone proves none of those. Samsung's HTML uses shared, two-row cells

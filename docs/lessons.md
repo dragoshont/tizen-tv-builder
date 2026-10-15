@@ -1,7 +1,7 @@
 # Lessons from a real development week
 
 These are independently expressed findings from the October 2026
-[PlxNative Samsung investigation](https://github.com/dragoshont/plx-native/tree/dragoshont-samsung-tizen-feasibility).
+[PlxNative Samsung investigation](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-tizen-poc.md).
 They are not transplanted client code. Named hardware observations belong to that project,
 not a completed device run of this new toolkit.
 
@@ -21,13 +21,60 @@ not a completed device run of this new toolkit.
 - Missing install permission produced error 118; do not diagnose every failure as bad signing.
   Distributor certificates bind target DUIDs. Do not publish certificates or DUIDs.
 - Certificate Manager and SDB server ownership can interfere. Never kill shared servers blindly.
-- macOS Local Network permission may block the app launching SDB while Apple's `nc` connects.
-  Fix the launching app's permission first. A previously approved relay is an environment-specific
-  workaround, not a default security bypass to distribute.
+- macOS Python/Node sockets returned `EHOSTUNREACH` while `nc`/`curl` reached the same
+  target in a later run. The source/permission cause was **not established**. Check normal
+  application permissions, routes and firewall observations without declaring a proven
+  cause, changing a correct wired Host PC IP or creating a privacy-bypass relay.
 - Installed x86 emulator images did not establish execution on Apple Silicon. GPU-off does not
   solve absent x86 CPU virtualization. Check shipped vendor architecture support, not announcements.
 - One physical TV means one exclusive device worker. Build and inspect artifacts outside the
   device lease. Only remove forwards/processes you own.
+
+### Vemm deployment observation (15 October 2026)
+
+Parent-reported, not rerun by this toolkit readiness track: Vemm 0.0.1 from source
+`2fc024c8` installed on QE65Q80CATXXH (2023), with an existing signing profile that
+already covered the target. The observed OS was Tizen 9.0; the annual 2023 baseline
+is not the set's updated runtime. `tv launch` reported Started and the TV's app list
+confirmed installation. `tv open` failed because `LayerTree.makeSnapshot` was rejected
+by that target. No device screenshot or runtime CSS receipt was obtained. Keep successful
+install/launch and optional capture failure separate; `tv launch TV APP` remains the
+explicit no-capture path. The older Plx app was retained, not uninstalled.
+
+SDB can print a connection failure and exit zero. Inspect the output **and** require
+the exact serial's `device` state; `offline`, a listed serial or scan reachability
+does not establish a usable developer connection. A missing network response does not
+prove power-off, Developer Mode off or a wrong Host PC IP.
+
+Connection succeeded after a full TV reboot, a user-authorized SDB server restart,
+opening Samsung Device Manager and waiting eight seconds. Several things changed;
+which one caused recovery is unknown. This is not a restart recipe: never automate
+`kill-server`, reboot or shared-server cleanup without exact authorization and no
+conflicting owner. The original wired interface address was correct; advice to
+replace it with another interface's address was wrong. Private addresses, certificate
+values and device IDs are intentionally omitted here.
+
+Household Guest profiles were real accounts and no account writes were authorized.
+These operational observations do not establish playback, physical-remote fidelity,
+Store approval or all-model support.
+
+A subsequent parent-owned smoke used toolkit main `47b96b1` with that same Vemm
+source on QE65Q80CATXXH/Tizen 9.0. It verified the exact app identity/version,
+app-list presence, debug launch (1918 ms for that one run), a 1920x1080 body without
+horizontal overflow and AVPlay state `NONE`. It sent no keys and read no content,
+storage or screenshots; no backend operation was performed. The owned inspector
+forward was verified removed, the pre-existing SDB connection preserved and the
+canonical Samsung lane released. This is a narrow runtime/geometry receipt, not
+capture, playback, physical-remote, firmware or benchmark acceptance.
+
+The final parent-reported run supersedes that base-only smoke for current product
+identity: source `2b50628cd9a346dbe1d374e103124665b749b260`, Vemm 0.0.1, the same
+QE65Q80CATXXH/Tizen 9.0 and unchanged signing profile. The TV confirmed installation
+and live appInfo version 0.0.1; the inspector reported the profile-picker/BlueCalm
+state at 1920x1080 without errors or overflow, with AVPlay `NONE`. A final-source
+rebuild matched all 50 installed payload-file hashes. The owned forward and canonical
+lane were released. This still includes no remote, media/account action, physical-panel
+or capture acceptance; no device work was performed by this toolkit readiness track.
 
 ## Inspector: important correction
 
@@ -76,7 +123,7 @@ protocol independently, with host mocks only; it claims no TV capture of its own
 The parent also reports a one-shot retail SDB `printf` attempt returned `closed` with
 no marker. A framebuffer recipe requiring root and `enlightenment_info` was not run.
 Do not promote it as a retail solution. Keep implementation and sanitized evidence in
-the [committed upstream inspector study](https://github.com/dragoshont/plx-native/blob/e48a829b/docs/samsung-web-inspector.md);
+the [current Samsung development process](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-tizen-development-process.md);
 do not copy its GPL inspector into this MIT toolkit.
 
 ## Old engines, privileges and remote keys
@@ -110,7 +157,7 @@ do not copy its GPL inspector into this MIT toolkit.
   Developer Mode/year. Leave missing fields unknown and record the provenance
   of owner/Settings observations. Never scan while a sibling device lane is live.
 
-Sources: [upstream P0 probe](https://github.com/dragoshont/plx-native/blob/dragoshont-samsung-tizen-feasibility/docs/samsung-tizen-poc.md),
+Sources: [upstream P0 probe](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-tizen-poc.md),
 [Samsung ProductInfo](https://developer.samsung.com/smarttv/develop/api-references/samsung-product-api-references/productinfo-api.html),
 [Samsung TVInputDevice](https://developer.samsung.com/smarttv/develop/api-references/tizen-web-device-api-references/tvinputdevice-api.html)
 (API references read 2026-10-11). Discovery policy above describes the unreleased

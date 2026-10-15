@@ -39,11 +39,11 @@ INFO_FIELDS = ("name", "model", "year", "developer_mode", "os", "firmware", "pla
                "manufacturer", "resolution", "frame_tv")
 
 DEV_LABELS = {"enabled": "Developer Mode on", "not-enabled": "Developer Mode off",
-              "needs-config": "Host PC IP points elsewhere", "reachable": "Developer port open",
+              "needs-config": "Developer connection failed", "reachable": "Developer port open",
               "closed": "Developer port closed",
               "unknown": "Not reachable"}
 # The only status words a TV card, list row or CLI line may show.
-STATUSES = ("Checking…", "Not reachable", "Developer Mode off", "Ready to connect", "Connecting…",
+STATUSES = ("Checking…", "Not reachable", "Developer Mode off", "Developer port closed", "Ready to connect", "Connecting…",
             "Connected", "Connection problem")
 STORE_APP = "Samsung doesn't allow debugging this store app. Only apps you install can be viewed."
 MAX_TVS = 16
@@ -315,7 +315,8 @@ _Link = _HeldLease = live_tv.MemoryLink
 
 
 PREVIEW_SECONDS = 900
-OFFLINE = "Turn the TV on, then scan again"
+OFFLINE = ("The TV did not answer this scan; this does not prove it is off. "
+           "Check that it is on and on the same network, then scan again")
 
 
 class Fleet:
@@ -460,7 +461,7 @@ class Fleet:
         """The `tizen -t` target: the third column of `sdb devices` (the serial alone is ignored)."""
         output = self.runner([self.sdb, "devices"], 10)
         rows = [line.split() for line in output.splitlines()[1:]]
-        rows = [parts for parts in rows if len(parts) >= 3]
+        rows = [parts for parts in rows if len(parts) >= 3 and parts[1] == "device"]
         for parts in rows:
             if parts[0] == serial and re.fullmatch(r"[A-Za-z0-9_.:<>-]{1,64}", parts[2]):
                 twins = [other[0] for other in rows if other[2] == parts[2] and other[0] != serial]
@@ -639,7 +640,9 @@ class Fleet:
         if record["reachable"]:
             return "Ready to connect", "idle", reason or "Developer Mode port is open"
         if record.get("api"):
-            return "Developer Mode off", "warn", reason or "The TV answers, but its Developer Mode port is closed"
+            reported = (record.get("info") or {}).get("developer_mode")
+            label = "Developer Mode off" if reported in ("off", "0") else "Developer port closed"
+            return label, "warn", reason or "The TV answers, but its Developer Mode port is closed"
         return "Not reachable", "warn", OFFLINE
 
     def dev_mode(self, record, status):
@@ -651,14 +654,14 @@ class Fleet:
         elif record["reachable"] and record.get("dev_refused"):
             # Only an observed refusal means setup is needed; an untried port is not a failure.
             state = "needs-config"
-            why = ("Developer Mode is on, but the TV refused this computer: its Host PC IP most likely "
-                   "points to another computer")
-            nxt = "On the TV set Host PC IP to this computer, restart the TV, then Retry"
-            diagnosis = "host-ip-elsewhere"
+            why = ("The developer port answered, but the connection failed; the cause is not established. "
+                   "Check Developer Mode, Host PC IP and host network access without assuming which is wrong")
+            nxt = "Check the TV's Host PC IP against this computer's active network interface, then Retry"
+            diagnosis = "connection-failed"
         elif record.get("missing"):
             # Cached API answers from an earlier scan say nothing about the TV now.
             state, why = "unknown", "The TV did not answer the last scan; it may be off or on another network"
-            nxt = None  # The status line already says it: "Turn the TV on, then scan again".
+            nxt = None  # The status line already explains the missing observation.
         elif record["reachable"]:
             state = "reachable"
             why = ("The Developer Mode port is open; this computer connected earlier this session but is not connected now"
@@ -857,8 +860,12 @@ class Fleet:
                 owned = False
             else:
                 attempted = True
-                self.runner([self.sdb, "connect", serial], 20)
-                if not self._devices_ready(serial):
+                output = self.runner([self.sdb, "connect", serial], 20)
+                ready = self._devices_ready(serial)
+                if re.search(r"\b(?:fail(?:ed|ure)?|error|refused|unable|cannot)\b|can't|\bnot connected\b",
+                             output, re.I):
+                    fail("connect", "SDB reported a connection failure: " + scrub(output))
+                if not ready:
                     fail("connect", "The TV did not accept the connection")
                 owned = True
         except LiveError as error:
@@ -875,12 +882,13 @@ class Fleet:
                 if record["reachable"]:
                     record["guidance"] = {"kind": "host-ip", "title": "Check the TV's Host PC IP",
                                           "steps": list(DEVELOPER_STEPS)}
-                    message = ("The TV's Developer Mode port answered but refused this computer. "
-                               "Set Host PC IP to this computer, restart the TV, then Retry")
+                    message = ("The TV's Developer Mode port answered but the connection failed; "
+                               "the cause is not established. Check Developer Mode, Host PC IP and host network access, then Retry")
                 else:
                     record["guidance"] = {"kind": "developer-mode", "title": "How to enable Developer Mode",
                                           "steps": list(DEVELOPER_STEPS)}
-                    message = "Developer Mode port is closed or the TV is off. Enable Developer Mode, then Retry"
+                    message = ("The developer connection failed and the port did not answer this scan. "
+                               "Power state and Developer Mode are unknown; check the TV and host network access, then Retry")
                 record["error"] = message + " (" + scrub(error) + ")"
             fail("connect", record["error"])
         with self.lock:
@@ -917,7 +925,7 @@ class Fleet:
         return self.state()
 
     def _refused(self, record, error):
-        """The TV accepted the link but refuses every command: not a connection; Host PC IP points elsewhere."""
+        """The TV accepted the link but refused commands; the cause is not established."""
         try:
             self._release(record)
         except LiveError:
@@ -927,8 +935,8 @@ class Fleet:
             record["dev_refused"], record["dev_proven"] = True, False
             record["guidance"] = {"kind": "host-ip", "title": "Check the TV's Host PC IP",
                                   "steps": list(DEVELOPER_STEPS)}
-            record["error"] = (f"{name} accepted the connection but refused commands. On the TV set Host PC IP "
-                               "to this computer, restart the TV, then Connect (" + scrub(error) + ")")
+            record["error"] = (f"{name} accepted the connection but refused commands; the cause is not established. "
+                               "Check Developer Mode, Host PC IP and host network access, then Connect (" + scrub(error) + ")")
 
     def disconnect(self, alias, data):
         exact(data, {})
@@ -1018,7 +1026,9 @@ class Fleet:
                     record.setdefault("store_apps", set()).add(app)
             if closed and app not in (record.get("installed_here") or ()):
                 fail("preview", STORE_APP + " (" + app + ": " + scrub(error) + ")")
-            fail("preview", "Could not open " + app + ": " + scrub(error))
+            fail("preview", "App screen unavailable for " + app + ": " + scrub(error)
+                 + ". This does not establish installation or launch failure. Start without capture: tv launch "
+                 + alias + " " + app)
         with self.lock:
             (record.get("store_apps") or set()).discard(app)
         return self.state()
@@ -1257,7 +1267,10 @@ class Fleet:
         record = self._change(alias, data, {"app"})
         app = self._app(data["app"])
         failed, text = self._tizen(["run", "-p", app, "-t", self._device_name(record["serial"])])
-        if failed or not re.search(r"successfully launched", text, re.I):
+        # Tizen 3 (2017) prints the TV's own log: "app_id[APP] resumed" when APP was already running,
+        # then "Could not launch the null application." and a nonzero exit. The app is up; that counts.
+        resumed = re.search(r"app_id\[" + re.escape(app) + r"\] (resumed|launched)", text)
+        if not resumed and (failed or not re.search(r"successfully launched", text, re.I)):
             return self._finish(record, {"op": "launch", "ok": False, "code": "launch-failed",
                                          "message": "The TV did not start " + app + " (is it installed?)",
                                          "output": text[-400:], "next": f"tv install {alias} APP.wgt", "app": app})

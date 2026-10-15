@@ -34,5 +34,5 @@ The POSIX `tizen.py debug` wrapper **does not stop first**; callers must do it
 explicitly. HTTP targets establish discovery only, not a functioning WebSocket,
 pixels, remote parity or app acceptance.
 
-Evidence: [inspector study](https://github.com/dragoshont/plx-native/blob/dragoshont-samsung-tizen-feasibility/docs/samsung-web-inspector.md),
+Evidence: [Samsung development process](https://github.com/dragoshont/plx-native/blob/84712aa54a687e323bc00de46713bd978c94732e/docs/samsung-tizen-development-process.md),
 [dated legacy observation](../../docs/lessons.md).

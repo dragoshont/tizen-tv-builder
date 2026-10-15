@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -64,8 +65,9 @@ class Chrome47Inspector:
     """Raw-socket fake shaped like the Tizen 3.0 Chrome 47 inspector (protocol 1.1): plain HTTP/1.1
     discovery, an uncompressed RFC6455 upgrade, events before replies. Host fixture, not TV evidence."""
 
-    def __init__(self, silent=(), garbage=()):
+    def __init__(self, silent=(), garbage=(), evaluator=None):
         self.silent, self.garbage, self.methods = set(silent), set(garbage), []
+        self.evaluator = evaluator
         self.server = socket.socket(); self.server.bind(("127.0.0.1", 0)); self.server.listen(4)
         self.port = self.server.getsockname()[1]
         threading.Thread(target=self.loop, daemon=True).start()
@@ -130,7 +132,8 @@ class Chrome47Inspector:
                     conn.sendall(self.frame(b"\xff not json")); continue
                 result = {}
                 if method == "Runtime.evaluate":
-                    result = {"result": {"type": "object", "value": {"width": 100, "height": 80, "scale": 1}}, "wasThrown": False}
+                    value = self.evaluator(call["params"]) if self.evaluator else {"width": 100, "height": 80, "scale": 1}
+                    result = {"result": {"type": "object", "value": value}, "wasThrown": False}
                 elif method == "LayerTree.enable":
                     conn.sendall(self.frame(json.dumps({"method": "LayerTree.layerTreeDidChange", "params": {"layers": [
                         {"layerId": "7", "drawsContent": True, "offsetX": 0, "offsetY": 0, "width": 100, "height": 80},
@@ -147,6 +150,25 @@ class Chrome47Inspector:
 
 
 class LiveTests(unittest.TestCase):
+    def test_default_portal_cannot_be_framed(self):
+        app = live.App(None, {"sources": []})
+        server = live.BoundedServer(("127.0.0.1", 0), live.handler(app))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("frame-ancestors 'none'", response.getheader("Content-Security-Policy"))
+            self.assertEqual(response.getheader("X-Frame-Options"), "DENY")
+            response.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_pause_during_capture_stops_next_capture_without_waiting(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = live.Source(source_config(Path(temporary)), FakeCDP)
@@ -645,6 +667,47 @@ class LiveTests(unittest.TestCase):
                 self.assertFalse(Path(source.config["lease_path"]).exists())
                 methods = [m for m, _ in client.calls]
                 self.assertEqual(methods[-2:], ["LayerTree.releaseSnapshot", "LayerTree.disable"])
+            finally:
+                source.disconnect()
+
+    def test_capture_skips_empty_root_layer_the_tv_refuses_to_snapshot(self):
+        # Layer list as reported by a QE65Q80C (Tizen 9.0) for a running web app: the 0x0 root is
+        # flagged drawsContent, yet makeSnapshot on it answers -32000 "Layer does not draw content".
+        class EmptyRootCDP(FakeCDP):
+            gone = {"10"}
+
+            def layer_list(self):
+                return [{"layerId": "10", "drawsContent": True, "width": 0, "height": 0, "offsetX": 0, "offsetY": 0},
+                        {"layerId": "11", "parentLayerId": "10", "drawsContent": False, "width": 1920, "height": 1080},
+                        {"layerId": "12", "parentLayerId": "10", "drawsContent": True, "width": 1920, "height": 1080,
+                         "offsetX": 0, "offsetY": 0},
+                        {"layerId": "13", "parentLayerId": "10", "drawsContent": True, "width": 28, "height": 28,
+                         "offsetX": 0, "offsetY": 0},
+                        {"layerId": "14", "parentLayerId": "10", "drawsContent": True, "width": 238, "height": 67,
+                         "offsetX": 0, "offsetY": 0},
+                        {"layerId": "9", "parentLayerId": "10", "drawsContent": False, "width": 1920, "height": 1080}]
+
+            def rpc(self, method, params=None, timeout=3):
+                if method == "LayerTree.makeSnapshot" and params["layerId"] in self.gone:
+                    self.calls.append((method, params))
+                    raise live.LiveError("rpc", method + " was rejected by this target")
+                return super().rpc(method, params, timeout)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = live.Source(source_config(Path(temporary)), EmptyRootCDP)
+            try:
+                source.operate("connect", {"authorized": True, "pixels": True, "input": False})
+                result = source.operate("capture", {})
+                self.assertEqual(len(result["frames"]), 3)
+                snapped = [p["layerId"] for m, p in source.client.calls if m == "LayerTree.makeSnapshot"]
+                self.assertEqual(snapped, ["12", "13", "14"])
+                # The spinner layer is re-created between list and snapshot: that one layer is skipped.
+                source.client.gone = {"10", "13"}
+                self.assertEqual(len(source.operate("capture", {})["frames"]), 2)
+                source.client.gone = {"10", "12", "13", "14"}
+                with self.assertRaisesRegex(live.LiveError, "rejected"):
+                    source.operate("capture", {})
+                self.assertTrue(source.stale)
             finally:
                 source.disconnect()
 

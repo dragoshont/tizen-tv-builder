@@ -32,7 +32,7 @@ class Dispatch(unittest.TestCase):
         for argv in (["scan"], ["scan", "--json"], ["apps", "Sebi"], ["info", "Sebi", "--app", APP],
                      ["open", "Sebi", APP], ["screenshot", "Sebi", "--app", APP, "--out", "/tmp/x"],
                      ["remove", "Sebi", APP], ["uninstall", "Sebi", APP], ["cert", "add", "Sebi", "Bedroom"],
-                     ["cert", "reset", "plx-tv", "tv-companion", "--yes"], ["portal", "--port", "47900"]):
+                     ["cert", "reset", "demo-tv", "tv-companion", "--yes"], ["portal", "--port", "47900"]):
             self.assertEqual(self.tv_argv(*argv), argv)
 
     def test_legacy_tv_namespace_still_works(self):

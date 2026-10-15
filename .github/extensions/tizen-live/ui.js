@@ -304,7 +304,7 @@ async function updateTv(card, tv, keep) {
   card.pill.className = `pill ${shown.tone}`;
   card.reason.textContent = shown.detail;
   card.reason.className = `reason${shown.tone === "lost" ? " problem" : ""}`;
-  // Not reachable: one line ("Turn the TV on, then scan again") and a Scan button; nothing to connect to.
+  // Missing observations are not a power-state diagnosis; offer another scan.
   const unreachable = !tv.held && tv.label === "Not reachable";
   const canConnect = !tv.held && ["Ready to connect", "Connection problem"].includes(tv.label);
   card.connect.hidden = !canConnect;

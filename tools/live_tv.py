@@ -238,8 +238,9 @@ class Lease:
 
 class CDP:
     """Small RFC6455 client: fixed loopback endpoint, no extensions/compression."""
-    def __init__(self, port, target):
+    def __init__(self, port, target, deadline=None):
         self.sock = None
+        self.open_deadline = deadline
         self.next_id = 0
         self.layers = None
         self.phase = "target discovery (/json/list)"
@@ -250,7 +251,7 @@ class CDP:
             raise
 
     def _open(self, port, target):
-        deadline = time.monotonic() + 4
+        deadline = min(time.monotonic() + 4, self.open_deadline) if self.open_deadline is not None else time.monotonic() + 4
         connection = _DeadlineConnection("127.0.0.1", port, deadline)
         response = None
         try:
@@ -288,10 +289,13 @@ class CDP:
                 response.close()
             connection.close()
         self.phase = "WebSocket handshake"
-        sock = socket.create_connection(("127.0.0.1", port), timeout=4)
+        remaining = min(4, self.open_deadline - time.monotonic()) if self.open_deadline is not None else 4
+        if remaining <= 0:
+            fail("timeout", "Inspector connection deadline exceeded")
+        sock = socket.create_connection(("127.0.0.1", port), timeout=remaining)
         self.sock = sock
         try:
-            self.deadline = time.monotonic() + 4
+            self.deadline = min(time.monotonic() + 4, self.open_deadline) if self.open_deadline is not None else time.monotonic() + 4
             key = base64.b64encode(secrets.token_bytes(16)).decode()
             request = (f"GET /devtools/page/{target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
                        f"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
@@ -412,8 +416,10 @@ class CDP:
                 continue
             if "error" in value:
                 code = value["error"].get("code") if isinstance(value["error"], dict) else None
+                detail = value["error"].get("message") if isinstance(value["error"], dict) else None
+                detail = f" ({detail[:120]})" if isinstance(detail, str) and detail else ""
                 fail("unsupported" if code == -32601 else "rpc",
-                     method + (" is unsupported" if code == -32601 else " was rejected by this target"))
+                     method + (" is unsupported" if code == -32601 else " was rejected by this target" + detail))
             result = value.get("result")
             if not isinstance(result, dict):
                 fail("protocol", "Inspector result is malformed")
@@ -720,16 +726,29 @@ class Source:
             rpc("LayerTree.enable")
             enabled = True
             layers = client.layer_list()
-            paint = [layer for layer in layers if isinstance(layer, dict) and layer.get("drawsContent") is True]
+            # A layer with an explicit zero size paints nothing; Tizen flags its 0x0 root drawsContent
+            # yet refuses makeSnapshot on it ("Layer does not draw content").
+            paint = [layer for layer in layers if isinstance(layer, dict) and layer.get("drawsContent") is True
+                     and not any(isinstance(layer.get(side), (int, float)) and layer[side] <= 0
+                                 for side in ("width", "height"))]
             if not 1 <= len(paint) <= 8:
                 fail("limit", "Expected one to eight paint layers; incomplete over-limit captures are refused")
+            refused = []
             for layer in paint:
                 if time.monotonic() - started > 15 or time.monotonic() >= self.expires:
                     fail("timeout", "Native capture total budget exceeded")
                 layer_id = layer.get("layerId")
                 if not isinstance(layer_id, str) or len(layer_id) > 100:
                     fail("capture", "Paint layer identity is invalid")
-                snapshot = rpc("LayerTree.makeSnapshot", {"layerId": layer_id}).get("snapshotId")
+                try:
+                    snapshot = rpc("LayerTree.makeSnapshot", {"layerId": layer_id}).get("snapshotId")
+                except LiveError as error:
+                    # Layers come and go between the list and the snapshot (a spinner is re-created
+                    # with a new id); the TV then refuses that one layer. Skip it, not the capture.
+                    if error.code != "rpc":
+                        raise
+                    refused.append(str(error))
+                    continue
                 if not isinstance(snapshot, str) or not snapshot or len(snapshot) > 200:
                     fail("capture", "Snapshot identity is invalid")
                 try:
@@ -757,6 +776,8 @@ class Source:
                 except (LiveError, OSError, ValueError):
                     self.cleanup = "LayerTree cleanup unconfirmed; disconnected, no automatic retry"
                     raise
+        if not frames:
+            fail("rpc", refused[0] if refused else "No paint layer could be captured")
         self.frames = frames
         self.revision = hashlib.sha256(b"".join(f["raw"] for f in frames)).hexdigest()[:24]
         self.captured = time.time()
@@ -789,6 +810,7 @@ class App:
         self.sources = {s["id"]: Source(s, factory) for s in config["sources"]}
         self.persist_lock = threading.Lock()
         self.fleet = fleet
+        self.frame_ancestors = "'none'"
 
     def source(self, ident):
         if ident in self.sources:
@@ -894,6 +916,8 @@ def handler(app):
                              "default-src 'none'; script-src 'self'; style-src 'self'; "
                              "img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'" +
                              ("; frame-ancestors " + app.frame_ancestors if hasattr(app, "frame_ancestors") else ""))
+            if getattr(app, "frame_ancestors", None) == "'none'":
+                self.send_header("X-Frame-Options", "DENY")
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)

@@ -146,13 +146,13 @@ class PartsTests(unittest.TestCase):
     def test_register_adds_an_active_profile_and_keeps_the_others(self):
         path = self.root / "profile" / "profiles.xml"
         path.parent.mkdir()
-        path.write_text('<profiles active="plx-tv" version="3.1"><profile name="plx-tv">'
+        path.write_text('<profiles active="demo-tv" version="3.1"><profile name="demo-tv">'
                         '<profileitem distributor="0" key="/a.p12" password="/a.pwd"/></profile></profiles>')
         sc.register(path, sc.PROFILE, ("/k/author.p12", "/k/author.pwd"), ("/k/distributor.p12", "ENC"))
         sc.register(path, sc.PROFILE, ("/k/author.p12", "/k/author.pwd"), ("/k/distributor.p12", "ENC2"))
         root = ET.parse(path).getroot()
         self.assertEqual(root.get("active"), sc.PROFILE)
-        self.assertEqual([p.get("name") for p in root.iter("profile")], ["plx-tv", sc.PROFILE])
+        self.assertEqual([p.get("name") for p in root.iter("profile")], ["demo-tv", sc.PROFILE])
         items = [(i.get("distributor"), i.get("key"), i.get("password"))
                  for i in root.find(f"profile[@name='{sc.PROFILE}']").iter("profileitem")]
         self.assertEqual(items, [("0", "/k/author.p12", "/k/author.pwd"), ("1", "/k/distributor.p12", "ENC2"), ("2", "", "")])
@@ -163,7 +163,7 @@ class PartsTests(unittest.TestCase):
         certs.mkdir()
         (certs / "author.p12").write_bytes(b"key")
         path = self.root / "profiles.xml"
-        body = ('<profiles active="plx-tv"><profile name="plx-tv">'
+        body = ('<profiles active="demo-tv"><profile name="demo-tv">'
                 f'<profileitem distributor="0" key="{certs / "author.p12"}" password="{certs / "author.pwd"}"/>'
                 f'<profileitem distributor="1" key="{certs / "distributor.p12"}" password="x"/></profile></profiles>')
         path.write_text(body)
@@ -406,7 +406,7 @@ class ResetTests(unittest.TestCase):
         self.profiles = self.root / "data" / "profile" / "profiles.xml"
         self.backups = self.root / "state" / "cert-backups"
         self.calls = []
-        for name in ("plx-tv", "tv-companion", "keep-me"):
+        for name in ("demo-tv", "tv-companion", "keep-me"):
             folder = self.home / name
             folder.mkdir(parents=True)
             for stem in ("author", "distributor"):
@@ -417,7 +417,7 @@ class ResetTests(unittest.TestCase):
             f'<profileitem ca="" distributor="{i}" key="{self.home / n / (s + ".p12")}" '
             f'password="{self.home / n / (s + ".pwd")}" rootca=""/>' for i, s in enumerate(("author", "distributor")))
         self.profiles.write_text('<profiles active="tv-companion" version="3.1">' + "".join(
-            f'<profile name="{n}">{items(n)}</profile>' for n in ("plx-tv", "tv-companion", "keep-me")) + "</profiles>")
+            f'<profile name="{n}">{items(n)}</profile>' for n in ("demo-tv", "tv-companion", "keep-me")) + "</profiles>")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -437,19 +437,19 @@ class ResetTests(unittest.TestCase):
         return [p.get("name") for p in root.findall("profile")], root.get("active")
 
     def test_removes_exactly_the_named_profiles_with_backup_and_keychain(self):
-        receipt = self.reset("plx-tv", "tv-companion")
+        receipt = self.reset("demo-tv", "tv-companion")
         self.assertEqual(self.names(), (["keep-me"], ""))
-        self.assertFalse((self.home / "plx-tv").exists())
+        self.assertFalse((self.home / "demo-tv").exists())
         self.assertFalse((self.home / "tv-companion").exists())
         self.assertEqual((self.home / "keep-me" / "author.p12").read_bytes(), b"xkeep-me")
         self.assertEqual([p["state"] for p in receipt["profiles"]], ["removed", "removed"])
         backup = Path(receipt["backup"])
         self.assertFalse(sc._inside(backup, self.home))
-        self.assertEqual((backup / "plx-tv" / "author.p12").read_bytes(), b"xplx-tv")
+        self.assertEqual((backup / "demo-tv" / "author.p12").read_bytes(), b"xdemo-tv")
         self.assertIn("keep-me", (backup / "profiles.xml").read_text())
         self.assertTrue((backup / "receipt.json").is_file())
         accounts = sorted(c[-1] for c in self.calls)
-        self.assertEqual(accounts, sorted(str(self.home / n / (s + ".pwd")) for n in ("plx-tv", "tv-companion")
+        self.assertEqual(accounts, sorted(str(self.home / n / (s + ".pwd")) for n in ("demo-tv", "tv-companion")
                                           for s in ("author", "distributor")))
         self.assertTrue(all(c[:4] == ["security", "delete-generic-password", "-s", "certificate-manager"]
                             for c in self.calls))
@@ -463,18 +463,18 @@ class ResetTests(unittest.TestCase):
         self.assertIsNone(receipt["backup"])
         self.assertEqual(self.profiles.read_bytes(), before)
         self.assertEqual(self.calls, [])
-        again = self.reset("plx-tv")
-        self.assertEqual(self.reset("plx-tv")["profiles"][0]["state"], "not-present")
+        again = self.reset("demo-tv")
+        self.assertEqual(self.reset("demo-tv")["profiles"][0]["state"], "not-present")
         self.assertEqual(again["profiles"][0]["state"], "removed")
 
     def test_keychain_errors_are_reported_not_hidden(self):
-        receipt = self.reset("plx-tv", code=51)
+        receipt = self.reset("demo-tv", code=51)
         self.assertEqual(len(receipt["keychain_errors"]), 2)
         self.assertIn("denied", receipt["keychain_errors"][0])
         self.assertEqual(self.reset("tv-companion", code=44)["keychain_errors"], [], "44 = already absent")
 
     def test_no_keychain_off_macos(self):
-        receipt = self.reset("plx-tv", system="Windows")
+        receipt = self.reset("demo-tv", system="Windows")
         self.assertEqual(self.calls, [])
         self.assertEqual(set(receipt["profiles"][0]["keychain_result"].values()), {"not-applicable"})
 
@@ -488,9 +488,9 @@ class ResetTests(unittest.TestCase):
         return caught.exception
 
     def test_symlinks_are_refused(self):
-        (self.home / "plx-tv" / "link").symlink_to(self.root)
-        self.assertEqual(self.refused("plx-tv").code, "symlink")
-        (self.home / "plx-tv" / "link").unlink()
+        (self.home / "demo-tv" / "link").symlink_to(self.root)
+        self.assertEqual(self.refused("demo-tv").code, "symlink")
+        (self.home / "demo-tv" / "link").unlink()
         (self.home / "evil").symlink_to(self.root / "data", target_is_directory=True)
         self.assertEqual(self.refused("evil").code, "symlink")
         self.assertTrue((self.root / "data" / "profile" / "profiles.xml").is_file())
@@ -499,15 +499,15 @@ class ResetTests(unittest.TestCase):
         for bad in ("..", "../data", "*", "", "a/b"):
             self.assertEqual(self.refused(bad).code, "invalid")
         text = self.profiles.read_text().replace(str(self.home / "keep-me" / "author.p12"),
-                                                 str(self.home / "plx-tv" / "author.p12"))
+                                                 str(self.home / "demo-tv" / "author.p12"))
         self.profiles.write_text(text)
-        self.assertEqual(self.refused("plx-tv").code, "in-use")
-        self.assertTrue((self.home / "plx-tv" / "author.p12").is_file())
+        self.assertEqual(self.refused("demo-tv").code, "in-use")
+        self.assertTrue((self.home / "demo-tv" / "author.p12").is_file())
 
     def test_a_reused_author_outside_the_folder_is_kept(self):
         text = self.profiles.read_text().replace(str(self.home / "tv-companion" / "author.p12"),
-                                                 str(self.home / "plx-tv" / "author.p12"), 1)
+                                                 str(self.home / "demo-tv" / "author.p12"), 1)
         self.profiles.write_text(text)
         receipt = self.reset("tv-companion")
-        self.assertEqual(receipt["profiles"][0]["kept_files"], [str(self.home / "plx-tv" / "author.p12")])
-        self.assertTrue((self.home / "plx-tv" / "author.p12").is_file())
+        self.assertEqual(receipt["profiles"][0]["kept_files"], [str(self.home / "demo-tv" / "author.p12")])
+        self.assertTrue((self.home / "demo-tv" / "author.p12").is_file())

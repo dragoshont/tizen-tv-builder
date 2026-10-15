@@ -250,7 +250,8 @@ class GuidedCliTests(FirstRunBase):
         self.assertTrue(any(".wgt" in prompt for prompt in asked))
         # The fake TV has no debug launch: the real error and one fix, then quitting ends with failure.
         self.assertIn("Step 6 of 6: See it", out)
-        self.assertIn("Could not open " + tv_setup.SAMPLE_APP, out)
+        self.assertIn("App screen unavailable for " + tv_setup.SAMPLE_APP, out)
+        self.assertIn("tv launch", out)
         self.assertIn("Press Enter to try again (q to quit): ", asked)
         self.assertEqual(code, 1)
         self.assert_private(out)

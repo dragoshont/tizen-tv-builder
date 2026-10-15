@@ -6,6 +6,26 @@ intentionally breaking them. No version number is a claim of TV model support.
 
 ## Unreleased — live-canvas candidate
 
+- Readiness continuation: reject zero-exit SDB connection failure text and offline
+  install targets; keep closed-port, missing-scan and connection-cause observations
+  distinct from Developer Mode, power and Host PC IP diagnoses.
+- Unsupported screen capture now points to standalone `tv launch` without
+  relabeling a successful installation or launch as failed.
+- Preserve the parent-reported Vemm 0.0.1 Q80C deployment and observed Tizen 9.0,
+  including rejected snapshot/no CSS receipt and unproven connection recovery.
+- Independent account-free ABBA benchmark runner: bounded explicit attachment,
+  raw sample/provenance reports, offline validation and median/nearest-rank P95.
+  Host fixtures only; no retail benchmark or GPU/panel performance claim.
+- Neutral bundled hello-app identity and synthetic certificate-profile examples;
+  historical Plx provenance and the shared legacy Samsung lane key are retained.
+- Workbench keyboard surfaces now match the shared shortcut helper; the isolated
+  browser gate reproduces and protects Enter/Space, focus and disabled-input behavior.
+- Public-main preparation: corrected install/status/capture documentation, pinned
+  source links instead of deleted investigation branches, and host CI on `main`.
+- Default portal responses now deny framing with CSP and X-Frame-Options. This closes
+  a clickjacking gap; iframe-based canvas hosts must use the standalone portal instead.
+- Later macOS observations on MU6172 (2017), RU7092 (2019), Q80C (2023) and QN70F
+  (2025) cover development operations, not universal model or media acceptance.
 - Standalone scaffold-derived Copilot canvas with an independently implemented
   bounded localhost/CDP/LayerTree provider and user-only mutation routes.
 - Native discrete 10-second feed, stale retention, pixel reuse, guarded controls,
@@ -16,6 +36,7 @@ intentionally breaking them. No version number is a claim of TV model support.
 - No new published release or installed-plugin replacement.
 - Runtime correction: permit host cross-site iframe loading of exact public
   renderer GET routes, while preserving authenticated API/POST origin checks.
+  The later anti-framing policy above supersedes iframe embedding support.
 - `python3 tools/tizen.py setup [--check]`: computer-only preparation (sdb and the
   tizen CLI); returns before any TV, certificate or app step.
 - Guided setup with the same six steps and words in two places: the interactive
@@ -39,8 +60,10 @@ intentionally breaking them. No version number is a claim of TV model support.
 - `cert reset PROFILE... [--yes]`: plan without `--yes`; with it, removes exactly those
   signing profiles (profiles.xml entry, certificate folder, macOS Keychain passwords)
   after a backup and receipt; refuses symlinks, unsafe names and shared folders.
-- Not production-ready: live batch sign-in, remove/reset on a TV, live certificate sign-in, HTTPS-URL install, the Tizen Studio
-  installer and Developer Mode detection on a fresh TV still need device acceptance.
+- Remaining acceptance gaps include a fresh-host Tizen Studio installer run, exhaustive
+  certificate reset/recovery, Windows desktop-to-TV operation, 2015/2016 hardware and
+  every model/operation combination. Live certificate sign-in, batch certificate
+  coverage and HTTPS-URL Plx installation were subsequently observed on macOS.
 
 ## 0.1.0 - 2026-10-11
 

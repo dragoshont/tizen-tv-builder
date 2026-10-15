@@ -298,6 +298,8 @@ class RemoteTests(unittest.TestCase):
         html = (workbench.ASSETS / "index.html").read_text(encoding="utf-8")
         for name in set(live_tv.KEYS) | set(workbench.REMOTE_NAMES):
             self.assertIn(f'data-key="{name}"', html)
+        self.assertIn('id="remote" class="remote"', html, "Shared keyboard routing requires a remote surface")
+        self.assertIn('id="views" class="view"', html, "Preview keyboard routing requires a view surface")
 
 
 class RecordingIntegrationTests(unittest.TestCase):

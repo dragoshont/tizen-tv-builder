@@ -1,9 +1,11 @@
 # App flows: new app, checks, retail TV, emulator, budgets
 
-One CLI, the same on macOS and Windows (`python3` or `py -3`). Every command prints
-JSON and exits `0` on pass and `2` on anything else: a failed check, step, teardown or
-budget, or an SDK/connection error (the error goes to stderr). A Python traceback
-(exit `1`) is a toolkit bug.
+The low-level app/check commands on this page print JSON and exit `0` on pass or
+`2` on a failed check, step, teardown, budget or SDK/connection error. The human-facing
+`tv` commands use readable status/error text instead; see [getting started](getting-started.md).
+Use `python3` on macOS/Linux or `py -3` on Windows. Low-level SDK wrappers remain
+POSIX-only; the Workbench has separate Windows support. A Python traceback is a
+toolkit bug, not a successful operation.
 
 ## Start and check an app (no SDK, no TV)
 
@@ -93,6 +95,11 @@ it does **not** run on Apple Silicon. There the flow fails within seconds with t
 launcher's reason.
 
 ## Budgets
+
+For collecting reusable OFF/ON measurements rather than evaluating existing startup
+marks, use the separate [ABBA benchmark runner](benchmark.md). It attaches only to
+an explicitly reviewed account-free app/adapter and does not run this page's
+install/debug/teardown flow automatically.
 
 `docs/budgets.json` holds per-tier targets (cold start, first frame, first Home).
 They are targets, not measurements. Check measured numbers:

@@ -647,7 +647,7 @@ def cert_places():
 def cert_reset(names, yes, state_dir, say):
     """`cert reset PROFILE...`: remove exactly the named signing profiles. Never contacts a TV."""
     if not names:
-        raise Usage("Use: tv cert reset PROFILE [PROFILE ...] --yes   (e.g. cert reset plx-tv tv-companion --yes)")
+        raise Usage("Use: tv cert reset PROFILE [PROFILE ...] --yes   (e.g. cert reset demo-tv tv-companion --yes)")
     profiles_path, cert_home = cert_places()
     try:
         plan = samsung_cert.reset_plan(names, profiles_path=profiles_path, cert_home=cert_home)
