@@ -248,6 +248,35 @@ class FleetTests(unittest.TestCase):
             fleet.connect(alias, {"confirm": ""})
         self.assertPrivate(str(caught.exception))
 
+    def test_zero_exit_connect_failure_is_not_overridden_by_a_listed_device(self):
+        for state in ("offline", "device"):
+            with self.subTest(state=state):
+                def failed(argv, timeout=60, limit=None):
+                    output = self.sdb(argv, timeout, limit)
+                    if argv[1] == "connect":
+                        self.sdb.devices[argv[2]] = state
+                        return "failed to connect to remote target " + argv[2]
+                    return output
+
+                self.sdb.devices.clear()
+                fleet = self.fleet(runner=failed)
+                alias = fleet.detect()["tvs"][0]["alias"]
+                try:
+                    with self.assertRaises(live.LiveError) as caught:
+                        fleet.connect(alias, {})
+                    self.assertPrivate(str(caught.exception))
+                    self.assertFalse(self.only(fleet)["held"])
+                    self.assertNotEqual(self.only(fleet)["label"], "Connected")
+                    self.assertIn(["disconnect", f"{LAN_A}:26101"], self.sdb.calls)
+                finally:
+                    fleet.close()
+
+    def test_offline_sdk_row_is_not_an_install_target(self):
+        self.sdb.devices = {f"{LAN_A}:26101": "offline"}
+        fleet = self.fleet()
+        with self.assertRaises(live.LiveError):
+            fleet._device_name(f"{LAN_A}:26101")
+
     def test_identify_reports_duid_presence_and_certificate_match_only(self):
         fleet = self.fleet()
         alias = fleet.detect()["tvs"][0]["alias"]
@@ -529,7 +558,7 @@ class FleetTests(unittest.TestCase):
         fleet.close()
 
     def two_profiles(self, switch=True):
-        """test-profile (active, without this TV) and plx-tv-2 (a newer profile listing it)."""
+        """test-profile (active, without this TV) and demo-tv-2 (a newer profile listing it)."""
         second = self.root / "certs2"
         second.mkdir()
         (second / "device-profile.xml").write_text(device_profile("OTHERDEVICE0002", DUID))
@@ -538,7 +567,7 @@ class FleetTests(unittest.TestCase):
         def body(active):
             return (f'<profiles active="{active}"><profile name="test-profile">'
                     f'<profileitem distributor="1" key="{self.certs / "distributor.p12"}" password="secret"/></profile>'
-                    f'<profile name="plx-tv-2"><profileitem distributor="1" key="{second / "distributor.p12"}"/>'
+                    f'<profile name="demo-tv-2"><profileitem distributor="1" key="{second / "distributor.p12"}"/>'
                     '</profile></profiles>')
         tizen = str(self.root / "tizen")
         self.tizen_calls = []
@@ -561,14 +590,14 @@ class FleetTests(unittest.TestCase):
         fleet.identify(alias, {})
         certificate = self.only(fleet)["certificate"]
         self.assertEqual((certificate["state"], certificate["profile"], certificate["others"]),
-                         ("not-covered", "test-profile", ["plx-tv-2"]))
+                         ("not-covered", "test-profile", ["demo-tv-2"]))
         self.assertNotIn("by_profile", certificate, "Other profiles' device lists stay private")
         job = fleet.cert(alias, {})
-        self.assertEqual((job["ok"], job["code"], job["use_profile"]), (False, "other-profile", "plx-tv-2"))
-        self.assertIn("plx-tv-2 allows", job["message"])
-        job = fleet.profile(alias, {"profile": "plx-tv-2"})
+        self.assertEqual((job["ok"], job["code"], job["use_profile"]), (False, "other-profile", "demo-tv-2"))
+        self.assertIn("demo-tv-2 allows", job["message"])
+        job = fleet.profile(alias, {"profile": "demo-tv-2"})
         self.assertEqual((job["ok"], job["code"]), (True, "profile-active"))
-        self.assertEqual(self.tizen_calls, [["security-profiles", "set-active", "-n", "plx-tv-2"]])
+        self.assertEqual(self.tizen_calls, [["security-profiles", "set-active", "-n", "demo-tv-2"]])
         self.assertEqual(self.only(fleet)["certificate"]["state"], "covered")
         self.assertIn("allows this TV", job["message"])
         with self.assertRaises(live.LiveError):
@@ -583,7 +612,7 @@ class FleetTests(unittest.TestCase):
         fleet.identify(alias, {})
         (self.root / "certs2" / "device-profile.xml").write_text(device_profile("OTHERDEVICE0002", DUID))
         job = fleet.cert(alias, {})
-        self.assertEqual((job["code"], job["use_profile"]), ("other-profile", "plx-tv-2"))
+        self.assertEqual((job["code"], job["use_profile"]), ("other-profile", "demo-tv-2"))
         fleet.close()
 
     def test_a_profile_switch_the_cli_did_not_make_is_not_claimed(self):
@@ -591,7 +620,7 @@ class FleetTests(unittest.TestCase):
         alias = fleet.detect()["tvs"][0]["alias"]
         fleet.connect(alias, {})
         fleet.identify(alias, {})
-        job = fleet.profile(alias, {"profile": "plx-tv-2"})
+        job = fleet.profile(alias, {"profile": "demo-tv-2"})
         self.assertEqual((job["ok"], job["code"]), (False, "profile-unchanged"))
         self.assertIn("still test-profile", job["message"])
         self.assertIn("[ERROR] something went wrong", job["output"])
@@ -936,6 +965,31 @@ class PreviewTests(FleetTests):
         finally:
             fleet.close()
 
+    def test_rejected_snapshot_does_not_block_standalone_launch(self):
+        fleet, alias, Session = self.preview_fleet()
+
+        class RejectedSnapshot(fleet.cdp):
+            def rpc(self, method, params=None, timeout=3):
+                if method == "LayerTree.makeSnapshot":
+                    raise live.LiveError("unsupported", method + " was rejected by this target")
+                return super().rpc(method, params, timeout)
+
+        fleet.cdp = RejectedSnapshot
+        fleet.tizen = "host-fixture-tizen"
+        try:
+            with self.assertRaises(live.LiveError) as caught:
+                fleet.preview(alias, {"app": APP})
+            self.assertIn("LayerTree.makeSnapshot", str(caught.exception))
+            self.assertIn("tv launch " + alias + " " + APP, str(caught.exception))
+            self.assertEqual(self.only(fleet)["label"], "Connected")
+            self.assertIsNone(self.only(fleet)["preview"])
+            self.assertEqual(Session.made[0].closed, 1)
+            with mock.patch.object(fleet, "_tizen", return_value=(False, "Tizen application is successfully launched.")):
+                self.assertTrue(fleet.launch(alias, {"app": APP})["ok"])
+            self.assertEqual(len(Session.made), 1, "Standalone launch must not retry the unsupported capture")
+        finally:
+            fleet.close()
+
     def test_store_app_refusal_is_shown_and_remembered(self):
         refused = []
         class Refusing:
@@ -1037,7 +1091,9 @@ class DiscoveryAndReadinessTests(FleetTests):
         with self.assertRaises(live.LiveError):
             fleet.connect(alias, {"confirm": ""})
         refused = self.by_host(fleet)["21"]["dev_mode"]
-        self.assertEqual(refused["label"], "Host PC IP points elsewhere")
+        self.assertEqual(refused["label"], "Developer connection failed")
+        self.assertEqual(refused["diagnosis"], "connection-failed")
+        self.assertNotIn("most likely", refused["explanation"])
         self.assertIn("Host PC IP", refused["next"])
         self.sdb.accept = True
         fleet.connect(alias, {"confirm": ""})
@@ -1050,15 +1106,19 @@ class DiscoveryAndReadinessTests(FleetTests):
     def test_closed_port_without_reported_mode_is_not_called_off(self):
         fleet = self.fleet(hits=(), api_hits=(LAN_A,),
                            info=lambda host: {"name": "[TV] Den", "model": "UE55NU7400", "developer_mode": "unknown"})
-        dev = fleet.detect()["tvs"][0]["dev_mode"]
+        tv = fleet.detect()["tvs"][0]
+        dev = tv["dev_mode"]
         self.assertEqual((dev["state"], dev["label"]), ("closed", "Developer port closed"))
+        self.assertEqual(tv["label"], "Developer port closed")
 
     def test_api_reporting_developer_mode_on_with_closed_port_needs_configuration(self):
         fleet = self.fleet(hits=(), api_hits=(LAN_A,),
                            info=lambda host: {"name": "[TV] Den", "model": "UE55NU7400", "developer_mode": "on"})
         fleet.detect()
-        dev = self.only(fleet)["dev_mode"]
+        tv = self.only(fleet)
+        dev = tv["dev_mode"]
         self.assertEqual(dev["label"], "Developer Mode on, port closed")
+        self.assertEqual(tv["label"], "Developer port closed")
         self.assertIn("Restart", dev["next"])
         fleet.close()
 
@@ -1101,6 +1161,7 @@ class DiscoveryAndReadinessTests(FleetTests):
         fleet.detect()
         dev = self.only(fleet)["dev_mode"]
         self.assertEqual((dev["state"], dev["label"]), ("unknown", "Not reachable"))
+        self.assertIn("not prove", self.only(fleet)["headline"])
         fleet.close()
 
     def test_scan_metadata_schema_separates_reported_inferred_and_observed(self):

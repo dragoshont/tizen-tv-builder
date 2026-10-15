@@ -65,8 +65,9 @@ class Chrome47Inspector:
     """Raw-socket fake shaped like the Tizen 3.0 Chrome 47 inspector (protocol 1.1): plain HTTP/1.1
     discovery, an uncompressed RFC6455 upgrade, events before replies. Host fixture, not TV evidence."""
 
-    def __init__(self, silent=(), garbage=()):
+    def __init__(self, silent=(), garbage=(), evaluator=None):
         self.silent, self.garbage, self.methods = set(silent), set(garbage), []
+        self.evaluator = evaluator
         self.server = socket.socket(); self.server.bind(("127.0.0.1", 0)); self.server.listen(4)
         self.port = self.server.getsockname()[1]
         threading.Thread(target=self.loop, daemon=True).start()
@@ -131,7 +132,8 @@ class Chrome47Inspector:
                     conn.sendall(self.frame(b"\xff not json")); continue
                 result = {}
                 if method == "Runtime.evaluate":
-                    result = {"result": {"type": "object", "value": {"width": 100, "height": 80, "scale": 1}}, "wasThrown": False}
+                    value = self.evaluator(call["params"]) if self.evaluator else {"width": 100, "height": 80, "scale": 1}
+                    result = {"result": {"type": "object", "value": value}, "wasThrown": False}
                 elif method == "LayerTree.enable":
                     conn.sendall(self.frame(json.dumps({"method": "LayerTree.layerTreeDidChange", "params": {"layers": [
                         {"layerId": "7", "drawsContent": True, "offsetX": 0, "offsetY": 0, "width": 100, "height": 80},

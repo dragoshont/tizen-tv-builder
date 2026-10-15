@@ -6,6 +6,20 @@ intentionally breaking them. No version number is a claim of TV model support.
 
 ## Unreleased — live-canvas candidate
 
+- Readiness continuation: reject zero-exit SDB connection failure text and offline
+  install targets; keep closed-port, missing-scan and connection-cause observations
+  distinct from Developer Mode, power and Host PC IP diagnoses.
+- Unsupported screen capture now points to standalone `tv launch` without
+  relabeling a successful installation or launch as failed.
+- Preserve the parent-reported Vemm 0.0.1 Q80C deployment and observed Tizen 9.0,
+  including rejected snapshot/no CSS receipt and unproven connection recovery.
+- Independent account-free ABBA benchmark runner: bounded explicit attachment,
+  raw sample/provenance reports, offline validation and median/nearest-rank P95.
+  Host fixtures only; no retail benchmark or GPU/panel performance claim.
+- Neutral bundled hello-app identity and synthetic certificate-profile examples;
+  historical Plx provenance and the shared legacy Samsung lane key are retained.
+- Workbench keyboard surfaces now match the shared shortcut helper; the isolated
+  browser gate reproduces and protects Enter/Space, focus and disabled-input behavior.
 - Public-main preparation: corrected install/status/capture documentation, pinned
   source links instead of deleted investigation branches, and host CI on `main`.
 - Default portal responses now deny framing with CSP and X-Frame-Options. This closes
@@ -22,6 +36,7 @@ intentionally breaking them. No version number is a claim of TV model support.
 - No new published release or installed-plugin replacement.
 - Runtime correction: permit host cross-site iframe loading of exact public
   renderer GET routes, while preserving authenticated API/POST origin checks.
+  The later anti-framing policy above supersedes iframe embedding support.
 - `python3 tools/tizen.py setup [--check]`: computer-only preparation (sdb and the
   tizen CLI); returns before any TV, certificate or app step.
 - Guided setup with the same six steps and words in two places: the interactive

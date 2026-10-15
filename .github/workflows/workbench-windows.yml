@@ -23,6 +23,8 @@ jobs:
           python-version: '3.12'
       - name: Complete Python suite
         run: python -m unittest discover -s tests -v
+      - name: Live controls and independent benchmark fixture
+        run: node --test tests/live-controls.test.mjs tests/benchmark-fixture.test.mjs
       - name: Release classification of every tracked file
         run: python -c "import subprocess,sys;sys.path.insert(0,'tools');import release;print(len(release.payload_paths(subprocess.check_output(['git','ls-files'],text=True).split())),'release files classified')"
       - name: Real Windows loopback and private recording lifecycle

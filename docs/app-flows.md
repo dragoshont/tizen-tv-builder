@@ -96,6 +96,11 @@ launcher's reason.
 
 ## Budgets
 
+For collecting reusable OFF/ON measurements rather than evaluating existing startup
+marks, use the separate [ABBA benchmark runner](benchmark.md). It attaches only to
+an explicitly reviewed account-free app/adapter and does not run this page's
+install/debug/teardown flow automatically.
+
 `docs/budgets.json` holds per-tier targets (cold start, first frame, first Home).
 They are targets, not measurements. Check measured numbers:
 

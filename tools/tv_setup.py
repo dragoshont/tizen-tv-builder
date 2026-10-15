@@ -26,7 +26,7 @@ STEPS = (
 )
 WAITING = "Waiting for your TV\u2026"
 SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "hello-tv"
-SAMPLE_APP = "PlxHelloTv.Hello"
+SAMPLE_APP = "KitHelloTv.Hello"
 
 INSTALLER_BASE = "https://download.tizen.org/sdk/Installer/tizen-studio_6.1/"
 INSTALLERS = {"Darwin": "web-cli_Tizen_Studio_6.1_macos-64.bin",

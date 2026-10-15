@@ -63,6 +63,15 @@ when the app has more than eight paint layers, or when an inspector uses unsuppo
 WebSocket behavior. Debug/capture relaunches the app. A successful command is not proof
 of physical-remote fidelity, codec support or Store approval.
 
+The latest parent-reported Vemm 0.0.1 installation/runtime smoke used source
+`2b50628cd9a346dbe1d374e103124665b749b260` on QE65Q80CATXXH (2023), whose
+observed runtime was **Tizen 9.0**, not the model year's 7.0 baseline. Identity,
+profile-picker state and 1920x1080 geometry were checked without remote/media/account
+operations or capture. An earlier deployment's inspector rejected
+`LayerTree.makeSnapshot`; this is not a screenshot or physical-panel acceptance.
+Use `python3 tools/tizen.py tv launch TV APP` to
+start an app without requiring capture. See [the dated lesson](docs/lessons.md#vemm-deployment-observation-15-october-2026).
+
 The portal runs on loopback without a token. Its browser Host/Origin checks reject
 other websites, and anti-framing headers prevent websites from embedding its controls.
 Local programs and other users on this computer can call it while
@@ -76,6 +85,13 @@ exception is enabled to make embedding work.
 There is no live `logs`/`debugger-tail` command yet; it is tracked in
 [issue #1](https://github.com/dragoshont/tizen-tv-builder/issues/1).
 Performance budgets consume measured timings; they do not measure presented TV FPS.
+
+The checkout also includes a [bounded OFF/ON ABBA benchmark](docs/benchmark.md):
+`python3 tools/tizen.py benchmark run` attaches to an explicitly reviewed,
+account-free app adapter, and `benchmark validate` / `benchmark summarize` work
+offline. Raw samples, warmups and provenance are retained; callback intervals
+are not panel FPS and CPU/API timings are not GPU kernel time. No automatic
+deployment or production-account work is included.
 
 ## Install the plugin
 
@@ -256,6 +272,12 @@ To build a release, update `plugin.json`, `.github/plugin/marketplace.json` and
 ```sh
 python3 tools/release.py --output /absolute/existing/release-directory
 ```
+
+Until a new version is explicitly approved, a build from current main is a
+**distribution candidate**, not the historical 0.1.0 release. Both still report
+0.1.0; distinguish them by `release.json`'s `source_commit` and archive checksum.
+Do not overwrite published assets, install the candidate over a pinned plugin or
+announce a new version from this filename alone.
 
 The builder refuses a dirty tree, unknown tracked files, symlinks and existing
 output files. It makes a deterministic ZIP, `release.json` and `SHA256SUMS`.

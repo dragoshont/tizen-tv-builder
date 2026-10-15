@@ -38,7 +38,8 @@ try {
   await wait(1200);
   assert.equal(await evaluate("document.getElementById('error').textContent.includes('Connection lost')"), true);
   assert.equal(await evaluate("document.querySelectorAll('img').length"), 0);
-  assert.equal(await evaluate("document.querySelector('[data-key=up]').disabled"), true);
+  assert.equal(await evaluate("document.querySelectorAll('.remote [data-key]').length"), 0,
+    "No source means no remote controls, not a placeholder remote");
   for (const width of [1200, 390]) {
     await rpc("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
     assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, `Overflow at ${width}`);
@@ -51,7 +52,8 @@ try {
   // UI-only connected fixture. It intercepts API requests, never connects a provider.
   await rpc("Page.addScriptToEvaluateOnNewDocument", { source: `
     window.uiCalls = []; window.uiDelay = 0; window.uiFailed = false;
-    window.uiState = {sources:[{id:"fixture",kind:"emulator",metadata:{},status:"connected",
+    window.uiState = {tvs:[],sdk:"available",scan:{status:"done",found:0},
+      sources:[{id:"fixture",kind:"emulator",metadata:{},status:"connected",
       expires_in:120,input_allowed:true,pixels_allowed:false,run_limit_seconds:120,
       activation_allowed:true,frames:[],stale:true,interval:10,streaming:false,
       provenance:"HOST UI FIXTURE ONLY",limitations:"No TV or emulator provider connected"}]};
@@ -66,6 +68,7 @@ try {
     };` });
   await rpc("Page.navigate", { url: "about:blank" }); await wait(100);
   await rpc("Page.navigate", { url: canvasUrl }); await wait(1200);
+  assert.equal(await evaluate("document.querySelectorAll('.remote [data-key]').length"), 6);
   await evaluate("document.querySelector('[data-key=ok]').focus()");
   await key("Enter", 13);
   assert.equal(await evaluate("uiCalls.filter(c=>c.url.includes('/key/')).length"), 1, "Enter must not also click the native button");
@@ -91,6 +94,8 @@ try {
   assert.equal(await evaluate("uiCalls.filter(c=>c.url.includes('/key/')).length"), 9, "Disconnected shortcut must not send");
   assert.equal(await evaluate("document.getElementById('error').textContent.includes('Connection lost')"), true);
   assert.equal(await evaluate("document.querySelectorAll('img').length"), 0);
+  assert.equal(await evaluate("document.querySelectorAll('.remote [data-key]:disabled').length"), 6,
+    "All existing source controls must be disabled after disconnect");
   console.error("Isolated browser: offline rendering, narrow layout, focus/editing, Enter/Space single dispatch, backpressure and disconnect passed. UI fixture only.");
 } finally {
   await rpc("Page.close").catch(() => {});

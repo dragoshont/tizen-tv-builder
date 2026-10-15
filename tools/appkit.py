@@ -183,7 +183,7 @@ def audit(source, app_id=None):
     if not re.fullmatch(r"\d{1,3}\.\d{1,3}\.\d{1,5}", version) or any(
             int(part) > limit for part, limit in zip(version.split("."), (255, 255, 65535))):
         findings.append(_finding("error", "version", "Widget version must be x.y.z (255.255.65535 max)"))
-    if identity["app"] and identity["app"].split(".")[0] in {"PlxHelloTv", "AAAAAAAAAA"}:
+    if identity["app"] and identity["app"].split(".")[0] in {"KitHelloTv", "PlxHelloTv", "AAAAAAAAAA"}:
         findings.append(_finding("warning", "example-id", "Example package ID; generate your own with `tizen.py new`"))
     seen = set()
     for name in privileges:

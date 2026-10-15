@@ -69,7 +69,7 @@ FORM: Brief-pinned utility composition; no concept roll or invented demo pixels.
     <section class="preview" aria-label="Native renderer preview">
       <div class="preview-toolbar"><h2>App preview</h2><div class="actions"><button id="capture" disabled>Refresh</button><button id="stream" disabled>Start feed</button><button id="record" disabled title="Record one app paint layer">Record</button></div></div>
       <p id="status" role="status" aria-live="polite">Choose a TV and app to begin.</p>
-      <div id="views" tabindex="0" aria-label="Preview keyboard surface"><div class="empty"><div class="empty-screen" aria-hidden="true"></div><h3>Ready for your app</h3><p>Find your TV, choose an app, then connect.</p></div></div>
+      <div id="views" class="view" tabindex="0" aria-label="Preview keyboard surface"><div class="empty"><div class="empty-screen" aria-hidden="true"></div><h3>Ready for your app</h3><p>Find your TV, choose an app, then connect.</p></div></div>
       <details class="diagnostics"><summary>Inspector details</summary>
         <p id="diagnostics">No inspector session. This is not an arbitrary console, DOM editor or network recorder.</p>
         <p class="hint">Native renderer paint layers, not a panel recording. AVPlay video and TV menus are outside this view. Layers are replayed separately.</p>
@@ -95,7 +95,7 @@ FORM: Brief-pinned utility composition; no concept roll or invented demo pixels.
     </section>
     <aside class="remote-panel" aria-label="Remote control">
       <h2>Remote</h2>
-      <fieldset id="remote" tabindex="0" aria-label="TV remote keyboard surface"><legend class="sr-only">Guarded CDP remote</legend>
+      <fieldset id="remote" class="remote" tabindex="0" aria-label="TV remote keyboard surface"><legend class="sr-only">Guarded CDP remote</legend>
         <div class="remote-body">
           <div class="remote-row"><button data-key="power" class="power" disabled aria-label="Power" title="Not exposed to this app">⏻</button><button data-key="source" disabled title="Not exposed to this app">Source</button></div>
           <div class="numbers" aria-label="Number keys">

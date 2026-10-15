@@ -99,11 +99,11 @@ class TvCliTests(unittest.TestCase):
         return "Succeed to set 'active' profile."
 
     def write_profiles(self, active):
-        """Two signing profiles; only plx-tv-2's certificate lists this TV."""
+        """Two signing profiles; only demo-tv-2's certificate lists this TV."""
         folder = self.root / "tizen-data" / "profile"
         folder.mkdir(parents=True, exist_ok=True)
         items = ""
-        for name, duids in (("plx-tv", ["OTHERDEVICE0002"]), ("plx-tv-2", ["OTHERDEVICE0002", DUID])):
+        for name, duids in (("demo-tv", ["OTHERDEVICE0002"]), ("demo-tv-2", ["OTHERDEVICE0002", DUID])):
             certs = self.root / name
             certs.mkdir(exist_ok=True)
             (certs / "device-profile.xml").write_text(
@@ -372,19 +372,19 @@ class TvCliTests(unittest.TestCase):
 
     def test_cert_offers_and_switches_to_a_profile_that_allows_the_tv(self):
         self.tizen_path = str(self.root / "tizen")
-        self.write_profiles("plx-tv")
+        self.write_profiles("demo-tv")
         alias = self.alias()
         code, out, _ = self.run_cli("cert", alias)
-        self.assertIn("Your profile plx-tv-2 allows", out)
-        self.assertIn(f"Run: tv cert use {alias} plx-tv-2", out)
+        self.assertIn("Your profile demo-tv-2 allows", out)
+        self.assertIn(f"Run: tv cert use {alias} demo-tv-2", out)
         code, out, _ = self.run_cli("cert", "add", alias)
         self.assertEqual((code, self.launches), (1, []), "No sign-in: another profile already allows the TV")
-        self.assertIn(f"Run: tv cert use {alias} plx-tv-2", out)
-        code, out, _ = self.run_cli("cert", "use", alias, "plx-tv-2")
+        self.assertIn(f"Run: tv cert use {alias} demo-tv-2", out)
+        code, out, _ = self.run_cli("cert", "use", alias, "demo-tv-2")
         self.assertEqual(code, 0)
-        self.assertIn("Installs now use plx-tv-2, which allows this TV", out)
+        self.assertIn("Installs now use demo-tv-2, which allows this TV", out)
         code, out, _ = self.run_cli("cert", alias)
-        self.assertIn("plx-tv-2 covers this TV", out)
+        self.assertIn("demo-tv-2 covers this TV", out)
         self.assertEqual(self.run_cli("cert", "use", alias)[0], 2)
 
     def test_uninstall_and_remove_alias_need_tizen_cli_and_no_yes(self):
@@ -495,11 +495,11 @@ class CertResetCliTests(unittest.TestCase):
         self.profiles = self.root / "tizen-data" / "profile" / "profiles.xml"
         self.profiles.parent.mkdir(parents=True)
         body = ""
-        for name in ("plx-tv", "tv-companion", "store-dev"):
+        for name in ("demo-tv", "tv-companion", "store-dev"):
             (self.home / name).mkdir(parents=True)
             (self.home / name / "author.p12").write_bytes(b"k")
             body += f'<profile name="{name}"><profileitem distributor="0" key="{self.home / name / "author.p12"}" password="inline"/></profile>'
-        self.profiles.write_text(f'<profiles active="plx-tv">{body}</profiles>')
+        self.profiles.write_text(f'<profiles active="demo-tv">{body}</profiles>')
         patch = mock.patch.object(tv, "cert_places", lambda: (self.profiles, self.home))
         patch.start()
         self.addCleanup(patch.stop)
@@ -515,30 +515,30 @@ class CertResetCliTests(unittest.TestCase):
 
     def test_without_yes_only_shows_the_plan(self):
         before = self.profiles.read_bytes()
-        code, out = self.run_cli("cert", "reset", "plx-tv", "tv-companion")
+        code, out = self.run_cli("cert", "reset", "demo-tv", "tv-companion")
         self.assertEqual(code, 1)
         self.assertIn("nothing was changed; add --yes", out)
-        self.assertIn("plx-tv: would remove profiles.xml entry (active)", out)
+        self.assertIn("demo-tv: would remove profiles.xml entry (active)", out)
         self.assertEqual(self.profiles.read_bytes(), before)
-        self.assertTrue((self.home / "plx-tv").is_dir())
+        self.assertTrue((self.home / "demo-tv").is_dir())
 
     def test_yes_removes_exactly_those_and_prints_a_receipt(self):
-        code, out = self.run_cli("cert", "reset", "plx-tv", "tv-companion", "--yes")
+        code, out = self.run_cli("cert", "reset", "demo-tv", "tv-companion", "--yes")
         self.assertEqual(code, 0, out)
         self.assertIn("Certificate reset receipt", out)
-        self.assertIn("plx-tv: removed profiles.xml entry (active)", out)
+        self.assertIn("demo-tv: removed profiles.xml entry (active)", out)
         self.assertIn("Backup: " + str(self.root / "state" / "cert-backups"), out)
         self.assertTrue((self.home / "store-dev" / "author.p12").is_file())
-        self.assertFalse((self.home / "plx-tv").exists())
+        self.assertFalse((self.home / "demo-tv").exists())
         self.assertIn('name="store-dev"', self.profiles.read_text())
-        code, out = self.run_cli("cert", "reset", "plx-tv", "--yes")
+        code, out = self.run_cli("cert", "reset", "demo-tv", "--yes")
         self.assertEqual(code, 0)
-        self.assertIn("plx-tv: not present (nothing to remove)", out)
+        self.assertIn("demo-tv: not present (nothing to remove)", out)
 
     def test_refusal_changes_nothing(self):
-        (self.home / "plx-tv" / "loop").symlink_to(self.root)
+        (self.home / "demo-tv" / "loop").symlink_to(self.root)
         before = self.profiles.read_bytes()
-        code, out = self.run_cli("cert", "reset", "plx-tv", "--yes")
+        code, out = self.run_cli("cert", "reset", "demo-tv", "--yes")
         self.assertEqual(code, 1)
         self.assertIn("Refused:", out)
         self.assertIn("Nothing was changed", out)

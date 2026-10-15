@@ -548,7 +548,7 @@ def reset_plan(names, *, profiles_path, cert_home):
     (kept) profile still uses, because deleting it would break that profile."""
     names = list(dict.fromkeys(names))
     if not names or not all(isinstance(n, str) and PROFILE_NAME.fullmatch(n) for n in names):
-        raise CertError("invalid", "Name the signing profiles to remove exactly, e.g. plx-tv tv-companion",
+        raise CertError("invalid", "Name the signing profiles to remove exactly, e.g. demo-tv tv-companion",
                         "Use letters, digits, '.', '_' or '-'")
     cert_home = Path(cert_home)
     if cert_home.is_symlink():

@@ -67,7 +67,7 @@ before an approved upgrade; no emulator installation is required for this guide.
    if ($LASTEXITCODE -ne 0) { throw 'SDB check failed' }
    py -3 tools/tizen.py validate examples/hello-tv
    ```
-   Expect tool versions and validation JSON naming `PlxHelloTv.Hello`.
+   Expect tool versions and validation JSON naming `KitHelloTv.Hello`.
    Use Device Manager to confirm extension readiness. Do not run `doctor`,
    `build`, `package`, `install`, `run`, `debug` or forward SDK wrappers here:
    `tools/tizen.py` SDK process management is POSIX-only.

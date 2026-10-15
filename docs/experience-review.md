@@ -11,6 +11,22 @@ signing and app-list-verified installation completed. Some renderer captures and
 remote navigation worked; others failed at the layer limit or WebSocket protocol.
 No Windows desktop-to-TV or universal model acceptance is asserted.
 
+The later parent-reported Vemm 0.0.1 deployment (`2fc024c8`) confirmed install and
+standalone launch on QE65Q80CATXXH (2023), observed Tizen 9.0. The target rejected
+`LayerTree.makeSnapshot`; no device screenshot or runtime CSS receipt was obtained
+during deployment. A later parent-owned smoke verified identity, debug launch and
+1920x1080 body geometry without horizontal overflow, with no input, content or capture.
+Read [the dated lesson](lessons.md#vemm-deployment-observation-15-october-2026) for
+the unresolved connection cause, explicit server-restart consent and account limits.
+The final install/runtime smoke supersedes base-only product identity with source
+`2b50628cd9a346dbe1d374e103124665b749b260`, live version 0.0.1, matching rebuilt
+payload hashes and profile-picker/1920x1080 geometry; the same acceptance limits apply.
+
+Current main also includes an independent MIT [ABBA benchmark runner](benchmark.md).
+Its account-free contract fixture, raw sample validation, deadlines, cleanup and
+median/nearest-rank P95 are host-tested; no retail benchmark acceptance or GPU/panel
+performance claim follows. The installed 0.1.0 plugin does not contain this runner.
+
 Reviewed 2026-10-11 against the parent Samsung development study and this toolkit's
 committed behavior. This is an inventory of what we preserved, not a promise that
 we captured every discovery or implemented every helper.

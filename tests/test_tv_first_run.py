@@ -407,7 +407,7 @@ class FleetFirstRunTests(FirstRunBase):
             self.assertIn("accepted the connection but refused commands", tv["error"])
             self.assertIn("Host PC IP", tv["error"])
             self.assertEqual(tv["dev_mode"]["state"], "needs-config")
-            self.assertEqual(tv["dev_mode"]["diagnosis"], "host-ip-elsewhere")
+            self.assertEqual(tv["dev_mode"]["diagnosis"], "connection-failed")
             self.assert_private(json.dumps(tv["error"]))
         finally:
             fleet.close()
@@ -660,15 +660,15 @@ class DeveloperModeOffTests(FirstRunBase):
 class HostPcIpElsewhereTests(FirstRunBase):
     scenario = dict(FirstRunBase.scenario, connect="refuse")
 
-    def test_check_says_host_pc_ip_points_to_another_computer(self):
+    def test_check_reports_connection_failure_without_claiming_host_ip_is_wrong(self):
         fleet = self.fleet()
         try:
             alias = self.detected(fleet)["alias"]
             with self.assertRaises(tv_fleet.LiveError):
                 fleet.connect(alias, {"confirm": alias})
             dev = fleet.state()["tvs"][0]["dev_mode"]
-            self.assertEqual(dev["diagnosis"], "host-ip-elsewhere")
-            self.assertIn("Developer Mode is on", dev["explanation"])
+            self.assertEqual(dev["diagnosis"], "connection-failed")
+            self.assertIn("not established", dev["explanation"])
             self.assertIn("Host PC IP", dev["explanation"])
         finally:
             fleet.close()
@@ -740,7 +740,7 @@ class CliFirstRunTests(FirstRunBase):
         self.set_scenario(connect="refuse")
         code, out, _ = self.run_cli("check", self.alias())
         self.assertEqual(code, 1)
-        self.assertIn("answered but refused this computer", out)
+        self.assertIn("answered but the connection failed", out)
         self.assertIn("Connection problem", out)
         self.assertNotIn("Developer Mode is off", out)
 

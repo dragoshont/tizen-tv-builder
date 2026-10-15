@@ -18,11 +18,14 @@ then [prerequisites](../../docs/prerequisites.md).
    interface actually used by the computer; follow Samsung's model instructions.
 2. Obtain explicit connection authorization and exclusive physical-TV ownership.
    Use `tv connect` from the [getting-started guide](../../docs/getting-started.md) or Device Manager.
-   Require the exact selected serial in `sdb devices` with state `device`;
-   reachability or a successful TCP socket alone is insufficient.
-3. On macOS, a working Apple `nc` probe and failed SDB connection can indicate
-   the launching application's Local Network permission, not bad TV firmware.
-   Fix that application's normal permission, route and firewall configuration.
+   Inspect SDB's result text even on exit zero, and require the exact selected
+   serial in `sdb devices` with state `device`, not `offline`.
+   Reachability or a successful TCP socket alone is insufficient; a missing scan
+   response does not prove power-off or Developer Mode off.
+3. On macOS, `EHOSTUNREACH` from Python/Node and successful `nc`/`curl` probes
+   coexisted without an established source/permission cause. Check the launching
+   application's normal permissions, route and firewall configuration; do not
+   change a correct wired Host PC IP based only on another interface's address.
    Do not kill a shared SDB server to change its parent application.
 4. An existing relay is usable only when its owner approved the endpoint,
    target, lifetime and teardown and policy permits it. Select the actual

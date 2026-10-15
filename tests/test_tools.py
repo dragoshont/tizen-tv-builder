@@ -38,7 +38,7 @@ class ToolkitTests(unittest.TestCase):
         self.fail("SDK launcher left a running child")
 
     def test_manifest_and_identifier(self):
-        self.assertEqual(tizen.validate(ROOT / "examples/hello-tv")["app"], "PlxHelloTv.Hello")
+        self.assertEqual(tizen.validate(ROOT / "examples/hello-tv")["app"], "KitHelloTv.Hello")
         for bad in ("app", "short.App", "1234567890.;rm", "1234567890.App\n"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 tizen.application_id(bad)
@@ -53,14 +53,14 @@ class ToolkitTests(unittest.TestCase):
     def test_device_operations_fail_before_tool_resolution(self):
         with patch.object(tizen, "tool_path", side_effect=AssertionError("Should not invoke SDK")):
             with self.assertRaisesRegex(ValueError, "authorized"):
-                tizen.run(self.args("run", "--app", "PlxHelloTv.Hello", "--serial", "127.0.0.1:26111"))
+                tizen.run(self.args("run", "--app", "KitHelloTv.Hello", "--serial", "127.0.0.1:26111"))
 
     def test_debug_timeout_argument_and_target(self):
         with patch.object(tizen, "tool_path", return_value="/sdk/sdb"), patch.object(tizen, "execute", return_value="port: 12345") as execute:
-            tizen.run(self.args("debug", "--app", "PlxHelloTv.Hello", "--serial",
+            tizen.run(self.args("debug", "--app", "KitHelloTv.Hello", "--serial",
                                "127.0.0.1:26111", "--authorized", "--legacy-timeout", "0"))
             self.assertEqual(execute.call_args.args[0], ["/sdk/sdb", "-s", "127.0.0.1:26111",
-                                                       "shell", "0", "debug", "PlxHelloTv.Hello", "0"])
+                                                       "shell", "0", "debug", "KitHelloTv.Hello", "0"])
 
     def test_cleanup_removes_only_named_forward(self):
         with patch.object(tizen, "tool_path", return_value="/sdk/sdb"), patch.object(tizen, "execute", return_value="") as execute:
@@ -91,7 +91,7 @@ class ToolkitTests(unittest.TestCase):
             original = (ROOT / "examples/hello-tv/config.xml").read_text()
             for content in (original.replace('src="index.html"', 'src="../index.html"'),
                             original.replace("<widget ", '<!DOCTYPE widget SYSTEM "file:///private"><widget '),
-                            original.replace('package="PlxHelloTv"', 'package="AnotherId0"')):
+                            original.replace('package="KitHelloTv"', 'package="AnotherId0"')):
                 (root / "config.xml").write_text(content)
                 with self.assertRaises(ValueError):
                     tizen.validate(root)

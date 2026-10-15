@@ -63,7 +63,8 @@ This lists Samsung TVs with their name, model and observed status. **Ready to co
 means the developer port answers, not that the certificate or installation permission
 has been checked. **Needs setup** means a setup step is needed; follow the reported
 step rather than assuming the cause is Host PC IP. An unavailable remembered TV stays
-listed as **Not reachable**. Turn it on and scan again.
+listed as **Not reachable**: the scan did not get an answer, not proof that the TV
+is off. Check power and the active network interface, then scan again.
 
 An open or closed port does not prove whether Developer Mode is enabled. Tizen version
 is observed on the developer connection; a model-year baseline is not the TV's current
@@ -125,6 +126,7 @@ python3 tools/tizen.py install /path/to/MyApp.wgt NAME
 python3 tools/tizen.py install https://example.com/builds/MyApp.wgt NAME
 python3 tools/tizen.py apps NAME
 python3 tools/tizen.py info NAME --app APP
+python3 tools/tizen.py tv launch NAME APP
 python3 tools/tizen.py open NAME APP
 python3 tools/tizen.py screenshot NAME --app APP --out ~/Pictures/TV-Screenshots
 python3 tools/tizen.py info NAME --connect
@@ -144,6 +146,8 @@ NAME is the TV's IP address, its name as `scan` shows it, or its `tv-xxxxxx` ali
   and 2019 TVs list IDs only, so it says "Version: unknown". The version inside a
   downloaded package is not proof of what is installed.
 - `open` restarts the app in debug mode so its screen can be seen.
+- `tv launch` starts the app without an inspector capture. Use this when installation
+  and normal launch work but the target rejects an optional snapshot method.
 - `screenshot` saves the app's picture as a PNG (default folder `~/Pictures/TV Screenshots`).
 - `info --connect` shows every detail the portal shows, including the Tizen version,
   certificate coverage and apps.
@@ -223,15 +227,20 @@ or inspector protocol behavior; they are not full-panel/video-plane captures.
 This is not universal app or firmware acceptance. No new Windows-to-retail-TV,
 2015/2016 hardware or emulator acceptance is claimed.
 
+The later parent-reported Vemm 0.0.1 run on QE65Q80CATXXH confirmed installation
+and standalone launch, but not capture: `LayerTree.makeSnapshot` was rejected.
+The observed Tizen 9.0 on that 2023 model supersedes an assumed annual baseline.
+See [the dated deployment lesson](lessons.md#vemm-deployment-observation-15-october-2026).
+
 ## When something fails
 
 | You see | Do this |
 |---|---|
-| "Not reachable" | Turn the TV on, then scan again |
+| "Not reachable" | No scan response; check power, network and the computer's active interface, then scan again |
 | "Needs setup" | Follow the specific setup step shown; check Developer Mode and Host PC IP when indicated |
 | "You can't install your apps on this TV yet" | `python3 tools/tizen.py tv cert add NAME` |
 | `install failed[118]` | Check both certificate coverage and installation permission; this error alone does not establish which failed |
-| "No picture" after Open screen | Choose Open screen again; the app restarts |
-| sdb can't connect on a Mac | Allow Local Network access for your terminal in System Settings → Privacy & Security |
+| "No picture" after Open screen | Keep the actual inspector error. Use `python3 tools/tizen.py tv launch NAME APP` without capture; do not retry an unsupported method indefinitely |
+| sdb can't connect on a Mac | Inspect SDB output and exact `device` state. Check normal Local Network permissions, routes and firewall; `nc`/`curl` success alone does not establish the cause |
 
 Keep certificates, passwords and device IDs out of git and public logs.
